@@ -8,7 +8,7 @@
 //!
 //! Both [`Modifiers`] and [`HotkeyGesture`] serialize as their human-readable
 //! display string (`"Ctrl+Alt+F"`, `"Esc"`, `"Ctrl"`) — that is the form stored
-//! in `settings.json`.
+//! in the settings file.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
@@ -19,7 +19,7 @@ use std::fmt;
 
 /// `(canonical display name, virtual-key code)` for the named non-modifier
 /// keys. Lookup is case-insensitive; the display name is what
-/// [`HotkeyGesture::to_display`] emits and what `settings.json` stores.
+/// [`HotkeyGesture::to_display`] emits and what the settings file stores.
 /// `pub(crate)` so [`crate::hotkeys::keymap`] tests can prove they cover the
 /// parser's whole key vocabulary.
 pub(crate) const NAMED_KEYS: &[(&str, u32)] = &[

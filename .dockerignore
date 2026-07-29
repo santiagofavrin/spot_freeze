@@ -2,8 +2,9 @@
 .git/
 target/
 
-# Local user settings (JSONC, created next to the exe on first run)
+# Local user settings (JSONC)
 settings.json
+spotfreeze.json
 
 # Editor / OS cruft
 .idea/

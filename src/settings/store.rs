@@ -1,18 +1,20 @@
-//! JSONC persistence for [`AppSettings`] — `settings.json` in the
+//! JSONC persistence for [`AppSettings`] — `spotfreeze.json` in the
 //! per-platform config location.
 //!
 //! Pure module: no OS imports; unit tests exercise it with temp files.
 
 use super::model::AppSettings;
 use anyhow::{Context, Result, anyhow};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// File name used by [`default_settings_path`].
-const SETTINGS_FILE_NAME: &str = "settings.json";
+const SETTINGS_FILE_NAME: &str = "spotfreeze.json";
+/// File name used by releases before the per-OS config locations: migrated
+/// forward by [`migrate_legacy_settings`] when the current file is absent.
+const LEGACY_SETTINGS_FILE_NAME: &str = "settings.json";
 
 /// `//` comments injected into the template, keyed by the JSON key they sit
 /// above. ONLY non-obvious keys (units, ranges, modifier-only semantics) get
@@ -36,8 +38,8 @@ const KEY_COMMENTS: &[(&str, &str)] = &[
     ("color", "veil color as #RRGGBB hex"),
 ];
 
-/// `settings.json` in the platform's conventional per-user config location:
-/// beside the running executable on Windows;
+/// `spotfreeze.json` in the platform's conventional per-user config location:
+/// `%APPDATA%\SpotFreeze\` on Windows;
 /// `$XDG_CONFIG_HOME/spotfreeze/` (falling back to `~/.config/spotfreeze/`)
 /// on Linux; `~/Library/Application Support/SpotFreeze/` on macOS.
 /// Errors only when the location cannot be determined.
@@ -48,10 +50,7 @@ const KEY_COMMENTS: &[(&str, &str)] = &[
 pub fn default_settings_path() -> Result<PathBuf> {
     #[cfg(windows)]
     {
-        let exe = std::env::current_exe().context("cannot determine the executable path")?;
-        let dir = exe
-            .parent()
-            .context("executable path has no parent directory")?;
+        let dir = windows_config_dir(std::env::var_os("APPDATA")).context("APPDATA is not set")?;
         Ok(dir.join(SETTINGS_FILE_NAME))
     }
     #[cfg(target_os = "linux")]
@@ -68,6 +67,14 @@ pub fn default_settings_path() -> Result<PathBuf> {
         let dir = macos_config_dir(std::env::var_os("HOME")).context("HOME is not set")?;
         Ok(dir.join(SETTINGS_FILE_NAME))
     }
+}
+
+/// `%APPDATA%\SpotFreeze`. `None` when `APPDATA` is unset or empty.
+#[cfg(windows)]
+fn windows_config_dir(appdata: Option<OsString>) -> Option<PathBuf> {
+    appdata
+        .filter(|v| !v.is_empty())
+        .map(|appdata| PathBuf::from(appdata).join("SpotFreeze"))
 }
 
 /// `$XDG_CONFIG_HOME/spotfreeze`, falling back to `~/.config/spotfreeze` when
@@ -92,6 +99,47 @@ fn macos_config_dir(home: Option<OsString>) -> Option<PathBuf> {
             .join("Application Support")
             .join("SpotFreeze")
     })
+}
+
+/// Move a pre-rename `settings.json` over to `path` when `path` does not
+/// exist yet: beside the executable on Windows (its old location), next to
+/// `path` on Linux/macOS. Best effort and infallible — any failure leaves the
+/// legacy file untouched and the caller's [`load`] falls back to defaults.
+pub fn migrate_legacy_settings(path: &Path) {
+    if path.exists() {
+        return;
+    }
+    let Some(legacy) = legacy_settings_path(path) else {
+        return;
+    };
+    if !legacy.exists() {
+        return;
+    }
+    if let Some(parent) = path.parent()
+        && fs::create_dir_all(parent).is_err()
+    {
+        return;
+    }
+    if fs::rename(&legacy, path).is_err()
+        && fs::copy(&legacy, path).is_ok()
+    {
+        // Cross-filesystem fallback (e.g. exe and APPDATA on different drives).
+        let _ = fs::remove_file(&legacy);
+    }
+}
+
+/// The pre-rename settings location for this platform (see
+/// [`migrate_legacy_settings`]).
+fn legacy_settings_path(new_path: &Path) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let exe = std::env::current_exe().ok()?;
+        Some(exe.parent()?.join(LEGACY_SETTINGS_FILE_NAME))
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        Some(new_path.with_file_name(LEGACY_SETTINGS_FILE_NAME))
+    }
 }
 
 /// Load settings from `path`.
@@ -146,8 +194,13 @@ fn parse_jsonc(text: &str) -> Result<AppSettings> {
 
 /// Atomically persist `settings` to `path`: serialize via [`to_jsonc_template`],
 /// write `<path>.tmp`, then rename over `path` (same directory, so the rename is
-/// atomic and replaces an existing target on Windows).
+/// atomic and replaces an existing target on Windows). Missing parent
+/// directories are created first.
 pub fn save(path: &Path, settings: &AppSettings) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
     let tmp_path = tmp_path_for(path);
     let text = to_jsonc_template(settings);
 
@@ -258,17 +311,25 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn default_settings_path_is_settings_json_next_to_exe() {
-        let path = default_settings_path().expect("exe path must be resolvable in tests");
+    fn default_settings_path_is_spotfreeze_json_in_appdata() {
+        let path = default_settings_path().expect("APPDATA is set on any real Windows session");
         assert_eq!(path.file_name().unwrap(), SETTINGS_FILE_NAME);
+        assert_eq!(path.parent().unwrap().file_name().unwrap(), "SpotFreeze");
         assert!(path.is_absolute());
-        // The parent is the real exe directory (test harness): it must exist.
-        assert!(path.parent().unwrap().is_dir());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_config_dir_prefers_appdata() {
+        let dir = windows_config_dir(Some(r"C:\Users\u\AppData\Roaming".into())).unwrap();
+        assert_eq!(dir, PathBuf::from(r"C:\Users\u\AppData\Roaming\SpotFreeze"));
+        assert_eq!(windows_config_dir(None), None);
+        assert_eq!(windows_config_dir(Some("".into())), None);
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn default_settings_path_is_settings_json_in_the_config_dir() {
+    fn default_settings_path_is_spotfreeze_json_in_the_config_dir() {
         let path = default_settings_path().expect("HOME is set in any real session");
         assert_eq!(path.file_name().unwrap(), SETTINGS_FILE_NAME);
         assert_eq!(path.parent().unwrap().file_name().unwrap(), "spotfreeze");
@@ -441,16 +502,20 @@ mod tests {
     }
 
     #[test]
-    fn load_missing_file_in_unwritable_dir_still_returns_defaults() {
-        // Parent directory does not exist: the best-effort create must fail
-        // silently and load must still succeed with defaults.
+    fn load_missing_file_in_missing_dir_materializes_template_and_returns_defaults() {
+        // The parent directory is created on demand, so the template lands
+        // even when the whole config path did not exist yet.
         let dir = unique_temp_path("nodir");
-        let path = dir.join("settings.json");
+        let path = dir.join("spotfreeze.json");
         assert!(!dir.exists());
 
-        let loaded = load(&path).expect("unwritable create is not an error");
+        let loaded = load(&path).expect("missing dir is not an error");
         assert_eq!(loaded, AppSettings::default());
-        assert!(!path.exists(), "nothing was written into the missing dir");
+        assert_eq!(
+            fs::read_to_string(&path).expect("template written"),
+            to_jsonc_template(&AppSettings::default())
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     // ---------- partial JSON merges with defaults ----------
@@ -695,16 +760,68 @@ mod tests {
     }
 
     #[test]
-    fn save_into_missing_directory_errors_and_cleans_tmp() {
-        let dir = unique_temp_path("save_nodir");
-        let path = dir.join("settings.json");
-        let err = save(&path, &AppSettings::default()).expect_err("no parent dir");
-        let shown = format!("{err:#}");
-        assert!(shown.contains("failed to create"), "context: {shown}");
-        assert!(
-            !tmp_path_for(&path).exists(),
-            "failed save cleans up its .tmp file"
-        );
+    fn save_creates_missing_parent_directories() {
+        let dir = unique_temp_path("save_nodir").join("nested").join("deeper");
+        let path = dir.join("spotfreeze.json");
+        save(&path, &AppSettings::default()).expect("save creates parent dirs");
+        assert!(path.is_file());
+        assert!(!tmp_path_for(&path).exists());
+        let _ = fs::remove_dir_all(unique_temp_path("save_nodir"));
+    }
+
+    // ---------- migrate_legacy_settings ----------
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn migration_moves_legacy_file_next_to_the_new_path() {
+        let dir = unique_temp_path("migrate");
+        fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join(LEGACY_SETTINGS_FILE_NAME);
+        fs::write(&legacy, "{ \"spotlight\": { \"default_radius\": 42 } }").unwrap();
+
+        let new_path = dir.join(SETTINGS_FILE_NAME);
+        migrate_legacy_settings(&new_path);
+
+        assert!(new_path.is_file(), "legacy file moved onto the new path");
+        assert!(!legacy.exists(), "legacy file is gone after the move");
+        let settings = load(&new_path).expect("migrated file loads");
+        assert_eq!(settings.spotlight.default_radius, 42);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn migration_is_a_noop_when_the_new_file_exists() {
+        let dir = unique_temp_path("migrate_keeps");
+        fs::create_dir_all(&dir).unwrap();
+        let new_path = dir.join(SETTINGS_FILE_NAME);
+        fs::write(&new_path, "{}").unwrap();
+        let legacy = dir.join(LEGACY_SETTINGS_FILE_NAME);
+        fs::write(&legacy, "{ \"spotlight\": { \"default_radius\": 42 } }").unwrap();
+
+        migrate_legacy_settings(&new_path);
+
+        assert!(legacy.exists(), "existing new file wins; legacy untouched");
+        assert_eq!(fs::read_to_string(&new_path).unwrap(), "{}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn migration_is_a_noop_without_a_legacy_file() {
+        let dir = unique_temp_path("migrate_none");
+        let new_path = dir.join(SETTINGS_FILE_NAME);
+        migrate_legacy_settings(&new_path);
+        assert!(!new_path.exists());
+        assert!(!dir.exists(), "no directories are created without a legacy file");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_settings_path_is_settings_json_next_to_the_exe() {
+        let legacy = legacy_settings_path(Path::new(r"C:\ignored\spotfreeze.json")).unwrap();
+        let exe_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        assert_eq!(legacy, exe_dir.join(LEGACY_SETTINGS_FILE_NAME));
     }
 
     // ---------- parse_jsonc internals ----------

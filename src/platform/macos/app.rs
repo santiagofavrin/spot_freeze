@@ -160,7 +160,7 @@ fn drain_alerts() {
 ///    exit silently (unpackaged dev runs have no bundle id and skip this).
 /// 2. **Activation policy `.accessory`**: no Dock icon, no menu bar (the app
 ///    lives in the status bar; the bundle also sets `LSUIElement`).
-/// 3. **Settings**: load via [`store::load`] (creates `settings.json` with
+/// 3. **Settings**: load via [`store::load`] (creates `spotfreeze.json` with
 ///    defaults on first run; malformed file → defaults at startup).
 /// 4. **Carbon hotkey** for `freeze_toggle` and the **status item**; failures
 ///    are reported but never fatal — the other path must always work.
@@ -174,7 +174,8 @@ pub fn run() -> Result<()> {
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 
-    let settings_path = store::default_settings_path().context("locating settings.json")?;
+    let settings_path = store::default_settings_path().context("locating spotfreeze.json")?;
+    store::migrate_legacy_settings(&settings_path);
     let settings = store::load(&settings_path).unwrap_or_default();
     let state = Rc::new(RefCell::new(AppState {
         settings,

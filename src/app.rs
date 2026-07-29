@@ -74,7 +74,7 @@ struct AppState {
 /// 2. **DPI**: `SetProcessDpiAwarenessContext(PerMonitorV2)` BEFORE any window
 ///    is created (all overlay pixels are physical).
 /// 3. **Settings**: load via [`crate::settings::store::load`] (creates
-///    `settings.json` with defaults on first run; malformed file → defaults).
+///    `spotfreeze.json` with defaults on first run; malformed file → defaults).
 /// 4. **Hidden message window**: owns the `WM_HOTKEY` registrations
 ///    ([`crate::hotkeys::manager::HotkeyManager`]) and the tray icon
 ///    ([`crate::tray::TrayIcon`]).
@@ -107,7 +107,8 @@ pub fn run() -> Result<()> {
     }
 
     // 3. Settings: malformed JSONC → defaults and keep running (per contract).
-    let settings_path = store::default_settings_path().context("locating settings.json")?;
+    let settings_path = store::default_settings_path().context("locating spotfreeze.json")?;
+    store::migrate_legacy_settings(&settings_path);
     let settings = store::load(&settings_path).unwrap_or_default();
 
     // 4. State + hidden message window.
@@ -354,7 +355,7 @@ fn rebind_freeze_hotkey(state: &mut AppState, hwnd: HWND) -> bool {
 /// `reset_zoom`, `snip_copy`, `cancel` — nine registrations in the common
 /// case, fewer when the conflict guard skips a derived Shift+variant.
 /// Individual failures (e.g. a combo owned by another app, or a duplicate in
-/// a hand-edited settings.json) are collected into one message box; whatever
+/// a hand-edited settings file) are collected into one message box; whatever
 /// registered stays active.
 fn register_frozen_hotkeys(state: &mut AppState, hwnd: HWND) {
     let plan = plan_frozen_registrations(&state.settings.hotkeys);

@@ -1,8 +1,8 @@
 //! Application settings model — pure data, serde-friendly, JSONC-backed.
 //!
 //! Every settings struct implements [`Default`] and is deserialized with
-//! `#[serde(default)]`, so any missing key in `settings.json` falls back to the
-//! default value: old config files stay valid when new keys are added.
+//! `#[serde(default)]`, so any missing key in the settings file falls back to
+//! the default value: old config files stay valid when new keys are added.
 //!
 //! Hotkeys are stored as their display strings (`"Win+F"`, `"Esc"`) via
 //! the serde impls on [`HotkeyGesture`] / [`Modifiers`]. The overlay veil
@@ -11,7 +11,8 @@
 use crate::hotkeys::gesture::{HotkeyGesture, Modifiers};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// Root settings object persisted in `settings.json` next to the exe.
+/// Root settings object persisted as `spotfreeze.json` in the per-platform
+/// config location (see [`crate::settings::store`]).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
@@ -35,7 +36,7 @@ impl Rgb {
     /// Solid black — the default veil color.
     pub const BLACK: Self = Self { r: 0, g: 0, b: 0 };
 
-    /// Canonical `"#RRGGBB"` uppercase hex string (the form `settings.json`
+    /// Canonical `"#RRGGBB"` uppercase hex string (the form the settings file
     /// stores).
     pub fn to_hex(self) -> String {
         format!("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
@@ -345,7 +346,7 @@ mod tests {
             assert!(!msg.is_empty());
             assert!(msg.contains("#RRGGBB"), "clear error for {bad:?}: {msg}");
         }
-        // The serde (settings.json load) path must reject without panicking too.
+        // The serde (settings file load) path must reject without panicking too.
         assert!(serde_json::from_str::<Rgb>("\"#aébcd\"").is_err());
     }
 
