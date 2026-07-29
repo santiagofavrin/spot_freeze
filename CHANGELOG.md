@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.0](https://github.com/santiagofavrin/spot_freeze/compare/v1.3.1...v1.4.0) (2026-07-29)
+
+
+### Features
+
+* add reload-settings tray menu item ([f855e97](https://github.com/santiagofavrin/spot_freeze/commit/f855e97666da69e30523a850bd997a267acb0141))
+* add toggle subcommand and IPC socket ([054efeb](https://github.com/santiagofavrin/spot_freeze/commit/054efeb3a1188da5162218647a74832dd73cc6c4))
+* remove the zoom mode hotkey ([55b2f7c](https://github.com/santiagofavrin/spot_freeze/commit/55b2f7cf66ce1c1ced0fa2247730017e4d43780a))
+
 ## [1.3.1](https://github.com/santiagofavrin/spot_freeze/compare/v1.3.0...v1.3.1) (2026-07-29)
 
 
