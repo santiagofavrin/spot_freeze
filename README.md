@@ -36,8 +36,8 @@ re-composited from reusable buffers — never a full repaint from scratch.
   (same gesture syntax, e.g. `Win+F` or `Ctrl+Alt+F`).
 - **Tray-based** — no window until you ask for one. On Windows, left-click the
   tray icon for settings and right-click for the Settings/Exit menu; on Linux
-  the tray menu offers *Edit settings* and *Exit*; on macOS *Edit Settings…*
-  and *Exit SpotFreeze*.
+  the tray menu offers *Edit settings*, *Reload settings*, and *Exit*; on macOS
+  *Edit Settings…*, *Reload Settings*, and *Exit SpotFreeze*.
 - **Human-friendly settings** — a commented JSONC file (see *Settings* for the
   per-OS location); malformed files never crash the app (it falls back to
   defaults).

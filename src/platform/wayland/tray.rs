@@ -81,20 +81,23 @@ fn app_icon() -> ksni::Icon {
 // ---------------------------------------------------------------------------
 
 /// The SNI exposed over D-Bus. Callbacks fire on the tray service's thread.
-struct SpotFreezeTray<F, G>
+struct SpotFreezeTray<F, G, H>
 where
     F: Fn() + Send + 'static,
     G: Fn() + Send + 'static,
+    H: Fn() + Send + 'static,
 {
     tooltip: String,
     on_edit_settings: F,
-    on_exit: G,
+    on_reload_settings: G,
+    on_exit: H,
 }
 
-impl<F, G> ksni::Tray for SpotFreezeTray<F, G>
+impl<F, G, H> ksni::Tray for SpotFreezeTray<F, G, H>
 where
     F: Fn() + Send + 'static,
     G: Fn() + Send + 'static,
+    H: Fn() + Send + 'static,
 {
     fn id(&self) -> String {
         "spotfreeze".into()
@@ -130,6 +133,12 @@ where
             }
             .into(),
             StandardItem {
+                label: "Reload settings".into(),
+                activate: Box::new(|tray: &mut Self| (tray.on_reload_settings)()),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
                 label: "Exit".into(),
                 activate: Box::new(|tray: &mut Self| (tray.on_exit)()),
                 ..Default::default()
@@ -152,13 +161,14 @@ enum TrayCommand {
 
 /// The tray thread's whole life: register the SNI (tolerating a missing
 /// watcher), report readiness, then serve tooltip updates until shutdown.
-fn tray_thread<F, G>(
-    tray: SpotFreezeTray<F, G>,
+fn tray_thread<F, G, H>(
+    tray: SpotFreezeTray<F, G, H>,
     ready: mpsc::Sender<Result<()>>,
     commands: mpsc::Receiver<TrayCommand>,
 ) where
     F: Fn() + Send + 'static,
     G: Fn() + Send + 'static,
+    H: Fn() + Send + 'static,
 {
     let handle = match future::block_on(tray.assume_sni_available(true).spawn())
         .context("failed to start the StatusNotifierItem tray service")
@@ -191,8 +201,8 @@ fn tray_thread<F, G>(
     }
 }
 
-/// Tray icon with an "Edit settings" / "Exit" menu. Callbacks fire on the
-/// tray's own thread.
+/// Tray icon with an "Edit settings" / "Reload settings" / "Exit" menu.
+/// Callbacks fire on the tray's own thread.
 pub struct WaylandTray {
     commands: mpsc::Sender<TrayCommand>,
     thread: Option<JoinHandle<()>>,
@@ -201,16 +211,23 @@ pub struct WaylandTray {
 impl WaylandTray {
     /// Register the SNI and show the icon. `on_edit_settings` also fires on
     /// left-click activation (mirrors the Windows tray).
-    pub fn spawn<F, G>(tooltip: &str, on_edit_settings: F, on_exit: G) -> Result<Self>
+    pub fn spawn<F, G, H>(
+        tooltip: &str,
+        on_edit_settings: F,
+        on_reload_settings: G,
+        on_exit: H,
+    ) -> Result<Self>
     where
         F: Fn() + Send + 'static,
         G: Fn() + Send + 'static,
+        H: Fn() + Send + 'static,
     {
         let (commands, command_rx) = mpsc::channel();
         let (ready, ready_rx) = mpsc::channel();
         let tray = SpotFreezeTray {
             tooltip: tooltip.to_string(),
             on_edit_settings,
+            on_reload_settings,
             on_exit,
         };
         let thread = std::thread::Builder::new()
@@ -347,29 +364,38 @@ mod tests {
         }
     }
 
-    fn counter_tray() -> (
-        SpotFreezeTray<impl Fn() + Send, impl Fn() + Send>,
-        Arc<AtomicUsize>,
-        Arc<AtomicUsize>,
-    ) {
-        let edits = Arc::new(AtomicUsize::new(0));
-        let exits = Arc::new(AtomicUsize::new(0));
+    type CounterTray = SpotFreezeTray<
+        Box<dyn Fn() + Send>,
+        Box<dyn Fn() + Send>,
+        Box<dyn Fn() + Send>,
+    >;
+
+    /// Callback invocation counters, one per tray menu action.
+    struct Counters {
+        edits: Arc<AtomicUsize>,
+        reloads: Arc<AtomicUsize>,
+        exits: Arc<AtomicUsize>,
+    }
+
+    fn counter_tray() -> (CounterTray, Counters) {
+        let counters = Counters {
+            edits: Arc::new(AtomicUsize::new(0)),
+            reloads: Arc::new(AtomicUsize::new(0)),
+            exits: Arc::new(AtomicUsize::new(0)),
+        };
+        let bump = |counter: &Arc<AtomicUsize>| {
+            let counter = counter.clone();
+            Box::new(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }) as Box<dyn Fn() + Send>
+        };
         let tray = SpotFreezeTray {
             tooltip: "Freeze: Win+F".to_string(),
-            on_edit_settings: {
-                let edits = edits.clone();
-                move || {
-                    edits.fetch_add(1, Ordering::Relaxed);
-                }
-            },
-            on_exit: {
-                let exits = exits.clone();
-                move || {
-                    exits.fetch_add(1, Ordering::Relaxed);
-                }
-            },
+            on_edit_settings: bump(&counters.edits),
+            on_reload_settings: bump(&counters.reloads),
+            on_exit: bump(&counters.exits),
         };
-        (tray, edits, exits)
+        (tray, counters)
     }
 
     #[test]
@@ -386,10 +412,10 @@ mod tests {
     }
 
     #[test]
-    fn menu_has_edit_settings_and_exit_wired_to_the_callbacks() {
-        let (mut tray, edits, exits) = counter_tray();
+    fn menu_items_are_wired_to_the_callbacks() {
+        let (mut tray, counters) = counter_tray();
         let menu = ksni::Tray::menu(&tray);
-        assert_eq!(menu.len(), 2);
+        assert_eq!(menu.len(), 3);
         let mut labels = Vec::new();
         for item in menu {
             let ksni::MenuItem::Standard(item) = item else {
@@ -398,16 +424,17 @@ mod tests {
             labels.push(item.label.clone());
             (item.activate)(&mut tray);
         }
-        assert_eq!(labels, ["Edit settings", "Exit"]);
-        assert_eq!(edits.load(Ordering::Relaxed), 1);
-        assert_eq!(exits.load(Ordering::Relaxed), 1);
+        assert_eq!(labels, ["Edit settings", "Reload settings", "Exit"]);
+        assert_eq!(counters.edits.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.reloads.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.exits.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn left_click_activation_opens_settings() {
-        let (mut tray, edits, exits) = counter_tray();
+        let (mut tray, counters) = counter_tray();
         ksni::Tray::activate(&mut tray, 0, 0);
-        assert_eq!(edits.load(Ordering::Relaxed), 1);
-        assert_eq!(exits.load(Ordering::Relaxed), 0);
+        assert_eq!(counters.edits.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.exits.load(Ordering::Relaxed), 0);
     }
 }

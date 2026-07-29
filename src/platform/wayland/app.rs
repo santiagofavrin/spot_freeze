@@ -17,8 +17,8 @@
 //!   action as an `Intent::Frozen`.
 //! - **Settings**: there is no settings UI on Linux — the tray's
 //!   "Edit settings" opens the JSONC file in the default editor; the file is
-//!   re-read on every freeze and a changed `freeze_toggle` rebinds the portal
-//!   hotkey then (external edits apply on next freeze, no watcher).
+//!   re-read on every freeze and via the tray's "Reload settings" item, and a
+//!   changed `freeze_toggle` rebinds the portal hotkey then.
 //! - **Exit**: the tray Exit item quits immediately — no Yes/No confirmation
 //!   dialog (documented Linux difference).
 //!
@@ -51,6 +51,9 @@ enum Intent {
     ToggleFreeze,
     /// Tray "Edit settings" (and tray activation): open the JSONC file.
     EditSettings,
+    /// Tray "Reload settings": re-read the JSONC file immediately (a changed
+    /// freeze binding is re-registered on the spot).
+    ReloadSettings,
     /// Tray "Exit": quit immediately (no confirmation dialog on Linux).
     Exit,
     /// A frozen-mode key matched the freeze-time plan.
@@ -86,6 +89,7 @@ impl AppState {
                     eprintln!("spotfreeze: could not open the settings editor: {e:#}");
                 }
             }
+            Intent::ReloadSettings => self.reload_settings(),
             Intent::Frozen(action) => self.apply_frozen_action(action),
             Intent::Exit => self.exiting = true,
         }
@@ -246,6 +250,12 @@ pub fn run() -> Result<()> {
             let tx = intent_tx.clone();
             move || {
                 let _ = tx.send(Intent::EditSettings);
+            }
+        },
+        {
+            let tx = intent_tx.clone();
+            move || {
+                let _ = tx.send(Intent::ReloadSettings);
             }
         },
         {

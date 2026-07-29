@@ -1,5 +1,5 @@
 //! Status-bar tray: an `NSStatusItem` with a runtime-drawn template icon and
-//! a menu with "Edit Settings…" and "Exit SpotFreeze".
+//! a menu with "Edit Settings…", "Reload Settings", and "Exit SpotFreeze".
 //!
 //! Interaction idiom: the menu is set directly on the status item, so a
 //! single click (either button) opens it. That is the standard AppKit status
@@ -44,6 +44,9 @@ use std::rc::Rc;
 pub enum TrayEvent {
     /// "Edit Settings…" chosen from the menu.
     MenuSettings,
+    /// "Reload Settings" chosen from the menu: re-read the JSONC file
+    /// immediately (a changed freeze binding is re-registered on the spot).
+    MenuReloadSettings,
     /// "Exit SpotFreeze" chosen from the menu. The tray itself never asks and
     /// never exits — the app runs its Yes/No confirmation flow.
     MenuExit,
@@ -77,6 +80,11 @@ define_class!(
         #[unsafe(method(editSettings:))]
         fn edit_settings(&self, _sender: &AnyObject) {
             (self.ivars().sink)(TrayEvent::MenuSettings);
+        }
+
+        #[unsafe(method(reloadSettings:))]
+        fn reload_settings(&self, _sender: &AnyObject) {
+            (self.ivars().sink)(TrayEvent::MenuReloadSettings);
         }
 
         #[unsafe(method(exitApp:))]
@@ -132,6 +140,14 @@ impl MacTray {
             );
             settings.setTarget(Some(target));
             menu.addItem(&settings);
+            let reload = NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::from_str("Reload Settings"),
+                Some(sel!(reloadSettings:)),
+                &NSString::from_str(""),
+            );
+            reload.setTarget(Some(target));
+            menu.addItem(&reload);
             let exit = NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(mtm),
                 &NSString::from_str("Exit SpotFreeze"),

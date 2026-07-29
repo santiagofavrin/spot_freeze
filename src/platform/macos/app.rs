@@ -212,6 +212,7 @@ pub fn run() -> Result<()> {
         Rc::new(move |event| {
             match event {
                 TrayEvent::MenuSettings => open_settings(&state),
+                TrayEvent::MenuReloadSettings => reload_settings(&state),
                 TrayEvent::MenuExit => confirm_exit(&state),
             }
             drain_alerts();
@@ -264,6 +265,21 @@ fn register_freeze_hotkey(state: &Rc<RefCell<AppState>>) {
     }
 }
 
+/// Re-read the settings file (edited externally) and follow a changed freeze
+/// binding immediately. A malformed file keeps the previous settings (startup
+/// uses defaults instead, per the store contract).
+fn reload_settings(state: &Rc<RefCell<AppState>>) {
+    let mut s = state.borrow_mut();
+    match store::load(&s.settings_path) {
+        Ok(loaded) => s.settings = loaded,
+        Err(e) => queue_alert(format!(
+            "Could not read {}:\n{e:#}\n\nKeeping the previous settings.",
+            s.settings_path.display()
+        )),
+    }
+    s.rebind_freeze_hotkey_if_changed();
+}
+
 /// Freeze/unfreeze toggle on the global hotkey.
 fn toggle_freeze(state: &Rc<RefCell<AppState>>) {
     if state.borrow().controller.is_frozen() {
@@ -271,19 +287,9 @@ fn toggle_freeze(state: &Rc<RefCell<AppState>>) {
         return;
     }
 
-    // Settings are edited externally: re-read at every freeze. A malformed
-    // file keeps the previous settings (startup uses defaults instead, per
-    // the store contract).
+    reload_settings(state);
     {
         let mut s = state.borrow_mut();
-        match store::load(&s.settings_path) {
-            Ok(loaded) => s.settings = loaded,
-            Err(e) => queue_alert(format!(
-                "Could not read {}:\n{e:#}\n\nKeeping the previous settings.",
-                s.settings_path.display()
-            )),
-        }
-        s.rebind_freeze_hotkey_if_changed();
         s.frozen_plan = plan_frozen_registrations(&s.settings.hotkeys);
     }
 
