@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.3.0](https://github.com/santiagofavrin/spot_freeze/compare/v1.2.0...v1.3.0) (2026-07-29)
+
+
+### Features
+
+* add --version, --help and --daemon flags ([5439828](https://github.com/santiagofavrin/spot_freeze/commit/54398288764dcdadd7150cc5bba676b5b6cc0ed6))
+
+
+### Bug Fixes
+
+* auto-merge release PRs in the release flow ([3a19586](https://github.com/santiagofavrin/spot_freeze/commit/3a1958680afc746c80fa0a224e7d6ede606fa35a))
+* merge release PRs without a checkout ([56e30ca](https://github.com/santiagofavrin/spot_freeze/commit/56e30cae2837f7ffd9b8f74980748f64972bb3bb))
+* restore release automation tag matching ([9e92239](https://github.com/santiagofavrin/spot_freeze/commit/9e92239ac1e628ab775bad391485df0bccef3f0e))
+
 ## [1.2.0](https://github.com/santiagofavrin/spot_freeze/compare/v1.1.1...v1.2.0) (2026-07-29)
 
 
