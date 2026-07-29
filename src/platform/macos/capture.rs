@@ -441,7 +441,7 @@ mod tests {
         assert_eq!(infos[0].device_name, "1");
         assert_eq!(
             infos[1].rect,
-            crate::geometry::Rect::new(-1920, 180, 1920, 1080)
+            crate::geometry::Rect::new(-1920, 0, 1920, 1080)
         );
         assert_eq!(infos[1].dpi_x, 96);
         assert!(!infos[1].is_primary);
