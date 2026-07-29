@@ -35,6 +35,15 @@ pub trait OverlaySurface {
     /// monitor-local region (the per-mouse-move fast path); `None` presents
     /// the full frame.
     fn present(&mut self, frame: &DibBuffer, dirty: Option<Rect>) -> Result<()>;
+
+    /// `true` when a [`present`](Self::present) right now would complete
+    /// without waiting. Platforms whose presentation is immediate (Windows,
+    /// macOS) always report `true`; the Wayland surface reports whether a
+    /// buffer slot is free, letting the controller defer repaints instead of
+    /// blocking the UI thread on the compositor (input-backlog prevention).
+    fn can_present(&mut self) -> bool {
+        true
+    }
 }
 
 /// Creates one [`OverlaySurface`] per monitor: `(monitor_index, monitor_rect,

@@ -65,6 +65,42 @@ const FLASH_COLOR: Rgb = Rgb {
     b: 255,
 };
 
+/// A repaint deferred because its surface was busy: full frame or a
+/// monitor-local region. Merging follows the damage contract: the union of
+/// every deferred region covers all pixels that changed since the last
+/// attached frame, so the eventual present is exact.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PendingRepaint {
+    Full,
+    Region(Rect),
+}
+
+impl PendingRepaint {
+    /// First deferred repaint from a `present` dirty argument (`None` = full).
+    fn from_dirty(dirty: Option<Rect>) -> Self {
+        match dirty {
+            Some(r) => Self::Region(r),
+            None => Self::Full,
+        }
+    }
+
+    /// Fold a new `present` dirty argument into an existing deferred repaint.
+    fn merge(self, dirty: Option<Rect>) -> Self {
+        match (self, dirty) {
+            (Self::Full, _) | (_, None) => Self::Full,
+            (Self::Region(a), Some(b)) => Self::Region(a.union(&b)),
+        }
+    }
+
+    /// Back to the `present` dirty argument (`Full` → `None`).
+    fn as_present_arg(self) -> Option<Rect> {
+        match self {
+            Self::Full => None,
+            Self::Region(r) => Some(r),
+        }
+    }
+}
+
 /// Everything that exists only while the screen is frozen.
 ///
 /// `originals`, `frames`, `monitors`, and `windows` are parallel vectors in
@@ -82,6 +118,11 @@ struct FreezeState {
     monitors: Vec<MonitorInfo>,
     /// One overlay surface per monitor, parallel to `originals`.
     windows: Vec<Box<dyn OverlaySurface>>,
+    /// Per-monitor repaints DEFERRED because the surface was busy (Wayland
+    /// buffer-slot pacing; surfaces with immediate presentation never defer).
+    /// Drained by [`OverlayController::process_pending_repaints`], always
+    /// presenting the freshest composed frame.
+    pending_repaint: Vec<Option<PendingRepaint>>,
     /// Composable mode layers + primary mode; layers are rebuilt from the
     /// freeze-time [`ModeParams`] on every activation.
     modes: ModeStack,
@@ -182,11 +223,13 @@ impl OverlayController {
             .collect();
 
         let settings = settings.clone();
+        let monitor_count = monitors.len();
         let mut state = FreezeState {
             originals,
             frames,
             monitors,
             windows,
+            pending_repaint: vec![None; monitor_count],
             modes: ModeStack::new(mode_params(&settings)),
             settings,
         };
@@ -291,6 +334,19 @@ impl OverlayController {
         for &(m, dirty) in &effect.repaint {
             render_and_present(state, m, dirty);
         }
+    }
+
+    /// Present every repaint that was deferred because its surface was busy
+    /// (Wayland buffer-slot pacing; a no-op on platforms with immediate
+    /// presents). Shells call this from their event loop; the pending repaint
+    /// always carries the freshest composed frame, so the screen can never
+    /// fall behind the cursor by more than the compositor's release cadence.
+    pub fn process_pending_repaints(&mut self) {
+        let mut slot = self.inner.borrow_mut();
+        let Some(state) = slot.as_mut() else {
+            return;
+        };
+        drain_pending_repaints(state);
     }
 
     /// Ctrl+C contract: when a snip selection exists, crop it from the
@@ -422,17 +478,68 @@ fn render_and_present(state: &mut FreezeState, m: usize, dirty: Option<Rect>) {
         return; // defensive: a layer asked to repaint a nonexistent monitor
     }
     compose_frame_for(state, m);
-    // Split borrows across disjoint fields: frames[m] (read) presented by
-    // windows[m] (write).
-    let frame = &state.frames[m];
-    let window = &mut state.windows[m];
-    let _ = window.present(frame, dirty);
+    present_or_defer(state, m, dirty);
+}
+
+/// Present `frames[m]` now, merging any earlier deferred region into the
+/// damage; when the surface is busy (Wayland buffer-slot pacing), defer to
+/// `pending_repaint[m]` instead — [`OverlayController::process_pending_repaints`]
+/// drains it with the freshest composed frame, so intermediate frames are
+/// coalesced rather than queued behind the compositor's release cadence.
+fn present_or_defer(state: &mut FreezeState, m: usize, dirty: Option<Rect>) {
+    let FreezeState {
+        frames,
+        windows,
+        pending_repaint,
+        ..
+    } = state;
+    if windows[m].can_present() {
+        let dirty = pending_repaint[m].map_or(dirty, |p| p.merge(dirty).as_present_arg());
+        let _ = windows[m].present(&frames[m], dirty);
+        pending_repaint[m] = None;
+    } else {
+        pending_repaint[m] = Some(
+            pending_repaint[m]
+                .map_or_else(|| PendingRepaint::from_dirty(dirty), |p| p.merge(dirty)),
+        );
+    }
+}
+
+/// Present every deferred repaint whose surface has since freed a slot.
+fn drain_pending_repaints(state: &mut FreezeState) {
+    let FreezeState {
+        frames,
+        windows,
+        pending_repaint,
+        ..
+    } = state;
+    for m in 0..windows.len() {
+        let Some(pending) = pending_repaint[m] else {
+            continue;
+        };
+        if windows[m].can_present() {
+            let _ = windows[m].present(&frames[m], pending.as_present_arg());
+            pending_repaint[m] = None;
+        }
+    }
+}
+
+/// Wait `ms`, draining deferred repaints in small slices so flash frames
+/// deferred by buffer-slot pacing still reach the screen during the hold.
+fn spin_drain(state: &mut FreezeState, ms: u64) {
+    let start = std::time::Instant::now();
+    while start.elapsed() < Duration::from_millis(ms) {
+        drain_pending_repaints(state);
+        std::thread::sleep(Duration::from_millis(2));
+    }
 }
 
 /// Compose monitor `m`'s frame: build the
 /// [`crate::overlay::composite::RenderState`] from the active layers and run
 /// the shared pipeline (zoom base → colored darken → spotlight hole → snip
-/// selection) into the persistent frame buffer.
+/// selection) into the persistent frame buffer. With NO active layer the veil
+/// is dropped entirely (dim opacity 0): the screen stays frozen but shows the
+/// original capture.
 fn compose_frame_for(state: &mut FreezeState, m: usize) {
     // Split borrows across disjoint fields: modes (read) builds the render
     // state, originals[m] (read) + frames[m] (write) are the pixel buffers,
@@ -461,24 +568,21 @@ fn compose_frame_for(state: &mut FreezeState, m: usize) {
 /// border), present, hold [`FLASH_OFF_MS`] — repeated `count` times. Blocks
 /// the UI thread for at most `count * (FLASH_ON_MS + FLASH_OFF_MS)` ms
 /// (360 ms worst case for Snip) — deliberate, per the product spec: the
-/// flash IS the mode-change feedback.
+/// flash IS the mode-change feedback. Deferred presents are drained during
+/// the holds (see [`spin_drain`]), so the flash survives buffer-slot pacing.
 fn flash_border(state: &mut FreezeState, count: u32) {
     for _ in 0..count {
         for m in 0..state.windows.len() {
             compose_frame_for(state, m);
             draw_border(&mut state.frames[m], FLASH_COLOR, FLASH_THICKNESS);
-            let frame = &state.frames[m];
-            let window = &mut state.windows[m];
-            let _ = window.present(frame, None);
+            present_or_defer(state, m, None);
         }
-        std::thread::sleep(Duration::from_millis(FLASH_ON_MS));
+        spin_drain(state, FLASH_ON_MS);
         for m in 0..state.windows.len() {
             compose_frame_for(state, m);
-            let frame = &state.frames[m];
-            let window = &mut state.windows[m];
-            let _ = window.present(frame, None);
+            present_or_defer(state, m, None);
         }
-        std::thread::sleep(Duration::from_millis(FLASH_OFF_MS));
+        spin_drain(state, FLASH_OFF_MS);
     }
 }
 
@@ -675,6 +779,40 @@ mod tests {
     fn px(buf: &DibBuffer, x: u32, y: u32) -> [u8; 4] {
         let i = (y * buf.stride + x * 4) as usize;
         buf.pixels[i..i + 4].try_into().unwrap()
+    }
+
+    // ---- PendingRepaint ------------------------------------------------
+
+    #[test]
+    fn pending_from_dirty_maps_full_and_region() {
+        assert_eq!(PendingRepaint::from_dirty(None), PendingRepaint::Full);
+        let r = Rect::new(1, 2, 3, 4);
+        assert_eq!(PendingRepaint::from_dirty(Some(r)), PendingRepaint::Region(r));
+    }
+
+    #[test]
+    fn pending_merge_full_subsumes_everything() {
+        let r = Rect::new(1, 2, 3, 4);
+        assert_eq!(PendingRepaint::Full.merge(Some(r)), PendingRepaint::Full);
+        assert_eq!(PendingRepaint::Full.merge(None), PendingRepaint::Full);
+        assert_eq!(PendingRepaint::Region(r).merge(None), PendingRepaint::Full);
+    }
+
+    #[test]
+    fn pending_merge_unions_regions() {
+        let a = Rect::new(0, 0, 10, 10);
+        let b = Rect::new(5, 5, 10, 10);
+        assert_eq!(
+            PendingRepaint::Region(a).merge(Some(b)),
+            PendingRepaint::Region(Rect::new(0, 0, 15, 15))
+        );
+    }
+
+    #[test]
+    fn pending_as_present_arg_round_trips() {
+        let r = Rect::new(1, 2, 3, 4);
+        assert_eq!(PendingRepaint::Region(r).as_present_arg(), Some(r));
+        assert_eq!(PendingRepaint::Full.as_present_arg(), None);
     }
 
     // ---- controller state machine (unfrozen paths only) ----

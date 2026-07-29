@@ -23,13 +23,13 @@
 //!   `commit` + connection flush.
 //! - **Double buffering**: a slot is writable only after the compositor's
 //!   `wl_buffer.release`. Releases arrive on a DEDICATED event queue per
-//!   surface: `present` may be called from inside the main queue's dispatch
-//!   (mode redraws), and pumping the main queue here would re-enter the
-//!   overlay controller's `RefCell` — the release queue keeps that wait
-//!   reentrancy-free. With both slots busy, `present` blocks on that queue
-//!   until one frees (possible only during the synchronous border flash; a
-//!   compositor that stops releasing entirely would hang it — accepted, as
-//!   the alternative is presenting torn pixels).
+//!   surface (pumped non-blocking inside `present`/`can_present`): events for
+//!   it are read off the connection by the main loop's reads, so no reentrant
+//!   dispatch of the main queue ever happens. `present` NEVER blocks: with
+//!   both slots busy it drops the frame — the controller defers through
+//!   [`OverlaySurface::can_present`] and repaints with the latest composed
+//!   frame once a slot frees (high-rate pointer input would otherwise build
+//!   an unbounded repaint backlog behind the compositor's release cadence).
 //! - **Teardown**: `Drop` unregisters the surface from the input registry and
 //!   the shell's focus list, then destroys the layer surface + wl_surface +
 //!   buffers (proxy destructors).
@@ -240,23 +240,23 @@ impl LayerOverlaySurface {
         })
     }
 
-    /// Block on the release queue until a slot frees, then return its index.
-    fn wait_for_free_slot(&mut self) -> Result<usize> {
-        loop {
-            self.release_queue
-                .blocking_dispatch(&mut self.slot_state)
-                .context("waiting for a buffer release")?;
-            if let Some(slot) = pick_slot(&self.slot_state.free, self.attached) {
-                return Ok(slot);
-            }
-        }
-    }
-}
+    /// Process any already-arrived buffer releases without blocking.
+    fn pump_releases(&mut self) {
+        // Events addressed to this queue's proxies have already been read off
+        // the connection (by the main loop's reads); dispatch_pending only
+        // runs their handlers, so it never blocks.
+        let _ = self.release_queue.dispatch_pending(&mut self.slot_state);
+    }}
 
 impl OverlaySurface for LayerOverlaySurface {
     /// Re-composite from `frame` (must match the monitor rect exactly).
     /// `dirty: Some(rect)` copies only that monitor-local region (the
     /// per-mouse-move fast path); `None` presents the full frame.
+    ///
+    /// Never blocks: with no free slot the frame is DROPPED (the controller
+    /// gates calls through [`can_present`](Self::can_present) and repaints
+    /// with the latest frame when a slot frees, so only the freshest content
+    /// ever reaches the screen).
     fn present(&mut self, frame: &DibBuffer, dirty: Option<Rect>) -> Result<()> {
         if self.closed.get() {
             bail!("overlay present: the compositor closed the layer surface");
@@ -278,9 +278,9 @@ impl OverlaySurface for LayerOverlaySurface {
             },
         };
 
-        let slot = match pick_slot(&self.slot_state.free, self.attached) {
-            Some(slot) => slot,
-            None => self.wait_for_free_slot()?,
+        self.pump_releases();
+        let Some(slot) = pick_slot(&self.slot_state.free, self.attached) else {
+            return Ok(()); // both slots busy: drop this frame, never block
         };
 
         copy_frame(self.slots[slot].mapping.as_mut_slice(), frame, region);
@@ -299,6 +299,13 @@ impl OverlaySurface for LayerOverlaySurface {
         self.slot_state.free[slot] = false;
         self.attached = Some(slot);
         Ok(())
+    }
+
+    /// `true` when a buffer slot is free for the next [`present`]. Releases
+    /// that already arrived are accounted (non-blocking pump).
+    fn can_present(&mut self) -> bool {
+        self.pump_releases();
+        pick_slot(&self.slot_state.free, self.attached).is_some()
     }
 }
 

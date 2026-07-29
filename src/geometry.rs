@@ -88,6 +88,21 @@ impl Rect {
             height: (bottom - y) as u32,
         })
     }
+
+    /// Smallest rect containing both rects. Coordinates may overflow only on
+    /// absurd inputs; real monitor/dirty rects are far below the limits.
+    pub fn union(&self, other: &Rect) -> Rect {
+        let x = self.x.min(other.x);
+        let y = self.y.min(other.y);
+        let right = self.right().max(other.right());
+        let bottom = self.bottom().max(other.bottom());
+        Rect {
+            x,
+            y,
+            width: (right - x) as u32,
+            height: (bottom - y) as u32,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +112,23 @@ impl Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn union_spans_both_rects() {
+        let a = Rect::new(-10, 5, 20, 10);
+        let b = Rect::new(0, -5, 30, 10);
+        assert_eq!(a.union(&b), Rect::new(-10, -5, 40, 20));
+        assert_eq!(b.union(&a), a.union(&b), "commutative");
+        assert_eq!(a.union(&a), a, "idempotent");
+    }
+
+    #[test]
+    fn union_with_contained_rect_is_the_outer_rect() {
+        let outer = Rect::new(0, 0, 100, 100);
+        let inner = Rect::new(10, 10, 5, 5);
+        assert_eq!(outer.union(&inner), outer);
+        assert_eq!(inner.union(&outer), outer);
+    }
 
     // -- from_points -----------------------------------------------------------
 
