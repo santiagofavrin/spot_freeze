@@ -1,0 +1,13 @@
+# Rust build output
+/target
+**/*.rs.bk
+
+# Local user settings (JSONC, created next to the exe on first run)
+settings.json
+
+# Editor / OS cruft
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

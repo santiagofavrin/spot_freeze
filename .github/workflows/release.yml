@@ -1,0 +1,68 @@
+name: release
+
+# release-please flow:
+#   1. Push to main -> release-please opens/updates a release PR (changelog + version).
+#   2. Merging that PR -> release-please creates the git tag + GitHub release,
+#      and this same run's outputs drive the `publish` job below.
+# A manual `v*` tag push also triggers `publish` as a fallback path.
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write       # create tags/releases, push release-please commits
+  pull-requests: write  # open/update release-please PRs
+
+jobs:
+  release-please:
+    name: release-please (release PR / tag / GitHub release)
+    # Only main-branch pushes go through release-please; tag pushes skip this job.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          release-type: simple
+
+  publish:
+    name: Build & attach Windows zip to the release
+    needs: release-please
+    # Runs when release-please just cut a release (outputs) or on a manual v* tag
+    # push. `always()` is required so a skipped `release-please` job (tag push)
+    # does not silently skip this job through the implicit success() check.
+    if: >-
+      ${{ always() &&
+          (needs.release-please.outputs.release_created == 'true'
+           || startsWith(github.ref, 'refs/tags/v')) }}
+    runs-on: windows-latest
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name || github.ref_name }}
+
+      - name: Install Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Zip release binary
+        shell: pwsh
+        run: Compress-Archive -Path target/release/spotfreeze.exe -DestinationPath spotfreeze-windows-x64.zip
+
+      - name: Attach zip to the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name || github.ref_name }}
+          files: spotfreeze-windows-x64.zip

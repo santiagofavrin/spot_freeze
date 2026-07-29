@@ -1,0 +1,37 @@
+name: build
+
+# Manual builds only — no push/PR triggers. Produces a downloadable
+# spotfreeze-windows-x64.zip workflow artifact for ad-hoc testing.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test, build & package
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable, MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        run: cargo test
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Zip release binary
+        shell: pwsh
+        run: Compress-Archive -Path target/release/spotfreeze.exe -DestinationPath spotfreeze-windows-x64.zip
+
+      - name: Upload zip as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotfreeze-windows-x64
+          path: spotfreeze-windows-x64.zip
+          retention-days: 30
