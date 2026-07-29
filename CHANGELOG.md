@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/santiagofavrin/spot_freeze/compare/v1.3.0...v1.3.1) (2026-07-29)
+
+
+### Bug Fixes
+
+* name the settings file spotfreeze.jsonc ([e1b0a03](https://github.com/santiagofavrin/spot_freeze/commit/e1b0a03a4f01b47d4f8a0d6045bcc0e5849ca8aa))
+
 ## [1.3.0](https://github.com/santiagofavrin/spot_freeze/compare/v1.2.0...v1.3.0) (2026-07-29)
 
 
