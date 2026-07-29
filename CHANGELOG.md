@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.5.0](https://github.com/santiagofavrin/spot_freeze/compare/v1.4.0...v1.5.0) (2026-07-29)
+
+
+### Features
+
+* S toggles spotlight; clear frozen screen ([9d9effa](https://github.com/santiagofavrin/spot_freeze/commit/9d9effa48aeee79a8d2004c922a81833738901ff))
+
+
+### Bug Fixes
+
+* stop input backlog in wayland presents ([7bd7547](https://github.com/santiagofavrin/spot_freeze/commit/7bd7547a82a80cc7bd4901917ac6ca6b01b4c723))
+
 ## [1.4.0](https://github.com/santiagofavrin/spot_freeze/compare/v1.3.1...v1.4.0) (2026-07-29)
 
 
