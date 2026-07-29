@@ -16,6 +16,9 @@ pub enum FrozenAction {
     /// selection cleared, spotlight radius back to default) and activate only
     /// this mode.
     SetMode(ModeKind),
+    /// Spotlight's toggle key: REMOVE the layer when active (the screen stays
+    /// frozen, unveiled when nothing is left), add it fresh when not.
+    ToggleMode(ModeKind),
     /// Shift+mode key: ADD this mode as a composable layer WITHOUT touching
     /// the existing layers.
     AddMode(ModeKind),
@@ -43,9 +46,10 @@ fn mode_bindings(hotkeys: &HotkeySettings) -> [(HotkeyGesture, ModeKind); 2] {
 }
 
 /// The ordered frozen-mode registration list derived from the CURRENT
-/// settings. For each of the two mode bindings, the PLAIN gesture (full
-/// switch) followed by its DERIVED Shift+variant (additive layer); then
-/// `reset_zoom`, `snip_copy`, `cancel`. Seven registrations in the common case.
+/// settings. For each of the two mode bindings, the PLAIN gesture (Spotlight:
+/// TOGGLE the layer; Snip: full switch) followed by its DERIVED Shift+variant
+/// (additive layer); then `reset_zoom`, `snip_copy`, `cancel`. Seven
+/// registrations in the common case.
 ///
 /// Conflict guard: a derived Shift+variant whose gesture is already claimed —
 /// by the always-active freeze toggle, by ANY user-configured frozen binding
@@ -72,9 +76,15 @@ pub fn plan_frozen_registrations(hotkeys: &HotkeySettings) -> Vec<FrozenRegistra
 
     let mut plan = Vec::with_capacity(7);
     for (gesture, kind) in bindings {
+        // Spotlight's plain key TOGGLES its layer (the frozen-but-clear state
+        // lives here); every other mode's plain key is a full switch.
+        let plain_action = match kind {
+            ModeKind::Spotlight => FrozenAction::ToggleMode(kind),
+            _ => FrozenAction::SetMode(kind),
+        };
         plan.push(FrozenRegistration {
             gesture,
-            action: FrozenAction::SetMode(kind),
+            action: plain_action,
         });
         // Additive-layer gesture: same key with Shift added. When the binding
         // already contains Shift, this equals the plain gesture and is
@@ -160,9 +170,10 @@ mod tests {
         let plan = plan_frozen_registrations(&custom_hotkeys());
         let actual: Vec<(HotkeyGesture, FrozenAction)> =
             plan.iter().map(|r| (r.gesture, r.action)).collect();
-        // Per mode: plain = full switch, derived Shift+variant = additive layer.
+        // Per mode: plain = toggle (Spotlight) / full switch (Snip), derived
+        // Shift+variant = additive layer.
         let expected = vec![
-            (gesture("F5"), FrozenAction::SetMode(ModeKind::Spotlight)),
+            (gesture("F5"), FrozenAction::ToggleMode(ModeKind::Spotlight)),
             (gesture("Shift+F5"), FrozenAction::AddMode(ModeKind::Spotlight)),
             (gesture("F7"), FrozenAction::SetMode(ModeKind::Snip)),
             (gesture("Shift+F7"), FrozenAction::AddMode(ModeKind::Snip)),
@@ -179,8 +190,9 @@ mod tests {
         // bind: every mode gets a full-switch AND an additive-layer gesture.
         let plan = plan_frozen_registrations(&HotkeySettings::default());
         assert_eq!(plan.len(), 7);
+        assert!(has_action(&plan, FrozenAction::ToggleMode(ModeKind::Spotlight)));
+        assert!(has_action(&plan, FrozenAction::SetMode(ModeKind::Snip)));
         for kind in [ModeKind::Spotlight, ModeKind::Snip] {
-            assert!(has_action(&plan, FrozenAction::SetMode(kind)), "{kind:?}");
             assert!(has_action(&plan, FrozenAction::AddMode(kind)), "{kind:?}");
         }
         for action in [
@@ -234,7 +246,7 @@ mod tests {
         let plan = plan_frozen_registrations(&h);
         assert_eq!(
             planned(&plan, gesture("F5")),
-            vec![FrozenAction::SetMode(ModeKind::Spotlight)]
+            vec![FrozenAction::ToggleMode(ModeKind::Spotlight)]
         );
         assert_eq!(
             planned(&plan, gesture("Shift+F5")),
@@ -275,7 +287,7 @@ mod tests {
         let plan = plan_frozen_registrations(&h);
         assert_eq!(
             planned(&plan, gesture("F5")),
-            vec![FrozenAction::SetMode(ModeKind::Spotlight)]
+            vec![FrozenAction::ToggleMode(ModeKind::Spotlight)]
         );
         assert!(!has_action(&plan, FrozenAction::AddMode(ModeKind::Spotlight)));
         assert_eq!(plan.len(), 6);
@@ -295,7 +307,7 @@ mod tests {
         assert_eq!(
             planned(&plan, gesture("F5")),
             vec![
-                FrozenAction::SetMode(ModeKind::Spotlight),
+                FrozenAction::ToggleMode(ModeKind::Spotlight),
                 FrozenAction::SetMode(ModeKind::Snip),
             ]
         );
@@ -333,7 +345,7 @@ mod tests {
         let plan = plan_frozen_registrations(&h);
         assert_eq!(
             match_frozen_key(&plan, gesture("F5")),
-            Some(FrozenAction::SetMode(ModeKind::Spotlight))
+            Some(FrozenAction::ToggleMode(ModeKind::Spotlight))
         );
     }
 

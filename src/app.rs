@@ -413,6 +413,7 @@ fn on_hotkey(state: &mut AppState, hwnd: HWND, wparam: WPARAM) {
 
     match action {
         FrozenAction::SetMode(kind) => state.controller.set_mode(kind, &state.services),
+        FrozenAction::ToggleMode(kind) => state.controller.toggle_mode(kind, &state.services),
         FrozenAction::AddMode(kind) => state.controller.add_mode(kind, &state.services),
         FrozenAction::Copy => {
             if let Err(e) = state.controller.snip_copy_and_close(&state.services) {

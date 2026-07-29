@@ -73,7 +73,7 @@ screen is frozen.
 | Action | Default | Scope |
 | --- | --- | --- |
 | Toggle screen freeze | `Win+F` | Global — works from any app |
-| Spotlight mode | `S` | While frozen |
+| Spotlight toggle | `S` | While frozen — off = screen stays frozen but CLEAR (no dim), on = spotlight back (1 border flash) |
 | Snip mode | `C` | While frozen |
 | Add a mode as a layer (no reset) | `Shift` + mode key (`Shift+S`/`Shift+C`) | While frozen |
 | Zoom in / out (from any mode) | `Shift` + mouse wheel | While frozen — adds the zoom layer on the spot if it isn't active yet (no border flash) |
@@ -95,9 +95,12 @@ closes — from **any** mode combination. Zoom has no key: it is always one
 Modes are **composable layers**, not exclusive states. How you press a mode key
 decides whether the other layers survive:
 
-- **Plain mode key (`S` / `C`) — full switch.** Resets *all* mode state
-  (zoom back to 1.0×, snip selection cleared, spotlight radius back to the
-  default) and activates only that mode.
+- **`S` (Spotlight) — toggle.** Turns the spotlight layer on and off without
+  touching the others. With every layer off, the screen stays frozen (all
+  input still captured) but the overlay is completely clear — no dim at all.
+- **`C` (Snip) — full switch.** Resets *all* mode state (zoom back to 1.0×,
+  snip selection cleared, spotlight radius back to the default) and activates
+  only Snip.
 - **`Shift` + mode key — add a layer.** Activates that mode *on top of* the
   current combination without touching any existing layer. Example: while
   zoomed in, press `Shift+S` to add a spotlight circle over the magnified view;
@@ -109,10 +112,10 @@ spotlight whenever a spotlight is active, `Shift`+wheel zooms from any layer
 combination (implicitly adding the zoom layer — without a border flash — when
 it isn't active yet), and a plain wheel zooms when Zoom is the primary mode.
 
-**Border flash feedback:** every mode change flashes the screen border a number
-of times that identifies the mode — **1 flash** for Spotlight (`S`), **3** for
-Snip (`C`). Freezing the screen starts in Spotlight mode, so you also see a
-single flash right at freeze time.
+**Border flash feedback:** every mode activation flashes the screen border a
+number of times that identifies the mode — **1 flash** for Spotlight (`S`),
+**3** for Snip (`C`); deactivating a layer does not flash. Freezing the screen
+starts in Spotlight mode, so you also see a single flash right at freeze time.
 
 ## Install
 

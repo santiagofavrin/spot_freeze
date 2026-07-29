@@ -125,6 +125,7 @@ impl AppState {
     fn apply_frozen_action(&mut self, action: FrozenAction) {
         match action {
             FrozenAction::SetMode(kind) => self.controller.set_mode(kind, &self.services),
+            FrozenAction::ToggleMode(kind) => self.controller.toggle_mode(kind, &self.services),
             FrozenAction::AddMode(kind) => self.controller.add_mode(kind, &self.services),
             FrozenAction::Copy => {
                 if let Err(e) = self.controller.snip_copy_and_close(&self.services) {
@@ -349,6 +350,9 @@ pub fn run() -> Result<()> {
         event_loop
             .dispatch(None, &mut state)
             .context("dispatching the event loop")?;
+        // Present frames deferred while their surface's buffer slots were
+        // busy (releases read off the connection during dispatch free them).
+        state.controller.process_pending_repaints();
     }
 
     // Teardown: drop order takes care of the portal, tray, clipboard source,

@@ -121,6 +121,9 @@ impl AppState {
         let gesture = HotkeyGesture::new(modifiers, vk);
         match match_frozen_key(&self.frozen_plan, gesture) {
             Some(FrozenAction::SetMode(kind)) => self.controller.set_mode(kind, &self.services),
+            Some(FrozenAction::ToggleMode(kind)) => {
+                self.controller.toggle_mode(kind, &self.services)
+            }
             Some(FrozenAction::AddMode(kind)) => self.controller.add_mode(kind, &self.services),
             Some(FrozenAction::Copy) => {
                 if let Err(e) = self.controller.snip_copy_and_close(&self.services) {

@@ -302,6 +302,31 @@ impl OverlayController {
         flash_border(state, Self::flash_count(kind));
     }
 
+    /// Spotlight's TOGGLE key: remove the layer when active (with no layers
+    /// left the screen stays frozen but the overlay is UNVEILED), add it fresh
+    /// otherwise. Toggling ON re-seeds the cursor, full-repaints, and flashes
+    /// once; toggling off only full-repaints (no flash). No-op when not frozen.
+    pub fn toggle_mode(&mut self, kind: ModeKind, services: &dyn PlatformServices) {
+        let mut slot = self.inner.borrow_mut();
+        let Some(state) = slot.as_mut() else {
+            return;
+        };
+        let activating = !state.modes.is_active(kind);
+        state.modes.toggle_mode(kind);
+        if activating {
+            seed_cursor(state, services);
+            for m in 0..state.windows.len() {
+                render_and_present(state, m, None);
+            }
+            self.active = kind;
+            flash_border(state, Self::flash_count(kind));
+        } else {
+            for m in 0..state.windows.len() {
+                render_and_present(state, m, None);
+            }
+        }
+    }
+
     /// Route an overlay window event to the mode stack, then apply its
     /// [`crate::overlay::modes::ModeEffect`]: for each requested repaint,
     /// re-compose the frame and `present` it.
@@ -553,12 +578,17 @@ fn compose_frame_for(state: &mut FreezeState, m: usize) {
     } = state;
     let render_state = modes.render_state(m);
     let viewport = Rect::new(0, 0, originals[m].width, originals[m].height);
+    let dim_opacity = if modes.any_active() {
+        settings.overlay.dim_opacity
+    } else {
+        0
+    };
     compose_frame(
         &originals[m],
         &mut frames[m],
         viewport,
         &render_state,
-        settings.overlay.dim_opacity,
+        dim_opacity,
         settings.overlay.color,
     );
 }

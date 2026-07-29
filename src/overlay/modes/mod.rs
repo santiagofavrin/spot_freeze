@@ -6,15 +6,20 @@
 //!
 //! # Composability contract (product spec)
 //!
-//! - **Plain mode key → [`ModeStack::set_mode`]**: FULL SWITCH — every layer
-//!   is reset to fresh state (zoom 1.0, snip selection cleared, spotlight
-//!   radius back to default, cursor re-seeded by the controller) and `kind`
-//!   becomes the ONLY active layer.
+//! - **Toggle key (Spotlight's `S`) → [`ModeStack::toggle_mode`]**: the layer
+//!   is added when inactive, REMOVED when active. Toggling the last layer off
+//!   leaves the screen frozen but UNVEILED ([`ModeStack::any_active`] is
+//!   false — the controller dims nothing).
+//! - **Plain mode key (Snip's `C`) → [`ModeStack::set_mode`]**: FULL SWITCH —
+//!   every layer is reset to fresh state (zoom 1.0, snip selection cleared,
+//!   spotlight radius back to default, cursor re-seeded by the controller)
+//!   and `kind` becomes the ONLY active layer.
 //! - **Shift+mode key → [`ModeStack::add_mode`]**: ADDITIVE — `kind`'s layer is
 //!   activated (fresh state) WITHOUT touching the existing layers; a no-op
 //!   when that layer is already active.
-//! - **Primary mode**: the last-activated layer. Only used by wheel routing:
-//!   the plain (unmodified) wheel drives zoom when zoom is primary.
+//! - **Primary mode**: the last-activated layer (`None` when nothing is
+//!   active). Only used by wheel routing: the plain (unmodified) wheel drives
+//!   zoom when zoom is primary.
 //! - **Wheel routing matrix** ([`ModeStack::on_wheel`]):
 //!   * spotlight is offered EVERY wheel event while active; the layer itself
 //!     enforces its radius-modifier gate (default Ctrl) and keeps the
@@ -117,7 +122,8 @@ pub struct ModeParams {
 }
 
 /// The composable mode state of one freeze session: up to three active layers
-/// (one per [`ModeKind`]) plus the PRIMARY (last-activated) kind.
+/// (one per [`ModeKind`]) plus the PRIMARY (last-activated) kind — `None`
+/// when every layer is toggled off (the screen stays frozen, unveiled).
 ///
 /// Fresh layers are built from [`ModeParams`] on activation, so "reset ALL
 /// mode state" is simply "drop every layer and rebuild the requested one".
@@ -126,7 +132,7 @@ pub struct ModeStack {
     spotlight: Option<SpotlightMode>,
     zoom: Option<ZoomMode>,
     snip: Option<SnipMode>,
-    primary: ModeKind,
+    primary: Option<ModeKind>,
 }
 
 impl ModeStack {
@@ -140,13 +146,14 @@ impl ModeStack {
             )),
             zoom: None,
             snip: None,
-            primary: ModeKind::Spotlight,
+            primary: Some(ModeKind::Spotlight),
             params,
         }
     }
 
-    /// The primary (last-activated) mode. Drives the plain-wheel zoom rule.
-    pub fn primary(&self) -> ModeKind {
+    /// The primary (last-activated) mode, `None` when no layer is active.
+    /// Drives the plain-wheel zoom rule.
+    pub fn primary(&self) -> Option<ModeKind> {
         self.primary
     }
 
@@ -157,6 +164,12 @@ impl ModeStack {
             ModeKind::Zoom => self.zoom.is_some(),
             ModeKind::Snip => self.snip.is_some(),
         }
+    }
+
+    /// `true` while ANY layer is active. When false the screen is still
+    /// frozen but the overlay is unveiled (the controller dims nothing).
+    pub fn any_active(&self) -> bool {
+        self.spotlight.is_some() || self.zoom.is_some() || self.snip.is_some()
     }
 
     /// Read access to the layers (state inspection, tests, copy planning).
@@ -192,6 +205,29 @@ impl ModeStack {
         self.activate(kind);
     }
 
+    /// TOGGLE key (Spotlight's `S`): remove `kind`'s layer when active, add it
+    /// (fresh state) when not. Toggling the last layer off leaves the screen
+    /// frozen but unveiled; toggling back on re-activates with fresh state
+    /// (spotlight radius back to default).
+    pub fn toggle_mode(&mut self, kind: ModeKind) {
+        if self.is_active(kind) {
+            match kind {
+                ModeKind::Spotlight => self.spotlight = None,
+                ModeKind::Zoom => self.zoom = None,
+                ModeKind::Snip => self.snip = None,
+            }
+            if self.primary == Some(kind) {
+                // Fall back to any remaining layer (arbitrary but stable
+                // order); None when nothing is left.
+                self.primary = [ModeKind::Zoom, ModeKind::Snip, ModeKind::Spotlight]
+                    .into_iter()
+                    .find(|&k| self.is_active(k));
+            }
+            return;
+        }
+        self.activate(kind);
+    }
+
     /// Activate `kind`'s layer with fresh state and make it primary.
     fn activate(&mut self, kind: ModeKind) {
         match kind {
@@ -212,7 +248,7 @@ impl ModeStack {
                 self.snip = Some(SnipMode::new());
             }
         }
-        self.primary = kind;
+        self.primary = Some(kind);
     }
 
     /// Seed the live cursor into every active cursor-tracking layer after
@@ -280,7 +316,7 @@ impl ModeStack {
         if zoom_chord && self.zoom.is_none() {
             self.add_mode(ModeKind::Zoom);
         }
-        let plain_zoom = modifiers.is_empty() && self.primary == ModeKind::Zoom;
+        let plain_zoom = modifiers.is_empty() && self.primary == Some(ModeKind::Zoom);
         if let Some(zoom) = self.zoom.as_mut()
             && (zoom_chord || plain_zoom)
         {
@@ -428,7 +464,7 @@ mod tests {
     #[test]
     fn new_starts_spotlight_only_and_primary() {
         let stack = ModeStack::new(params());
-        assert_eq!(stack.primary(), ModeKind::Spotlight);
+        assert_eq!(stack.primary(), Some(ModeKind::Spotlight));
         assert!(stack.is_active(ModeKind::Spotlight));
         assert!(!stack.is_active(ModeKind::Zoom));
         assert!(!stack.is_active(ModeKind::Snip));
@@ -454,7 +490,7 @@ mod tests {
         assert_eq!(stack.spotlight().unwrap().radius(), 110);
 
         stack.set_mode(ModeKind::Zoom);
-        assert_eq!(stack.primary(), ModeKind::Zoom);
+        assert_eq!(stack.primary(), Some(ModeKind::Zoom));
         assert!(!stack.is_active(ModeKind::Spotlight), "spotlight dropped");
         assert!(!stack.is_active(ModeKind::Snip), "snip dropped");
         assert!(stack.is_active(ModeKind::Zoom));
@@ -468,7 +504,7 @@ mod tests {
         // Switching BACK to spotlight yields a fresh default radius again.
         stack.set_mode(ModeKind::Spotlight);
         assert_eq!(stack.spotlight().unwrap().radius(), 100);
-        assert_eq!(stack.primary(), ModeKind::Spotlight);
+        assert_eq!(stack.primary(), Some(ModeKind::Spotlight));
         assert!(stack.zoom().is_none());
     }
 
@@ -487,7 +523,7 @@ mod tests {
         stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110
 
         stack.add_mode(ModeKind::Zoom);
-        assert_eq!(stack.primary(), ModeKind::Zoom);
+        assert_eq!(stack.primary(), Some(ModeKind::Zoom));
         assert_eq!(
             stack.spotlight().unwrap().radius(),
             110,
@@ -499,7 +535,7 @@ mod tests {
         assert!(stack.is_active(ModeKind::Spotlight));
         assert!(stack.is_active(ModeKind::Zoom));
         assert!(stack.is_active(ModeKind::Snip));
-        assert_eq!(stack.primary(), ModeKind::Snip);
+        assert_eq!(stack.primary(), Some(ModeKind::Snip));
     }
 
     #[test]
@@ -509,10 +545,56 @@ mod tests {
         stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT); // zoom 1.25
         stack.add_mode(ModeKind::Zoom); // no-op: layer already active
         assert_zoom_near(&stack, 1.25);
-        assert_eq!(stack.primary(), ModeKind::Zoom, "primary untouched");
+        assert_eq!(stack.primary(), Some(ModeKind::Zoom), "primary untouched");
         // Same for the freeze-default spotlight layer.
         stack.add_mode(ModeKind::Spotlight);
         assert_eq!(stack.spotlight().unwrap().radius(), 100);
+    }
+
+    // ---- toggle_mode ---------------------------------------------------------
+
+    #[test]
+    fn toggle_off_removes_the_layer_and_clears_primary_when_none_left() {
+        let mut stack = ModeStack::new(params());
+        assert!(stack.any_active());
+        stack.toggle_mode(ModeKind::Spotlight);
+        assert!(!stack.is_active(ModeKind::Spotlight));
+        assert!(!stack.any_active(), "no layers left: frozen but unveiled");
+        assert_eq!(stack.primary(), None);
+    }
+
+    #[test]
+    fn toggle_on_reactivates_with_fresh_state_and_primary() {
+        let mut stack = ModeStack::new(params());
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110
+        stack.toggle_mode(ModeKind::Spotlight);
+        stack.toggle_mode(ModeKind::Spotlight);
+        assert!(stack.is_active(ModeKind::Spotlight));
+        assert_eq!(stack.spotlight().unwrap().radius(), 100, "fresh default state");
+        assert_eq!(stack.primary(), Some(ModeKind::Spotlight));
+    }
+
+    #[test]
+    fn toggle_off_primary_falls_back_to_a_remaining_layer() {
+        let mut stack = ModeStack::new(params());
+        stack.add_mode(ModeKind::Zoom); // primary Zoom
+        stack.toggle_mode(ModeKind::Zoom);
+        assert!(!stack.is_active(ModeKind::Zoom));
+        assert_eq!(stack.primary(), Some(ModeKind::Spotlight));
+        // Zoom state is rebuilt fresh on re-activation.
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT); // zoom 1.25 again
+        stack.toggle_mode(ModeKind::Zoom);
+        stack.add_mode(ModeKind::Zoom);
+        assert_eq!(stack.zoom().unwrap().zoom(), 1.0, "fresh zoom state");
+    }
+
+    #[test]
+    fn plain_wheel_is_inert_with_no_layers_active() {
+        let mut stack = ModeStack::new(params());
+        stack.toggle_mode(ModeKind::Spotlight);
+        let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE);
+        assert_eq!(e, ModeEffect::none(), "no zoom layer and no primary");
+        assert!(!stack.is_active(ModeKind::Zoom));
     }
 
     // ---- seed_cursor -------------------------------------------------------
@@ -572,7 +654,7 @@ mod tests {
         );
         assert_eq!(
             stack.primary(),
-            ModeKind::Zoom,
+            Some(ModeKind::Zoom),
             "implicit activation makes zoom the primary mode"
         );
         // The wheel event's position becomes the fresh layer's focus.
@@ -614,7 +696,7 @@ mod tests {
     fn wheel_zoom_modifier_zooms_whenever_zoom_is_active() {
         let mut stack = ModeStack::new(params());
         stack.add_mode(ModeKind::Zoom);
-        stack.primary = ModeKind::Spotlight; // zoom active but NOT primary
+        stack.primary = Some(ModeKind::Spotlight); // zoom active but NOT primary
         let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT);
         assert!(!e.repaint.is_empty(), "zoom modifier always reaches zoom");
         assert_zoom_near(&stack, 1.25);
