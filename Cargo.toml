@@ -6,6 +6,31 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 jsonc-parser = { version = "0.33.1", features = ["serde_json"] }
+png = "0.18.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi", "Win32_UI_Shell", "Win32_System_DataExchange", "Win32_UI_HiDpi", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_UI_Controls", "Win32_UI_Controls_Dialogs"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "global_shortcuts"] }
+calloop = "0.14.4"
+futures-lite = "2.6.1"
+ksni = { version = "0.3.6", default-features = false, features = ["async-io"] }
+rustix = { version = "1.1.4", features = ["fs", "mm", "shm"] }
+wayland-client = { version = "0.31.15", features = ["dlopen"] }
+wayland-protocols = { version = "0.32.13", features = ["client"] }
+wayland-protocols-misc = { version = "0.3.12", features = ["client"] }
+wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
+xkbcommon-dl = "0.4.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+objc2 = "0.6.4"
+objc2-app-kit = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-core-image = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-quartz-core = "0.3.2"
+objc2-screen-capture-kit = "0.3.2"

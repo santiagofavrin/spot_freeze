@@ -1,9 +1,12 @@
-//! JSONC persistence for [`AppSettings`] — `settings.json` next to the exe.
+//! JSONC persistence for [`AppSettings`] — `settings.json` in the
+//! per-platform config location.
 //!
-//! Pure module: no `windows` imports; unit tests exercise it with temp files.
+//! Pure module: no OS imports; unit tests exercise it with temp files.
 
 use super::model::AppSettings;
 use anyhow::{Context, Result, anyhow};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -33,14 +36,62 @@ const KEY_COMMENTS: &[(&str, &str)] = &[
     ("color", "veil color as #RRGGBB hex"),
 ];
 
-/// `settings.json` in the directory of the running executable.
-/// Errors only when the exe path cannot be determined.
+/// `settings.json` in the platform's conventional per-user config location:
+/// beside the running executable on Windows;
+/// `$XDG_CONFIG_HOME/spotfreeze/` (falling back to `~/.config/spotfreeze/`)
+/// on Linux; `~/Library/Application Support/SpotFreeze/` on macOS.
+/// Errors only when the location cannot be determined.
+///
+/// The environment is read through the small `*_config_dir` helpers below,
+/// which take the variable values explicitly so the decision logic is
+/// unit-testable without mutating process env.
 pub fn default_settings_path() -> Result<PathBuf> {
-    let exe = std::env::current_exe().context("cannot determine the executable path")?;
-    let dir = exe
-        .parent()
-        .context("executable path has no parent directory")?;
-    Ok(dir.join(SETTINGS_FILE_NAME))
+    #[cfg(windows)]
+    {
+        let exe = std::env::current_exe().context("cannot determine the executable path")?;
+        let dir = exe
+            .parent()
+            .context("executable path has no parent directory")?;
+        Ok(dir.join(SETTINGS_FILE_NAME))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let dir = linux_config_dir(
+            std::env::var_os("XDG_CONFIG_HOME"),
+            std::env::var_os("HOME"),
+        )
+        .context("neither XDG_CONFIG_HOME nor HOME is set")?;
+        Ok(dir.join(SETTINGS_FILE_NAME))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let dir = macos_config_dir(std::env::var_os("HOME")).context("HOME is not set")?;
+        Ok(dir.join(SETTINGS_FILE_NAME))
+    }
+}
+
+/// `$XDG_CONFIG_HOME/spotfreeze`, falling back to `~/.config/spotfreeze` when
+/// `XDG_CONFIG_HOME` is unset or empty (the freedesktop rule). `None` when
+/// neither variable is usable.
+#[cfg(target_os = "linux")]
+fn linux_config_dir(xdg_config_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    if let Some(xdg) = xdg_config_home.filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(xdg).join("spotfreeze"));
+    }
+    home.filter(|v| !v.is_empty())
+        .map(|home| PathBuf::from(home).join(".config").join("spotfreeze"))
+}
+
+/// `~/Library/Application Support/SpotFreeze`. `None` when `HOME` is unset or
+/// empty.
+#[cfg(target_os = "macos")]
+fn macos_config_dir(home: Option<OsString>) -> Option<PathBuf> {
+    home.filter(|v| !v.is_empty()).map(|home| {
+        PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("SpotFreeze")
+    })
 }
 
 /// Load settings from `path`.
@@ -205,6 +256,7 @@ mod tests {
 
     // ---------- default_settings_path ----------
 
+    #[cfg(windows)]
     #[test]
     fn default_settings_path_is_settings_json_next_to_exe() {
         let path = default_settings_path().expect("exe path must be resolvable in tests");
@@ -212,6 +264,50 @@ mod tests {
         assert!(path.is_absolute());
         // The parent is the real exe directory (test harness): it must exist.
         assert!(path.parent().unwrap().is_dir());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn default_settings_path_is_settings_json_in_the_config_dir() {
+        let path = default_settings_path().expect("HOME is set in any real session");
+        assert_eq!(path.file_name().unwrap(), SETTINGS_FILE_NAME);
+        assert_eq!(path.parent().unwrap().file_name().unwrap(), "spotfreeze");
+        assert!(path.is_absolute());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_config_dir_prefers_xdg_config_home() {
+        let dir = linux_config_dir(Some("/xdg".into()), Some("/home/u".into())).unwrap();
+        assert_eq!(dir, PathBuf::from("/xdg/spotfreeze"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_config_dir_falls_back_to_dot_config_when_xdg_missing_or_empty() {
+        for xdg in [None, Some("".into())] {
+            let dir = linux_config_dir(xdg, Some("/home/u".into())).unwrap();
+            assert_eq!(dir, PathBuf::from("/home/u/.config/spotfreeze"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_config_dir_is_none_without_any_base() {
+        assert_eq!(linux_config_dir(None, None), None);
+        assert_eq!(linux_config_dir(Some("".into()), Some("".into())), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_config_dir_is_application_support() {
+        let dir = macos_config_dir(Some("/Users/u".into())).unwrap();
+        assert_eq!(
+            dir,
+            PathBuf::from("/Users/u/Library/Application Support/SpotFreeze")
+        );
+        assert_eq!(macos_config_dir(None), None);
+        assert_eq!(macos_config_dir(Some("".into())), None);
     }
 
     // ---------- template ----------

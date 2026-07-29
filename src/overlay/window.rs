@@ -48,6 +48,8 @@ use crate::capture::DibBuffer;
 use crate::geometry::{Point, Rect};
 use crate::hotkeys::gesture::Modifiers;
 use crate::overlay::composite::{monitor_index_at, virtual_to_local};
+use crate::overlay::events::{OverlayEvent, OverlayEventSink};
+use crate::platform::OverlaySurface;
 use anyhow::{Context as _, Result, bail};
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -72,46 +74,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_NCDESTROY, WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{Error, PCWSTR};
-
-/// Events an overlay window reports to the controller.
-///
-/// Coordinates are MONITOR-LOCAL physical pixels of the monitor the event
-/// occurred on, and the event is tagged with THAT monitor's index. For the
-/// wheel this is NOT necessarily the window that received the message:
-/// `WM_MOUSEWHEEL` goes to the focus window (whichever overlay foregrounded
-/// last), so the handler reroutes by cursor position — see `overlay_wndproc`.
-/// Key events arrive natively at the focused overlay window (the freeze takes
-/// foreground on creation; the app additionally routes critical keys as global
-/// hotkeys, so nothing depends on window focus).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum OverlayEvent {
-    MouseMove {
-        at: Point,
-    },
-    /// `delta` is the RAW Win32 wheel delta in `WHEEL_DELTA` (120) units —
-    /// one notch = ±120; positive = wheel up/away. Smooth-scroll hardware
-    /// (precision touchpads, high-resolution wheels) sends sub-notch deltas
-    /// (|delta| < 120); consumers must accumulate or apply them fractionally
-    /// (see [`crate::overlay::modes::OverlayMode::on_wheel`]), never truncate.
-    MouseWheel {
-        at: Point,
-        delta: i32,
-        modifiers: Modifiers,
-    },
-    LeftButtonDown {
-        at: Point,
-    },
-    LeftButtonUp {
-        at: Point,
-    },
-    KeyDown {
-        vk: u32,
-        modifiers: Modifiers,
-    },
-}
-
-/// Callback invoked on the UI thread with `(monitor_index, event)`.
-pub type OverlayEventSink = Rc<dyn Fn(usize, OverlayEvent)>;
 
 /// One layered topmost window covering exactly one monitor.
 ///
@@ -329,6 +291,12 @@ impl OverlayWindow {
 impl Drop for OverlayWindow {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+impl OverlaySurface for OverlayWindow {
+    fn present(&mut self, frame: &DibBuffer, dirty: Option<Rect>) -> Result<()> {
+        OverlayWindow::present(self, frame, dirty)
     }
 }
 

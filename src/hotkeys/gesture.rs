@@ -20,7 +20,9 @@ use std::fmt;
 /// `(canonical display name, virtual-key code)` for the named non-modifier
 /// keys. Lookup is case-insensitive; the display name is what
 /// [`HotkeyGesture::to_display`] emits and what `settings.json` stores.
-const NAMED_KEYS: &[(&str, u32)] = &[
+/// `pub(crate)` so [`crate::hotkeys::keymap`] tests can prove they cover the
+/// parser's whole key vocabulary.
+pub(crate) const NAMED_KEYS: &[(&str, u32)] = &[
     ("Esc", 0x1B),        // VK_ESCAPE
     ("Space", 0x20),      // VK_SPACE
     ("Enter", 0x0D),      // VK_RETURN

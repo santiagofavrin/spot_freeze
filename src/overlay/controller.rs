@@ -1,16 +1,19 @@
 //! Overlay orchestration: freeze/unfreeze, COMPOSABLE mode layers, event
-//! routing, border-flash feedback, clipboard copy. Win32-only shell around
-//! the PURE [`ModeStack`] and [`crate::overlay::composite`] pixel ops.
+//! routing, border-flash feedback, clipboard copy. Platform-agnostic shell
+//! around the PURE [`ModeStack`] and [`crate::overlay::composite`] pixel ops;
+//! the per-OS pieces (surfaces, cursor, clipboard) go through the
+//! [`crate::platform`] seam.
 //!
 //! Implementation notes (contract clarifications — public API kept):
 //! - **Default mode**: `freeze` enters Spotlight (product spec default) and
 //!   flashes the border ONCE ([`OverlayController::flash_count`]).
-//! - **Composable modes**: layers are activated by [`set_mode`](Self::set_mode)
+//! - **Composable modes**: layers are activated by
+//!   [`set_mode`](OverlayController::set_mode)
 //!   (plain key: FULL switch — every layer reset, only that kind active) or
-//!   [`add_mode`](Self::add_mode) (Shift+key: additive — existing layers
+//!   [`add_mode`](OverlayController::add_mode) (Shift+key: additive — existing layers
 //!   untouched). After EVERY activation (and the initial freeze) the screen
 //!   border flashes `flash_count(kind)` times (S=1, Z=2, C=3) — synchronous
-//!   and brief by design (see [`flash_border`]).
+//!   and brief by design (see `flash_border`).
 //! - **Rendering**: every repaint composes the full frame via
 //!   [`crate::overlay::composite::compose_frame`] with a
 //!   [`crate::overlay::composite::RenderState`] built from the active layers
@@ -30,24 +33,24 @@
 //!   path crops from that monitor's COMPOSED BASE — the zoomed view when the
 //!   zoom layer is active on it, else the original capture (WYSIWYG).
 //! - **Keys**: modes never see key events — Esc / Ctrl+C / mode switches /
-//!   reset-view are global hotkeys handled by the app, so the `KeyDown` arm
-//!   of the event path is deliberately inert.
+//!   reset-view are handled by the platform shell (global hotkeys on Windows,
+//!   overlay key events matched against the frozen plan elsewhere), so the
+//!   `KeyDown` arm of the event path is deliberately inert.
 
-use crate::capture::{Capturer, DibBuffer, MonitorInfo, copy_dib_to_clipboard};
+use crate::capture::{Capturer, DibBuffer, MonitorInfo};
 use crate::geometry::{Point, Rect};
 use crate::overlay::composite::{
     ZoomFilter, compose_frame, crop_normalized, draw_border, monitor_index_at, virtual_to_local,
     zoom_resample,
 };
+use crate::overlay::events::{OverlayEvent, OverlayEventSink};
 use crate::overlay::modes::{ModeEffect, ModeKind, ModeParams, ModeStack, SnipSelection};
-use crate::overlay::window::{OverlayEvent, OverlayEventSink, OverlayWindow};
+use crate::platform::{OverlaySurface, PlatformServices, SurfaceFactory};
 use crate::settings::model::{AppSettings, Rgb};
 use anyhow::Result;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
-use windows::Win32::Foundation::POINT;
-use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
 /// Border-flash ON time per repetition (spec: 70 ms).
 const FLASH_ON_MS: u64 = 70;
@@ -77,8 +80,8 @@ struct FreezeState {
     frames: Vec<DibBuffer>,
     /// Monitor metadata (virtual-screen bounds + DPI), parallel to `originals`.
     monitors: Vec<MonitorInfo>,
-    /// One overlay window per monitor, parallel to `originals`.
-    windows: Vec<OverlayWindow>,
+    /// One overlay surface per monitor, parallel to `originals`.
+    windows: Vec<Box<dyn OverlaySurface>>,
     /// Composable mode layers + primary mode; layers are rebuilt from the
     /// freeze-time [`ModeParams`] on every activation.
     modes: ModeStack,
@@ -86,8 +89,8 @@ struct FreezeState {
     settings: AppSettings,
 }
 
-/// Owns the frozen captures, one [`crate::overlay::window::OverlayWindow`] per
-/// monitor, and the composable mode layers.
+/// Owns the frozen captures, one [`OverlaySurface`] per monitor, and the
+/// composable mode layers.
 ///
 /// Single UI-thread object (not `Send`/`Sync`). The session state lives in a
 /// shared cell so the overlay windows' event sink can route window events back
@@ -130,13 +133,20 @@ impl OverlayController {
         }
     }
 
-    /// Capture all monitors ONCE via `capturer`, create one overlay window per
-    /// monitor, enter Spotlight mode, present the initial frames, and flash
-    /// the border once.
+    /// Capture all monitors ONCE via `capturer`, create one overlay surface
+    /// per monitor via `surfaces`, enter Spotlight mode, present the initial
+    /// frames, and flash the border once. Cursor seeding and clipboard copies
+    /// go through `services`.
     ///
     /// Settings are SNAPSHOT at freeze time: changing hotkeys/radius/zoom while
     /// frozen takes effect on the next freeze. No-op when already frozen.
-    pub fn freeze(&mut self, capturer: &dyn Capturer, settings: &AppSettings) -> Result<()> {
+    pub fn freeze(
+        &mut self,
+        capturer: &dyn Capturer,
+        settings: &AppSettings,
+        surfaces: &SurfaceFactory,
+        services: &dyn PlatformServices,
+    ) -> Result<()> {
         if self.is_frozen() {
             return Ok(());
         }
@@ -146,18 +156,18 @@ impl OverlayController {
         let (monitors, originals): (Vec<MonitorInfo>, Vec<DibBuffer>) =
             captured.into_iter().unzip();
 
-        // One layered window per monitor, all reporting to one shared sink
-        // wired back into this controller. Every window also gets the SHARED
-        // monitor-rect list so its wheel handler can reroute `WM_MOUSEWHEEL`
-        // (delivered to the focus window, not the one under the cursor) to
-        // the monitor actually containing the cursor. If creation of window N
-        // fails, the already-created windows close via Drop as `windows`
-        // unwinds.
+        // One overlay surface per monitor, all reporting to one shared sink
+        // wired back into this controller. Every surface also gets the SHARED
+        // monitor-rect list so it can reroute focus-delivered input (e.g.
+        // `WM_MOUSEWHEEL` goes to the focus window, not the one under the
+        // cursor) to the monitor actually containing the cursor. If creation
+        // of surface N fails, the already-created surfaces close via Drop as
+        // `windows` unwinds.
         let sink = self.make_sink();
         let monitor_rects = Rc::new(monitors.iter().map(|m| m.rect).collect::<Vec<_>>());
-        let mut windows = Vec::with_capacity(monitors.len());
+        let mut windows: Vec<Box<dyn OverlaySurface>> = Vec::with_capacity(monitors.len());
         for (index, monitor) in monitors.iter().enumerate() {
-            windows.push(OverlayWindow::create(
+            windows.push(surfaces(
                 index,
                 monitor.rect,
                 monitor_rects.clone(),
@@ -184,7 +194,7 @@ impl OverlayController {
         // Spotlight is the default mode (product spec). Seed the live cursor
         // position, present the initial frame on every monitor, then flash
         // the border once (freeze == spotlight activation).
-        seed_cursor(&mut state);
+        seed_cursor(&mut state, services);
         for m in 0..state.windows.len() {
             render_and_present(&mut state, m, None);
         }
@@ -213,7 +223,7 @@ impl OverlayController {
     /// and border flash follow. Always resets, even when `kind` is already
     /// the only active layer (spec: a plain press is a full switch).
     /// No-op when not frozen.
-    pub fn set_mode(&mut self, kind: ModeKind) {
+    pub fn set_mode(&mut self, kind: ModeKind, services: &dyn PlatformServices) {
         let mut slot = self.inner.borrow_mut();
         let Some(state) = slot.as_mut() else {
             return;
@@ -221,7 +231,7 @@ impl OverlayController {
         // Layer parameters come from the freeze-time snapshot; live settings
         // edits therefore apply on the NEXT freeze, per the freeze contract.
         state.modes.set_mode(kind);
-        seed_cursor(state);
+        seed_cursor(state, services);
         for m in 0..state.windows.len() {
             render_and_present(state, m, None);
         }
@@ -232,7 +242,7 @@ impl OverlayController {
     /// SHIFT+mode key: ADD `kind`'s layer (fresh state) WITHOUT resetting the
     /// existing layers, make it the primary mode, full repaint + border
     /// flash. No-op when the layer is already active or when not frozen.
-    pub fn add_mode(&mut self, kind: ModeKind) {
+    pub fn add_mode(&mut self, kind: ModeKind, services: &dyn PlatformServices) {
         let mut slot = self.inner.borrow_mut();
         let Some(state) = slot.as_mut() else {
             return;
@@ -241,7 +251,7 @@ impl OverlayController {
             return; // adding an active layer is a no-op: no reset, no flash
         }
         state.modes.add_mode(kind);
-        seed_cursor(state);
+        seed_cursor(state, services);
         for m in 0..state.windows.len() {
             render_and_present(state, m, None);
         }
@@ -254,8 +264,9 @@ impl OverlayController {
     /// re-compose the frame and `present` it.
     ///
     /// The cancel (Esc), copy (Ctrl+C), mode-switch (plain/Shift), and
-    /// reset-zoom gestures are NOT handled here — the app catches them as
-    /// global hotkeys and calls [`unfreeze`](Self::unfreeze),
+    /// reset-zoom gestures are NOT handled here — the platform shell catches
+    /// them (as global hotkeys on Windows, as overlay key events elsewhere)
+    /// and calls [`unfreeze`](Self::unfreeze),
     /// [`snip_copy_and_close`](Self::snip_copy_and_close),
     /// [`set_mode`](Self::set_mode) / [`add_mode`](Self::add_mode), or
     /// [`reset_view`](Self::reset_view).
@@ -292,7 +303,7 @@ impl OverlayController {
     ///
     /// The selection is monitor-local (drags clamp at that monitor's edges);
     /// the crop normalizes any drag direction via [`crop_normalized`].
-    pub fn snip_copy_and_close(&mut self) -> Result<()> {
+    pub fn snip_copy_and_close(&mut self, services: &dyn PlatformServices) -> Result<()> {
         // Closing is unconditional, so take the session state out up-front;
         // `None` (not frozen) is the documented no-op and never touches the
         // clipboard.
@@ -300,26 +311,26 @@ impl OverlayController {
             return Ok(());
         };
 
-        let cursor = cursor_position_virtual().unwrap_or_default();
+        let cursor = services.cursor_position_virtual().unwrap_or_default();
         let rects: Vec<Rect> = state.monitors.iter().map(|m| m.rect).collect();
         let plan = decide_copy_plan(state.modes.snip_selection(), cursor, &rects);
 
         let copy_result = match plan {
             Some(CopyPlan::Snip { monitor, a, b }) => {
                 match copy_crop(&state.originals[monitor], state.modes.zoom_on(monitor), a, b) {
-                    Some(snip) => copy_dib_to_clipboard(&snip),
+                    Some(snip) => services.copy_image_to_clipboard(&snip),
                     // Unreachable — decide_copy_plan pre-validated the clipped
                     // rect. Keep the "Ctrl+C always copies something" invariant.
-                    None => copy_dib_to_clipboard(&state.originals[monitor]),
+                    None => services.copy_image_to_clipboard(&state.originals[monitor]),
                 }
             }
             // Full original frame: passed by reference, no buffer copy.
             Some(CopyPlan::FullMonitor { monitor }) => {
-                copy_dib_to_clipboard(&state.originals[monitor])
+                services.copy_image_to_clipboard(&state.originals[monitor])
             }
             None => Ok(()), // zero monitors captured: nothing to copy
         };
-        drop(state); // close every window even when the copy failed
+        drop(state); // close every surface even when the copy failed
         copy_result
     }
 
@@ -391,8 +402,8 @@ fn apply_overlay_event(state: &mut FreezeState, monitor: usize, event: OverlayEv
         } => state.modes.on_wheel(monitor, at, delta, modifiers),
         OverlayEvent::LeftButtonDown { at } => state.modes.on_left_button_down(monitor, at),
         OverlayEvent::LeftButtonUp { at } => state.modes.on_left_button_up(monitor, at),
-        // Keys never reach the layers: everything key-driven is a global
-        // hotkey handled by the app (documented in the module header).
+        // Keys never reach the layers: everything key-driven is handled by
+        // the platform shell (documented in the module header).
         OverlayEvent::KeyDown { .. } => ModeEffect::none(),
     };
     for &(m, dirty) in &effect.repaint {
@@ -473,11 +484,11 @@ fn flash_border(state: &mut FreezeState, count: u32) {
 
 /// Feed the live cursor position into every active layer (see module docs).
 /// A full repaint always follows, so no repaint effect is needed.
-fn seed_cursor(state: &mut FreezeState) {
+fn seed_cursor(state: &mut FreezeState, services: &dyn PlatformServices) {
     if state.monitors.is_empty() {
         return;
     }
-    let Some(cursor) = cursor_position_virtual() else {
+    let Some(cursor) = services.cursor_position_virtual() else {
         return;
     };
     let rects: Vec<Rect> = state.monitors.iter().map(|m| m.rect).collect();
@@ -485,15 +496,6 @@ fn seed_cursor(state: &mut FreezeState) {
         return; // cursor outside every monitor: leave the layers' default origin
     };
     state.modes.seed_cursor(idx, virtual_to_local(cursor, rects[idx]));
-}
-
-/// Current cursor position in virtual-screen coordinates; `None` on failure.
-fn cursor_position_virtual() -> Option<Point> {
-    let mut pt = POINT::default();
-    // SAFETY: read-only query writing to a caller-provided POINT; touches no
-    // window, hook, clipboard, or input state. Never called from tests.
-    unsafe { GetCursorPos(&mut pt) }.ok()?;
-    Some(Point::new(pt.x, pt.y))
 }
 
 /// Clamp zoom settings to the `ZoomMode::new` contract (`step > 1.0`,
@@ -622,9 +624,23 @@ mod tests {
     //! Headless-safe: no windows, no hotkeys, no clipboard, no capture. The
     //! copy DECISION logic and the zoomed-base crop are pure buffer math;
     //! `snip_copy_and_close` is only exercised while unfrozen (documented
-    //! no-op, clipboard untouched).
+    //! no-op, services untouched).
     use super::*;
     use crate::settings::model::AppSettings;
+
+    /// [`PlatformServices`] double for the unfrozen-path tests: never
+    /// consulted (every call would be a bug), so both methods panic.
+    struct PanicServices;
+
+    impl PlatformServices for PanicServices {
+        fn cursor_position_virtual(&self) -> Option<Point> {
+            panic!("services must not be consulted while unfrozen")
+        }
+
+        fn copy_image_to_clipboard(&self, _frame: &DibBuffer) -> Result<()> {
+            panic!("services must not be consulted while unfrozen")
+        }
+    }
 
     /// Primary 1920x1080 at (0,0) + secondary 2560x1440 LEFT of it (negative x).
     fn two_monitors() -> Vec<Rect> {
@@ -689,9 +705,9 @@ mod tests {
     #[test]
     fn set_mode_and_add_mode_when_unfrozen_are_noops() {
         let mut c = OverlayController::new();
-        c.set_mode(ModeKind::Zoom);
-        c.add_mode(ModeKind::Snip);
-        c.add_mode(ModeKind::Spotlight);
+        c.set_mode(ModeKind::Zoom, &PanicServices);
+        c.add_mode(ModeKind::Snip, &PanicServices);
+        c.add_mode(ModeKind::Spotlight, &PanicServices);
         assert!(!c.is_frozen());
         assert_eq!(c.active_mode(), ModeKind::Spotlight);
     }
@@ -727,8 +743,8 @@ mod tests {
     #[test]
     fn snip_copy_when_unfrozen_is_ok_noop_and_touches_nothing() {
         let mut c = OverlayController::new();
-        // Must return Ok WITHOUT calling GetCursorPos/copy_dib_to_clipboard.
-        assert!(c.snip_copy_and_close().is_ok());
+        // Must return Ok WITHOUT consulting the platform services.
+        assert!(c.snip_copy_and_close(&PanicServices).is_ok());
         assert!(!c.is_frozen());
     }
 
