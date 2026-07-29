@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/santiagofavrin/spot_freeze/compare/v1.1.0...v1.1.1) (2026-07-29)
+
+
+### Bug Fixes
+
+* correct macOS virtual-rect test expectation ([7adbfe8](https://github.com/santiagofavrin/spot_freeze/commit/7adbfe881e6c2674dac451087c384255dce65d62))
+
 ## [1.1.0](https://github.com/santiagofavrin/spot_freeze/compare/v1.0.0...v1.1.0) (2026-07-29)
 
 
