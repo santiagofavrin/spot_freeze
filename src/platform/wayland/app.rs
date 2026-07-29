@@ -185,7 +185,7 @@ fn tooltip_text(settings: &AppSettings) -> String {
 ///    second instance exits `Ok(())` immediately WITHOUT touching the desktop.
 /// 2. **Wayland**: connect, bind globals, snapshot outputs (see
 ///    [`shell::Shell::connect`]).
-/// 3. **Settings**: load via [`store::load`] (creates `spotfreeze.json` with
+/// 3. **Settings**: load via [`store::load`] (creates `spotfreeze.jsonc` with
 ///    defaults on first run; malformed file → defaults).
 /// 4. **Portal hotkey + tray**: both feed the intent channel. Failures are
 ///    reported on stderr but never fatal: the other path must keep working.
@@ -203,7 +203,7 @@ pub fn run() -> Result<()> {
     let shell = Shell::connect()?;
 
     // 3. Settings: malformed JSONC → defaults and keep running (per contract).
-    let settings_path = store::default_settings_path().context("locating spotfreeze.json")?;
+    let settings_path = store::default_settings_path().context("locating spotfreeze.jsonc")?;
     store::migrate_legacy_settings(&settings_path);
     let settings = store::load(&settings_path).unwrap_or_default();
 

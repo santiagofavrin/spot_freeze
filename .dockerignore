@@ -5,6 +5,7 @@ target/
 # Local user settings (JSONC)
 settings.json
 spotfreeze.json
+spotfreeze.jsonc
 
 # Editor / OS cruft
 .idea/

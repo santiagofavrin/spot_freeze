@@ -95,7 +95,7 @@ unit-tested headless.
 Key decisions (user-approved): settings on Linux/macOS are JSONC-file only
 (tray "Edit settings" opens the file in the default editor; changes apply on
 next freeze); the Linux global hotkey uses the XDG GlobalShortcuts portal
-(rebindable from `spotfreeze.json`, requires `xdg-desktop-portal-hyprland` on
+(rebindable from `spotfreeze.jsonc`, requires `xdg-desktop-portal-hyprland` on
 Hyprland); Docker covers Linux builds + headless tests, while macOS/Windows
 build on CI runners.
 

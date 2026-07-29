@@ -11,7 +11,7 @@
 use crate::hotkeys::gesture::{HotkeyGesture, Modifiers};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// Root settings object persisted as `spotfreeze.json` in the per-platform
+/// Root settings object persisted as `spotfreeze.jsonc` in the per-platform
 /// config location (see [`crate::settings::store`]).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

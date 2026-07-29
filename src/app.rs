@@ -74,7 +74,7 @@ struct AppState {
 /// 2. **DPI**: `SetProcessDpiAwarenessContext(PerMonitorV2)` BEFORE any window
 ///    is created (all overlay pixels are physical).
 /// 3. **Settings**: load via [`crate::settings::store::load`] (creates
-///    `spotfreeze.json` with defaults on first run; malformed file → defaults).
+///    `spotfreeze.jsonc` with defaults on first run; malformed file → defaults).
 /// 4. **Hidden message window**: owns the `WM_HOTKEY` registrations
 ///    ([`crate::hotkeys::manager::HotkeyManager`]) and the tray icon
 ///    ([`crate::tray::TrayIcon`]).
@@ -107,7 +107,7 @@ pub fn run() -> Result<()> {
     }
 
     // 3. Settings: malformed JSONC → defaults and keep running (per contract).
-    let settings_path = store::default_settings_path().context("locating spotfreeze.json")?;
+    let settings_path = store::default_settings_path().context("locating spotfreeze.jsonc")?;
     store::migrate_legacy_settings(&settings_path);
     let settings = store::load(&settings_path).unwrap_or_default();
 

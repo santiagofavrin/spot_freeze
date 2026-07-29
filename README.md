@@ -32,7 +32,7 @@ re-composited from reusable buffers — never a full repaint from scratch.
 - **Customizable overlay** — set the dim-veil color and opacity.
 - **Every hotkey is rebindable**, with conflict validation. On Windows the
   built-in settings window captures whatever you press — including `Win`+key
-  combinations; on Linux/macOS you edit the binding strings in `spotfreeze.json`
+  combinations; on Linux/macOS you edit the binding strings in `spotfreeze.jsonc`
   (same gesture syntax, e.g. `Win+F` or `Ctrl+Alt+F`).
 - **Tray-based** — no window until you ask for one. On Windows, left-click the
   tray icon for settings and right-click for the Settings/Exit menu; on Linux
@@ -45,7 +45,7 @@ re-composited from reusable buffers — never a full repaint from scratch.
 ### Platform notes
 
 - **Linux and macOS** — settings are edited as text: the tray menu's *Edit
-  settings* (*Edit Settings…* on macOS) opens `spotfreeze.json` in your default
+  settings* (*Edit Settings…* on macOS) opens `spotfreeze.jsonc` in your default
   editor, and changes apply on the next freeze. There is no graphical settings
   window on these platforms.
 - **Linux (Wayland)** — the global hotkey is bound through the XDG
@@ -63,7 +63,7 @@ re-composited from reusable buffers — never a full repaint from scratch.
 ## Default hotkeys
 
 All bindings can be changed — in the settings window on Windows, in
-`spotfreeze.json` on Linux/macOS. Mode-specific keys are only active while the
+`spotfreeze.jsonc` on Linux/macOS. Mode-specific keys are only active while the
 screen is frozen.
 
 | Action | Default | Scope |
@@ -119,7 +119,7 @@ so you also see a single flash right at freeze time.
 2. Unzip it anywhere you like (e.g. `C:\Tools\SpotFreeze\`).
 3. Run `spotfreeze.exe` — it appears as an icon in the system tray.
 
-On first run, `spotfreeze.json` is created automatically in the per-OS config
+On first run, `spotfreeze.jsonc` is created automatically in the per-OS config
 location (see *Settings*) with all default values. No installer, no registry
 writes, no admin rights needed.
 
@@ -173,7 +173,7 @@ open the settings window. From there you can:
 - Exit via right-click → *Exit* (a Yes/No confirmation prevents accidents).
 
 On **Linux and macOS** there is no settings window: choose *Edit settings*
-(*Edit Settings…* on macOS) in the tray menu to open `spotfreeze.json` in your
+(*Edit Settings…* on macOS) in the tray menu to open `spotfreeze.jsonc` in your
 default editor and save — the same options (hotkeys, spotlight radius, veil
 color/opacity, zoom limits) are keys in the file. Exiting from the tray needs
 no confirmation on Linux; macOS keeps the Yes/No dialog.
@@ -182,19 +182,19 @@ The settings file lives in the per-OS config location:
 
 | OS | Path |
 | --- | --- |
-| Windows | `%APPDATA%\SpotFreeze\spotfreeze.json` |
-| Linux | `$XDG_CONFIG_HOME/spotfreeze/spotfreeze.json` (default `~/.config/spotfreeze/spotfreeze.json`) |
-| macOS | `~/Library/Application Support/SpotFreeze/spotfreeze.json` |
+| Windows | `%APPDATA%\SpotFreeze\spotfreeze.jsonc` |
+| Linux | `$XDG_CONFIG_HOME/spotfreeze/spotfreeze.jsonc` (default `~/.config/spotfreeze/spotfreeze.jsonc`) |
+| macOS | `~/Library/Application Support/SpotFreeze/spotfreeze.jsonc` |
 
-A `settings.json` written by an older release (beside the exe on Windows, in
-the same config folder on Linux/macOS) is migrated automatically on first
-launch.
+A `spotfreeze.json` or `settings.json` written by an older release (in the
+same config folder; beside the exe on early Windows releases) is migrated
+automatically on first launch.
 
 It is the same JSONC file on every OS — comments and trailing commas are
 allowed — and it is written atomically, so a crash mid-save can never corrupt
 it. Missing keys fall back to defaults, and changes apply on the next freeze.
 
-Example `spotfreeze.json` (excerpt):
+Example `spotfreeze.jsonc` (excerpt):
 
 ```jsonc
 {
@@ -251,7 +251,7 @@ cargo build --release
 ```
 
 The binary is at `target\release\spotfreeze.exe`. Copy it wherever you want and
-run it — `spotfreeze.json` will be created on first launch.
+run it — `spotfreeze.jsonc` will be created on first launch.
 
 ### Linux
 

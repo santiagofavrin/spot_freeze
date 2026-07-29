@@ -1,4 +1,4 @@
-//! JSONC persistence for [`AppSettings`] — `spotfreeze.json` in the
+//! JSONC persistence for [`AppSettings`] — `spotfreeze.jsonc` in the
 //! per-platform config location.
 //!
 //! Pure module: no OS imports; unit tests exercise it with temp files.
@@ -11,10 +11,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// File name used by [`default_settings_path`].
-const SETTINGS_FILE_NAME: &str = "spotfreeze.json";
-/// File name used by releases before the per-OS config locations: migrated
-/// forward by [`migrate_legacy_settings`] when the current file is absent.
-const LEGACY_SETTINGS_FILE_NAME: &str = "settings.json";
+const SETTINGS_FILE_NAME: &str = "spotfreeze.jsonc";
+/// File names used by earlier releases: migrated forward by
+/// [`migrate_legacy_settings`] when the current file is absent.
+const LEGACY_SETTINGS_FILE_NAMES: &[&str] = &["spotfreeze.json", "settings.json"];
 
 /// `//` comments injected into the template, keyed by the JSON key they sit
 /// above. ONLY non-obvious keys (units, ranges, modifier-only semantics) get
@@ -38,7 +38,7 @@ const KEY_COMMENTS: &[(&str, &str)] = &[
     ("color", "veil color as #RRGGBB hex"),
 ];
 
-/// `spotfreeze.json` in the platform's conventional per-user config location:
+/// `spotfreeze.jsonc` in the platform's conventional per-user config location:
 /// `%APPDATA%\SpotFreeze\` on Windows;
 /// `$XDG_CONFIG_HOME/spotfreeze/` (falling back to `~/.config/spotfreeze/`)
 /// on Linux; `~/Library/Application Support/SpotFreeze/` on macOS.
@@ -101,20 +101,21 @@ fn macos_config_dir(home: Option<OsString>) -> Option<PathBuf> {
     })
 }
 
-/// Move a pre-rename `settings.json` over to `path` when `path` does not
-/// exist yet: beside the executable on Windows (its old location), next to
-/// `path` on Linux/macOS. Best effort and infallible — any failure leaves the
-/// legacy file untouched and the caller's [`load`] falls back to defaults.
+/// Move a legacy settings file (`spotfreeze.json` or `settings.json`) over to
+/// `path` when `path` does not exist yet: beside the executable on Windows
+/// (its oldest location), next to `path` otherwise. Best effort and
+/// infallible — any failure leaves the legacy file untouched and the caller's
+/// [`load`] falls back to defaults.
 pub fn migrate_legacy_settings(path: &Path) {
     if path.exists() {
         return;
     }
-    let Some(legacy) = legacy_settings_path(path) else {
+    let Some(legacy) = legacy_settings_paths(path)
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+    else {
         return;
     };
-    if !legacy.exists() {
-        return;
-    }
     if let Some(parent) = path.parent()
         && fs::create_dir_all(parent).is_err()
     {
@@ -128,17 +129,28 @@ pub fn migrate_legacy_settings(path: &Path) {
     }
 }
 
-/// The pre-rename settings location for this platform (see
+/// Legacy settings locations for this platform, most recent first (see
 /// [`migrate_legacy_settings`]).
-fn legacy_settings_path(new_path: &Path) -> Option<PathBuf> {
+fn legacy_settings_paths(new_path: &Path) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = LEGACY_SETTINGS_FILE_NAMES
+        .iter()
+        .map(|name| new_path.with_file_name(name))
+        .collect();
+    candidates.extend(oldest_legacy_settings_path());
+    candidates
+}
+
+/// The oldest settings location (pre-config-folder releases): `settings.json`
+/// beside the executable. Only Windows releases ever used it.
+fn oldest_legacy_settings_path() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         let exe = std::env::current_exe().ok()?;
-        Some(exe.parent()?.join(LEGACY_SETTINGS_FILE_NAME))
+        Some(exe.parent()?.join("settings.json"))
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(not(windows))]
     {
-        Some(new_path.with_file_name(LEGACY_SETTINGS_FILE_NAME))
+        None
     }
 }
 
@@ -506,7 +518,7 @@ mod tests {
         // The parent directory is created on demand, so the template lands
         // even when the whole config path did not exist yet.
         let dir = unique_temp_path("nodir");
-        let path = dir.join("spotfreeze.json");
+        let path = dir.join("spotfreeze.jsonc");
         assert!(!dir.exists());
 
         let loaded = load(&path).expect("missing dir is not an error");
@@ -762,7 +774,7 @@ mod tests {
     #[test]
     fn save_creates_missing_parent_directories() {
         let dir = unique_temp_path("save_nodir").join("nested").join("deeper");
-        let path = dir.join("spotfreeze.json");
+        let path = dir.join("spotfreeze.jsonc");
         save(&path, &AppSettings::default()).expect("save creates parent dirs");
         assert!(path.is_file());
         assert!(!tmp_path_for(&path).exists());
@@ -773,19 +785,40 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn migration_moves_legacy_file_next_to_the_new_path() {
-        let dir = unique_temp_path("migrate");
+    fn migration_moves_each_legacy_name_next_to_the_new_path() {
+        for (tag, legacy_name) in [("json", "spotfreeze.json"), ("jsonc", "settings.json")] {
+            let dir = unique_temp_path(&format!("migrate_{tag}"));
+            fs::create_dir_all(&dir).unwrap();
+            let legacy = dir.join(legacy_name);
+            fs::write(&legacy, "{ \"spotlight\": { \"default_radius\": 42 } }").unwrap();
+
+            let new_path = dir.join(SETTINGS_FILE_NAME);
+            migrate_legacy_settings(&new_path);
+
+            assert!(new_path.is_file(), "legacy {legacy_name} moved onto the new path");
+            assert!(!legacy.exists(), "legacy file is gone after the move");
+            let settings = load(&new_path).expect("migrated file loads");
+            assert_eq!(settings.spotlight.default_radius, 42);
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn migration_prefers_the_most_recent_legacy_name() {
+        let dir = unique_temp_path("migrate_order");
         fs::create_dir_all(&dir).unwrap();
-        let legacy = dir.join(LEGACY_SETTINGS_FILE_NAME);
-        fs::write(&legacy, "{ \"spotlight\": { \"default_radius\": 42 } }").unwrap();
+        fs::write(dir.join("spotfreeze.json"), "{ \"spotlight\": { \"default_radius\": 42 } }")
+            .unwrap();
+        fs::write(dir.join("settings.json"), "{ \"spotlight\": { \"default_radius\": 7 } }")
+            .unwrap();
 
         let new_path = dir.join(SETTINGS_FILE_NAME);
         migrate_legacy_settings(&new_path);
 
-        assert!(new_path.is_file(), "legacy file moved onto the new path");
-        assert!(!legacy.exists(), "legacy file is gone after the move");
         let settings = load(&new_path).expect("migrated file loads");
-        assert_eq!(settings.spotlight.default_radius, 42);
+        assert_eq!(settings.spotlight.default_radius, 42, "spotfreeze.json wins");
+        assert!(dir.join("settings.json").exists(), "older legacy untouched");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -796,7 +829,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let new_path = dir.join(SETTINGS_FILE_NAME);
         fs::write(&new_path, "{}").unwrap();
-        let legacy = dir.join(LEGACY_SETTINGS_FILE_NAME);
+        let legacy = dir.join("settings.json");
         fs::write(&legacy, "{ \"spotlight\": { \"default_radius\": 42 } }").unwrap();
 
         migrate_legacy_settings(&new_path);
@@ -818,10 +851,12 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn legacy_settings_path_is_settings_json_next_to_the_exe() {
-        let legacy = legacy_settings_path(Path::new(r"C:\ignored\spotfreeze.json")).unwrap();
+    fn legacy_settings_paths_cover_the_exe_dir_and_both_names() {
+        let paths = legacy_settings_paths(Path::new(r"C:\ignored\spotfreeze.jsonc"));
         let exe_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
-        assert_eq!(legacy, exe_dir.join(LEGACY_SETTINGS_FILE_NAME));
+        assert_eq!(paths[0], Path::new(r"C:\ignored").join("spotfreeze.json"));
+        assert_eq!(paths[1], Path::new(r"C:\ignored").join("settings.json"));
+        assert!(paths.contains(&exe_dir.join("settings.json")));
     }
 
     // ---------- parse_jsonc internals ----------
