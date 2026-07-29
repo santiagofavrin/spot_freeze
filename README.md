@@ -1,14 +1,16 @@
 # SpotFreeze
 
-A tiny, fast Windows 11 utility that lives in the system tray and **freezes your
-screen** on a global hotkey — then lets you spotlight a region, zoom in, or snip
-part of the frozen frame to the clipboard. Modes are **composable**: stack a
-spotlight on top of a zoom, or draw a snip over both.
+A tiny, fast utility for Windows 11, Linux (Wayland — targeting Hyprland and
+other wlroots compositors), and macOS 14+ (Apple Silicon) that lives in the
+system tray and **freezes your screen** on a global hotkey — then lets you
+spotlight a region, zoom in, or snip part of the frozen frame to the clipboard.
+Modes are **composable**: stack a spotlight on top of a zoom, or draw a snip
+over both.
 
-SpotFreeze is built for speed: a single native Rust binary (raw Win32, no GUI
-framework, no runtime), a few MB on disk, and near-zero idle RAM/CPU. The screen
-is captured **once** at freeze time; overlay frames are re-composited from
-reusable buffers — never a full repaint from scratch.
+SpotFreeze is built for speed: a single native Rust binary per platform (raw OS
+APIs, no GUI framework, no runtime), a few MB on disk, and near-zero idle
+RAM/CPU. The screen is captured **once** at freeze time; overlay frames are
+re-composited from reusable buffers — never a full repaint from scratch.
 
 ## Features
 
@@ -27,19 +29,42 @@ reusable buffers — never a full repaint from scratch.
   instead of being locked into one at a time (see *Mixing modes* below).
 - **Border flash feedback** — every mode change flashes the screen border so
   you always know which mode you just entered.
-- **Customizable overlay** — pick the dim-veil color and opacity.
-- **Every hotkey is rebindable** from the built-in settings window, with
-  conflict validation. Rebinding captures whatever you press — including
-  `Win`+key combinations.
-- **Tray-based** — no window until you ask for one. Left-click the tray icon
-  for settings, right-click for the Settings/Exit menu.
-- **Human-friendly settings** — a commented JSONC file next to the exe;
-  malformed files never crash the app (it falls back to defaults).
+- **Customizable overlay** — set the dim-veil color and opacity.
+- **Every hotkey is rebindable**, with conflict validation. On Windows the
+  built-in settings window captures whatever you press — including `Win`+key
+  combinations; on Linux/macOS you edit the binding strings in `settings.json`
+  (same gesture syntax, e.g. `Win+F` or `Ctrl+Alt+F`).
+- **Tray-based** — no window until you ask for one. On Windows, left-click the
+  tray icon for settings and right-click for the Settings/Exit menu; on Linux
+  the tray menu offers *Edit settings* and *Exit*; on macOS *Edit Settings…*
+  and *Exit SpotFreeze*.
+- **Human-friendly settings** — a commented JSONC file (see *Settings* for the
+  per-OS location); malformed files never crash the app (it falls back to
+  defaults).
+
+### Platform notes
+
+- **Linux and macOS** — settings are edited as text: the tray menu's *Edit
+  settings* (*Edit Settings…* on macOS) opens `settings.json` in your default
+  editor, and changes apply on the next freeze. There is no graphical settings
+  window on these platforms.
+- **Linux (Wayland)** — the global hotkey is bound through the XDG
+  GlobalShortcuts portal; on Hyprland this requires `xdg-desktop-portal-hyprland`
+  to be installed. The tray icon needs a StatusNotifierWatcher host (waybar,
+  KDE Plasma, GNOME with an AppIndicator extension) to display — without one
+  the tray icon is simply absent and the hotkey still works. Exiting from the
+  tray is immediate (no confirmation dialog).
+- **macOS** — requires macOS 14+ on Apple Silicon. Capturing the screen needs
+  the Screen Recording permission: the first freeze prompts you to grant it in
+  System Settings → Privacy & Security → Screen Recording. No Accessibility
+  permission is needed — the global hotkey uses Carbon's
+  `RegisterEventHotKey`. Exiting keeps the Yes/No confirmation dialog.
 
 ## Default hotkeys
 
-All bindings can be changed in the settings window. Mode-specific keys are only
-active while the screen is frozen.
+All bindings can be changed — in the settings window on Windows, in
+`settings.json` on Linux/macOS. Mode-specific keys are only active while the
+screen is frozen.
 
 | Action | Default | Scope |
 | --- | --- | --- |
@@ -87,6 +112,8 @@ so you also see a single flash right at freeze time.
 
 ## Install
 
+### Windows
+
 1. Download `spotfreeze-windows-x64.zip` from the latest
    [GitHub Release](../../releases).
 2. Unzip it anywhere you like (e.g. `C:\Tools\SpotFreeze\`).
@@ -95,10 +122,32 @@ so you also see a single flash right at freeze time.
 On first run, `settings.json` is created automatically **next to the exe** with
 all default values. No installer, no registry writes, no admin rights needed.
 
+### Linux (Wayland)
+
+1. Download `spotfreeze-linux-x64.tar.gz` from the latest
+   [GitHub Release](../../releases) and extract it.
+2. Run the `spotfreeze` binary — it appears as an icon in the system tray.
+
+The binary needs `libwayland` and `libxkbcommon` present at runtime — both are
+standard on any Wayland desktop, so there is usually nothing to install. For
+the global hotkey, the compositor's portal backend must be installed: on
+Hyprland that means `xdg-desktop-portal-hyprland`.
+
+### macOS
+
+1. Download `SpotFreeze-macos-arm64.zip` from the latest
+   [GitHub Release](../../releases) and unzip it.
+2. Move `SpotFreeze.app` wherever you like (e.g. `/Applications`).
+3. The app is unsigned (ad-hoc signed), so the first launch needs a
+   right-click → *Open* to get past Gatekeeper.
+4. Freeze once and grant the **Screen Recording** permission — the app shows
+   an alert pointing at System Settings → Privacy & Security → Screen
+   Recording when it is missing.
+
 ## Settings
 
-**Left-click the tray icon** (or right-click → *Settings*) to open the settings
-window. From there you can:
+On **Windows**, **left-click the tray icon** (or right-click → *Settings*) to
+open the settings window. From there you can:
 
 - Rebind every hotkey by pressing the new key combination — including
   `Win`+key combos; conflicting bindings are rejected.
@@ -108,10 +157,23 @@ window. From there you can:
   in this color at the configured opacity.
 - Exit via right-click → *Exit* (a Yes/No confirmation prevents accidents).
 
-Settings are stored in `settings.json` beside `spotfreeze.exe`. It is a JSONC
-file — comments and trailing commas are allowed — and is written atomically, so
-a crash mid-save can never corrupt it. Missing keys fall back to defaults, and
-changes apply on the next freeze.
+On **Linux and macOS** there is no settings window: choose *Edit settings*
+(*Edit Settings…* on macOS) in the tray menu to open `settings.json` in your
+default editor and save — the same options (hotkeys, spotlight radius, veil
+color/opacity, zoom limits) are keys in the file. Exiting from the tray needs
+no confirmation on Linux; macOS keeps the Yes/No dialog.
+
+The settings file lives in the per-OS config location:
+
+| OS | Path |
+| --- | --- |
+| Windows | `settings.json` beside `spotfreeze.exe` |
+| Linux | `$XDG_CONFIG_HOME/spotfreeze/settings.json` (default `~/.config/spotfreeze/settings.json`) |
+| macOS | `~/Library/Application Support/SpotFreeze/settings.json` |
+
+It is the same JSONC file on every OS — comments and trailing commas are
+allowed — and it is written atomically, so a crash mid-save can never corrupt
+it. Missing keys fall back to defaults, and changes apply on the next freeze.
 
 Example `settings.json` (excerpt):
 
@@ -151,6 +213,8 @@ Press `Esc` at any time while frozen to unfreeze without copying.
 
 ## Build from source
 
+### Windows
+
 Prerequisites:
 
 1. **Visual Studio Build Tools 2022** with the "Desktop development with C++"
@@ -170,16 +234,52 @@ cargo build --release
 The binary is at `target\release\spotfreeze.exe`. Copy it wherever you want and
 run it — `settings.json` will be created beside it on first launch.
 
+### Linux
+
+With stable Rust via [rustup](https://rustup.rs/) it is a plain cargo build —
+no system dev packages are needed (libwayland and libxkbcommon are loaded at
+runtime):
+
+```bash
+git clone https://github.com/<owner>/spot_freeze.git
+cd spot_freeze
+cargo build --release
+```
+
+The binary is at `target/release/spotfreeze`.
+
+Alternatively, use the Docker workflow (no local Rust toolchain needed):
+
+```bash
+docker compose run test   # run the headless test suite
+docker compose run build  # release binary into ./target/docker/
+docker compose run dev    # interactive shell, cargo caches kept in volumes
+```
+
+### macOS
+
+With stable Rust via [rustup](https://rustup.rs/) (`aarch64-apple-darwin`):
+
+```bash
+git clone https://github.com/<owner>/spot_freeze.git
+cd spot_freeze
+cargo build --release
+# Assemble and ad-hoc sign SpotFreeze.app (version = the crate's version):
+packaging/macos/build-app.sh target/release/spotfreeze 0.1.0
+```
+
 ## Test
 
 ```powershell
 cargo test
 ```
 
-The whole suite is headless and safe to run on a live desktop: all logic
-(pixel compositing, geometry, hotkey parsing, settings round-trips) is decoupled
-from Win32 into pure functions. Tests open no windows, register no hotkeys, and
-never touch the real clipboard or screen.
+The whole suite is headless and safe to run on a live desktop on all three
+OSes: all logic (pixel compositing, geometry, hotkey parsing, settings
+round-trips) is decoupled from the platform APIs into pure functions. Tests
+open no windows, register no hotkeys, and never touch the real clipboard or
+screen. Platform-specific tests run on their CI runners (Windows, Linux via
+Docker, macOS).
 
 ## Release process
 
@@ -191,18 +291,34 @@ Releases are managed by [release-please](https://github.com/googleapis/release-p
    `fix:`, …). release-please opens (or updates) a release PR with the
    changelog and next version.
 2. Merge the release PR → release-please creates the `v*` tag and GitHub
-   release, and the same workflow builds `spotfreeze.exe` on
-   `windows-latest`, zips it as `spotfreeze-windows-x64.zip`, and attaches it
-   to the release automatically.
+   release, and the same workflow builds all three artifacts (one job per OS)
+   and attaches them to the release automatically:
+   - `spotfreeze-windows-x64.zip` (`spotfreeze.exe`, built on `windows-latest`)
+   - `spotfreeze-linux-x64.tar.gz` (`spotfreeze`, built in Docker)
+   - `SpotFreeze-macos-arm64.zip` (`SpotFreeze.app`, built on a macOS runner)
 
 `.github/workflows/build.yml` is a manual-only workflow (`workflow_dispatch`)
-that runs `cargo test`, builds the release binary, and uploads the same zip as
-a workflow artifact for ad-hoc verification.
+that runs `cargo test`, builds the release binaries for all three OSes, and
+uploads the same artifacts for ad-hoc verification.
 
 ## Tech
 
-Rust (stable, MSVC, edition 2024) on top of Microsoft's official `windows-rs`
-crate — tray via `Shell_NotifyIconW`, global hotkeys via a low-level keyboard
-hook (`WH_KEYBOARD_LL`, so `Win`+key combos bind reliably), GDI `BitBlt`
-capture into DIB sections, and per-monitor layered overlay windows presented
-with `UpdateLayeredWindow`. No GUI framework, no Electron, no JIT.
+Rust (stable, edition 2024), one crate with a pure, fully unit-tested core
+(geometry, compositing, modes, settings, hotkey gestures) and a thin
+per-platform shell behind two traits (`OverlaySurface`, `PlatformServices`).
+No GUI framework, no Electron, no JIT. All platforms share the same BGRA frame
+buffers, so captured pixels flow into the overlays without conversion;
+clipboard images are `CF_DIB` on Windows and PNG on Linux/macOS.
+
+- **Windows** (MSVC toolchain) — Microsoft's official `windows-rs` crate: tray
+  via `Shell_NotifyIconW`, global hotkeys via a low-level keyboard hook
+  (`WH_KEYBOARD_LL`, so `Win`+key combos bind reliably), GDI `BitBlt` capture
+  into DIB sections, and per-monitor layered overlay windows presented with
+  `UpdateLayeredWindow`.
+- **Linux (Wayland)** — `wayland-client` with the wlr-layer-shell and
+  wlr-screencopy protocols (libwayland and libxkbcommon loaded at runtime, so
+  no dev packages are needed to build), global hotkey via the XDG
+  GlobalShortcuts portal (`ashpd`/zbus), tray via StatusNotifierItem (`ksni`).
+- **macOS** — `objc2` bindings to AppKit and CoreGraphics, ScreenCaptureKit
+  capture (macOS 14+), Carbon `RegisterEventHotKey` for the global hotkey,
+  `NSStatusItem` tray, `NSPasteboard` clipboard.

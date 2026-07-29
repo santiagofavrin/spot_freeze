@@ -84,3 +84,61 @@ release-please-config.json / .release-please-manifest.json
 - Do NOT interrupt the PC session: no app launches, no window flashing, no focus stealing,
   no clipboard/hotkey interference. Only `cargo test` / `cargo build` run locally.
 - Crate versions: latest stable at scaffold time (resolved via `cargo add`).
+
+## Cross-platform port (Linux/macOS)
+
+The crate now targets Windows 11, Linux (Wayland, targeting Hyprland/wlroots),
+and macOS 14+ (Apple Silicon) from one codebase, keeping the project's
+identity: single native binary, no GUI framework, pure-logic core fully
+unit-tested headless.
+
+Key decisions (user-approved): settings on Linux/macOS are JSONC-file only
+(tray "Edit settings" opens the file in the default editor; changes apply on
+next freeze); the Linux global hotkey uses the XDG GlobalShortcuts portal
+(rebindable from `settings.json`, requires `xdg-desktop-portal-hyprland` on
+Hyprland); Docker covers Linux builds + headless tests, while macOS/Windows
+build on CI runners.
+
+### Seam architecture
+
+- **Pure portable core** (no OS imports, headless-tested): geometry, settings
+  model/store, hotkey gesture parsing, pixel compositing, overlay modes, the
+  overlay controller's mode/copy logic, frozen-hotkey matching, VK↔platform
+  keymaps, and PNG encoding for the clipboard.
+- **Platform seam** (`src/platform/mod.rs`): two traits — `OverlaySurface`
+  (one per monitor: `present` a composed `DibBuffer` frame, full or dirty
+  rect; `Drop` closes) and `PlatformServices` (virtual-screen cursor position,
+  image-to-clipboard) — plus a `SurfaceFactory` creating one surface per
+  monitor. The controller is generic over these. All platforms share the same
+  BGRA `DibBuffer` frame format, so captured pixels flow into overlays with no
+  conversion anywhere.
+- **Per-OS shells** (`src/platform/{windows,wayland,macos}/`): capture,
+  overlay surfaces, global-hotkey binding, tray, clipboard, and the app/event
+  loop; `main.rs` dispatches on `target_os`. Wayland: wlr-layer-shell +
+  wlr-screencopy + XDG GlobalShortcuts portal (ashpd) + ksni StatusNotifierItem
+  tray. macOS: AppKit borderless windows + ScreenCaptureKit capture + Carbon
+  `RegisterEventHotKey` + `NSStatusItem` tray.
+
+### Stages
+
+- **Stage 1 — seam refactor (no Windows behavior change):** introduce the
+  traits, genericize the overlay controller, split GDI capture and Win32-only
+  modules behind `cfg(windows)`, extract pure frozen-hotkey matching, keymaps,
+  PNG encoding, and per-OS settings paths.
+- **Stage 2 — parallel work (disjoint file sets):** Wayland core, Wayland
+  services (portal hotkeys, SNI tray, shared editor launcher), macOS backend,
+  Docker + CI + packaging (`docker compose` services: `build`, `test`, `dev`;
+  macOS `.app` packaging script), docs.
+- **Stage 3 — integration:** wire everything; `cargo test` green on Linux,
+  `cargo check` green for the Windows and macOS targets, Docker build/test
+  green, all CI jobs green.
+- **Stage 4 — manual runtime QA:** checklist-driven verification on a real
+  Hyprland session and a real Mac (permission prompt, freeze/spotlight/zoom/
+  snip/copy/paste/tray/exit, rebinding) — headless tests cannot cover live
+  sessions.
+
+### Non-goals (v1)
+
+Native settings windows on Linux/macOS · X11 session support · macOS Intel
+builds · IPC CLI toggle · musl static binaries · Apple notarization · Windows
+behavior changes beyond the Stage-1 seam refactor.
