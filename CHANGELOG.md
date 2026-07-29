@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/santiagofavrin/spot_freeze/compare/v1.1.1...v1.2.0) (2026-07-29)
+
+
+### Features
+
+* move settings to per-OS config dirs ([adc4a67](https://github.com/santiagofavrin/spot_freeze/commit/adc4a674f5882796c1bc7d334e1a91378a2b621b))
+
 ## [1.1.1](https://github.com/santiagofavrin/spot_freeze/compare/v1.1.0...v1.1.1) (2026-07-29)
 
 
