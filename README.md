@@ -145,6 +145,20 @@ Hyprland that means `xdg-desktop-portal-hyprland`.
    an alert pointing at System Settings → Privacy & Security → Screen
    Recording when it is missing.
 
+## Command line
+
+```
+spotfreeze [--daemon] [--help] [--version]
+```
+
+- `--daemon` — start detached from the terminal (nohup-style): the process
+  survives the terminal being closed afterwards. Linux/macOS only.
+- `--help` — print usage and exit.
+- `--version` — print the version and exit.
+
+With no options SpotFreeze runs in the foreground: tray icon plus the global
+freeze hotkey.
+
 ## Settings
 
 On **Windows**, **left-click the tray icon** (or right-click → *Settings*) to

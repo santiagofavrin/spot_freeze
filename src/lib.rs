@@ -1,9 +1,9 @@
 //! SpotFreeze — freeze the screen, then spotlight / zoom / snip to clipboard.
 //!
-//! All logic lives in this library; `main.rs` is a thin shell that dispatches
-//! to the platform entry point (`app::run` on Windows, `platform::wayland` /
-//! `platform::macos` elsewhere). This makes every non-OS module unit-testable
-//! via `cargo test`.
+//! All logic lives in this library; `main.rs` is a thin shell that parses the
+//! CLI ([`cli`]) and dispatches to the platform entry point (`app::run` on
+//! Windows, `platform::wayland` / `platform::macos` elsewhere). This makes
+//! every non-OS module unit-testable via `cargo test`.
 //!
 //! # Global contracts (binding for ALL implementers)
 //!
@@ -35,6 +35,7 @@
 #[cfg(windows)]
 pub mod app;
 pub mod capture;
+pub mod cli;
 pub mod geometry;
 pub mod hotkeys;
 pub mod overlay;
