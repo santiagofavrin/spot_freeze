@@ -1,10 +1,12 @@
 name: release
 
-# release-please flow:
-#   1. Push to main -> release-please opens/updates a release PR (changelog + version).
-#   2. Merging that PR -> release-please creates the git tag + GitHub release,
-#      and this same run's outputs drive the `publish` job below.
-# A manual `v*` tag push also triggers `publish` as a fallback path.
+# release-please flow (fully automatic, no release PR):
+#   1. Push to main with feat:/fix: commits -> release-please commits the
+#      changelog + version bump DIRECTLY to main, creates the git tag +
+#      GitHub release, and this same run's outputs drive the publish jobs below.
+#   2. Pushes with no releasable commits (docs:, chore:, enhancement:, ...)
+#      produce no release.
+# A manual `v*` tag push also triggers the publish jobs as a fallback path.
 on:
   push:
     branches:
@@ -14,11 +16,10 @@ on:
 
 permissions:
   contents: write       # create tags/releases, push release-please commits
-  pull-requests: write  # open/update release-please PRs
 
 jobs:
   release-please:
-    name: release-please (release PR / tag / GitHub release)
+    name: release-please (tag / GitHub release)
     # Only main-branch pushes go through release-please; tag pushes skip this job.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -30,6 +31,7 @@ jobs:
         id: release
         with:
           release-type: simple
+          skip-github-pull-request: true
 
   publish:
     name: Build & attach Windows zip to the release

@@ -289,15 +289,17 @@ Docker, macOS).
 ## Release process
 
 Releases are managed by [release-please](https://github.com/googleapis/release-please)
-(release type `simple`) via `.github/workflows/release.yml`:
+(release type `simple`, `skip-github-pull-request` mode) via
+`.github/workflows/release.yml` — fully automatic, no release PR:
 
-1. Merge changes to `main` using
+1. Push changes to `main` using
    [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`,
-   `fix:`, …). release-please opens (or updates) a release PR with the
-   changelog and next version.
-2. Merge the release PR → release-please creates the `v*` tag and GitHub
-   release, and the same workflow builds all three artifacts (one job per OS)
-   and attaches them to the release automatically:
+   `fix:`, …). release-please commits the changelog + version bump directly to
+   `main` and creates the `v*` tag and GitHub release in the same run.
+   Pushes without releasable commits (`docs:`, `chore:`, `enhancement:`, …)
+   produce no release.
+2. The same workflow then builds all three artifacts (one job per OS) and
+   attaches them to the release automatically:
    - `spotfreeze-windows-x64.zip` (`spotfreeze.exe`, built on `windows-latest`)
    - `spotfreeze-linux-x64.tar.gz` (`spotfreeze`, built in Docker)
    - `SpotFreeze-macos-arm64.zip` (`SpotFreeze.app`, built on a macOS runner)
