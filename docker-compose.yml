@@ -1,0 +1,42 @@
+# Linux Docker workflows for SpotFreeze.
+#
+#   docker compose run --rm --build test   # headless test suite
+#   docker compose run --rm --build build  # release binary -> ./target/docker/
+#   docker compose run --rm dev            # interactive shell, repo mounted
+#
+# Equivalent for the binary without compose (written as the invoking user,
+# unlike the bind-mounted `build` service which writes as root):
+#   docker build --target export --output type=local,dest=target/docker .
+
+services:
+  test:
+    build:
+      context: .
+      target: test
+    # The image build already ran the suite; the command reruns it.
+    command: ["cargo", "test", "--locked"]
+
+  build:
+    build:
+      context: .
+      target: build
+    volumes:
+      - ./target/docker:/export
+    command: ["cp", "/out/spotfreeze", "/export/spotfreeze"]
+
+  dev:
+    build:
+      context: .
+      target: build
+    working_dir: /app
+    volumes:
+      - .:/app
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-target:/app/target
+    stdin_open: true
+    tty: true
+    command: ["bash"]
+
+volumes:
+  cargo-registry:
+  cargo-target:

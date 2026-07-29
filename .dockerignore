@@ -1,0 +1,18 @@
+# Build context bloat
+.git/
+target/
+
+# Local user settings (JSONC, created next to the exe on first run)
+settings.json
+
+# Editor / OS cruft
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Not needed inside the image; keeps source-layer cache stable
+Dockerfile
+docker-compose.yml
+.github/
+packaging/

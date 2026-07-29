@@ -66,3 +66,75 @@ jobs:
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name || github.ref_name }}
           files: spotfreeze-windows-x64.zip
+
+  publish-linux:
+    name: Build & attach Linux tarball to the release
+    needs: release-please
+    # Same trigger as the Windows publish job above.
+    if: >-
+      ${{ always() &&
+          (needs.release-please.outputs.release_created == 'true'
+           || startsWith(github.ref, 'refs/tags/v')) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name || github.ref_name }}
+
+      - name: Run headless test suite in Docker
+        run: docker build --target test .
+
+      - name: Build release binary in Docker
+        run: docker build --target export --output type=local,dest=target/docker .
+
+      - name: Package tarball
+        run: tar -C target/docker -czf spotfreeze-linux-x64.tar.gz spotfreeze
+
+      - name: Attach tarball to the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name || github.ref_name }}
+          files: spotfreeze-linux-x64.tar.gz
+
+  publish-macos:
+    name: Build & attach macOS app zip to the release
+    needs: release-please
+    # Same trigger as the Windows publish job above.
+    if: >-
+      ${{ always() &&
+          (needs.release-please.outputs.release_created == 'true'
+           || startsWith(github.ref, 'refs/tags/v')) }}
+    runs-on: macos-latest
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name || github.ref_name }}
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Derive app version from tag
+        id: app
+        run: |
+          tag="${{ needs.release-please.outputs.tag_name || github.ref_name }}"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble and sign SpotFreeze.app
+        run: bash packaging/macos/build-app.sh target/release/spotfreeze "${{ steps.app.outputs.version }}"
+
+      - name: Zip SpotFreeze.app
+        run: ditto -c -k --sequesterRsrc --keepParent SpotFreeze.app SpotFreeze-macos-arm64.zip
+
+      - name: Attach zip to the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name || github.ref_name }}
+          files: SpotFreeze-macos-arm64.zip

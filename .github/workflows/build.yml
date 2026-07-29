@@ -1,7 +1,8 @@
 name: build
 
-# Manual builds only — no push/PR triggers. Produces a downloadable
-# spotfreeze-windows-x64.zip workflow artifact for ad-hoc testing.
+# Manual builds only — no push/PR triggers. Produces downloadable workflow
+# artifacts for ad-hoc testing: spotfreeze-windows-x64.zip,
+# spotfreeze-linux-x64.tar.gz, SpotFreeze-macos-arm64.zip.
 on:
   workflow_dispatch:
 
@@ -34,4 +35,60 @@ jobs:
         with:
           name: spotfreeze-windows-x64
           path: spotfreeze-windows-x64.zip
+          retention-days: 30
+
+  linux:
+    name: Test & build (Linux, Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run headless test suite in Docker
+        run: docker build --target test .
+
+      - name: Build release binary in Docker
+        run: docker build --target export --output type=local,dest=target/docker .
+
+      - name: Package tarball
+        run: tar -C target/docker -czf spotfreeze-linux-x64.tar.gz spotfreeze
+
+      - name: Upload tarball as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotfreeze-linux-x64
+          path: spotfreeze-linux-x64.tar.gz
+          retention-days: 30
+
+  macos:
+    name: Test, build & package (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Read crate version
+        id: crate
+        run: echo "version=$(sed -n 's/^version = \"\([^\"]*\)\"/\1/p' Cargo.toml | head -n 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble and sign SpotFreeze.app
+        run: bash packaging/macos/build-app.sh target/release/spotfreeze "${{ steps.crate.outputs.version }}"
+
+      - name: Zip SpotFreeze.app
+        run: ditto -c -k --sequesterRsrc --keepParent SpotFreeze.app SpotFreeze-macos-arm64.zip
+
+      - name: Upload zip as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpotFreeze-macos-arm64
+          path: SpotFreeze-macos-arm64.zip
           retention-days: 30
