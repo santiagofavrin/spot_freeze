@@ -1,11 +1,15 @@
 name: release
 
-# release-please flow (fully automatic, no release PR):
-#   1. Push to main with feat:/fix: commits -> release-please commits the
-#      changelog + version bump DIRECTLY to main, creates the git tag +
-#      GitHub release, and this same run's outputs drive the publish jobs below.
-#   2. Pushes with no releasable commits (docs:, chore:, enhancement:, ...)
-#      produce no release.
+# release-please flow (fully automatic, no human merge):
+#   1. Push to main with feat:/fix: commits -> the first release-please step
+#      opens/updates the release PR (changelog + version bump).
+#   2. The same job squash-merges that PR immediately (GITHUB_TOKEN merges do
+#      not retrigger workflows, which is why tagging happens here, not on a
+#      later push).
+#   3. The second release-please step (tagging half) creates the v* tag +
+#      GitHub release; its outputs drive the publish jobs below.
+#   Pushes with no releasable commits (docs:, chore:, enhancement:, ...) skip
+#   every step and produce no release.
 # A manual `v*` tag push also triggers the publish jobs as a fallback path.
 on:
   push:
@@ -15,20 +19,31 @@ on:
       - 'v*'
 
 permissions:
-  contents: write       # create tags/releases, push release-please commits
+  contents: write       # create tags/releases, merge release PRs
+  pull-requests: write  # open/update/merge release-please PRs
 
 jobs:
   release-please:
-    name: release-please (tag / GitHub release)
+    name: release-please (release PR / merge / tag / GitHub release)
     # Only main-branch pushes go through release-please; tag pushes skip this job.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      release_created: ${{ steps.tag.outputs.release_created }}
+      tag_name: ${{ steps.tag.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
+
+      - name: Merge the release PR
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge "${{ fromJSON(steps.release.outputs.pr).number }}" --squash --delete-branch
+
+      - uses: googleapis/release-please-action@v4
+        id: tag
+        if: steps.release.outputs.prs_created == 'true'
         with:
           skip-github-pull-request: true
 
