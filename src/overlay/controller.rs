@@ -1,61 +1,93 @@
-//! Overlay orchestration: freeze/unfreeze, mode switching, event routing,
-//! clipboard copy. Win32-only module that drives the PURE modes.
+//! Overlay orchestration: freeze/unfreeze, COMPOSABLE mode layers, event
+//! routing, border-flash feedback, clipboard copy. Win32-only shell around
+//! the PURE [`ModeStack`] and [`crate::overlay::composite`] pixel ops.
 //!
-//! Implementation notes (contract clarifications — public API unchanged):
-//! - **Default mode**: `freeze` enters Spotlight mode (product spec default).
-//! - **Cursor seeding**: a freshly entered mode (`freeze` and `set_mode`)
-//!   receives one synthetic mouse-move with the LIVE cursor position, so the
-//!   first presented frame already has the spotlight hole / zoom center under
-//!   the cursor instead of at `(0, 0)`. The mode's repaint effect is ignored
-//!   because a full repaint always follows seeding.
+//! Implementation notes (contract clarifications — public API kept):
+//! - **Default mode**: `freeze` enters Spotlight (product spec default) and
+//!   flashes the border ONCE ([`OverlayController::flash_count`]).
+//! - **Composable modes**: layers are activated by [`set_mode`](Self::set_mode)
+//!   (plain key: FULL switch — every layer reset, only that kind active) or
+//!   [`add_mode`](Self::add_mode) (Shift+key: additive — existing layers
+//!   untouched). After EVERY activation (and the initial freeze) the screen
+//!   border flashes `flash_count(kind)` times (S=1, Z=2, C=3) — synchronous
+//!   and brief by design (see [`flash_border`]).
+//! - **Rendering**: every repaint composes the full frame via
+//!   [`crate::overlay::composite::compose_frame`] with a
+//!   [`crate::overlay::composite::RenderState`] built from the active layers
+//!   ([`ModeStack::render_state`]) into the persistent per-monitor frame
+//!   buffer — no per-frame allocations in the render path.
+//! - **Cursor seeding**: freshly activated layers receive one synthetic
+//!   mouse-move with the LIVE cursor position, so the first presented frame
+//!   already has the spotlight hole / zoom focus under the cursor instead of
+//!   at `(0, 0)`.
 //! - **Focused screen**: "monitor under the cursor" (the no-selection copy
 //!   fallback) means the monitor whose virtual-screen bounds contain the live
 //!   cursor position; falls back to monitor 0 when the cursor is outside every
 //!   monitor (transient display-change states) so Ctrl+C always copies
 //!   something.
 //! - **Per-monitor selections**: snip drags are MONITOR-LOCAL and clamped at
-//!   monitor edges by the mode; a selection never spans monitors. The copy
-//!   path crops from that monitor's original frame only.
+//!   monitor edges by the layer; a selection never spans monitors. The copy
+//!   path crops from that monitor's COMPOSED BASE — the zoomed view when the
+//!   zoom layer is active on it, else the original capture (WYSIWYG).
+//! - **Keys**: modes never see key events — Esc / Ctrl+C / mode switches /
+//!   reset-view are global hotkeys handled by the app, so the `KeyDown` arm
+//!   of the event path is deliberately inert.
 
 use crate::capture::{Capturer, DibBuffer, MonitorInfo, copy_dib_to_clipboard};
 use crate::geometry::{Point, Rect};
-use crate::overlay::composite::{crop_normalized, monitor_index_at, virtual_to_local};
-use crate::overlay::modes::snip::SnipMode;
-use crate::overlay::modes::spotlight::SpotlightMode;
-use crate::overlay::modes::zoom::ZoomMode;
-use crate::overlay::modes::{ModeKind, OverlayMode, SnipSelection};
+use crate::overlay::composite::{
+    ZoomFilter, compose_frame, crop_normalized, draw_border, monitor_index_at, virtual_to_local,
+    zoom_resample,
+};
+use crate::overlay::modes::{ModeEffect, ModeKind, ModeParams, ModeStack, SnipSelection};
 use crate::overlay::window::{OverlayEvent, OverlayEventSink, OverlayWindow};
-use crate::settings::model::AppSettings;
+use crate::settings::model::{AppSettings, Rgb};
 use anyhow::Result;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 use windows::Win32::Foundation::POINT;
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+/// Border-flash ON time per repetition (spec: 70 ms).
+const FLASH_ON_MS: u64 = 70;
+/// Border-flash OFF (normal frame) time per repetition (spec: 50 ms).
+const FLASH_OFF_MS: u64 = 50;
+/// Border-flash frame thickness in physical pixels (spec: 6).
+const FLASH_THICKNESS: u32 = 6;
+/// Border-flash frame color: white.
+const FLASH_COLOR: Rgb = Rgb {
+    r: 255,
+    g: 255,
+    b: 255,
+};
 
 /// Everything that exists only while the screen is frozen.
 ///
 /// `originals`, `frames`, `monitors`, and `windows` are parallel vectors in
 /// [`Capturer::capture_all`] order; index = monitor index.
 struct FreezeState {
-    /// Per-monitor ORIGINAL (undarkened) captures — the clipboard copy source.
+    /// Per-monitor ORIGINAL (undarkened) captures — the base for compositing
+    /// and (when no zoom layer is active on the monitor) the clipboard source.
     originals: Vec<DibBuffer>,
-    /// Per-monitor scratch frame the active mode renders into before
-    /// `present`. Persistent across repaints so the per-mouse-move path never
-    /// allocates; `OverlayMode::render` overwrites every pixel, so stale
-    /// contents are impossible.
+    /// Per-monitor scratch frame composited by `compose_frame` before
+    /// `present`. Persistent across repaints so the render path never
+    /// allocates; `compose_frame` overwrites every pixel, so stale contents
+    /// are impossible.
     frames: Vec<DibBuffer>,
     /// Monitor metadata (virtual-screen bounds + DPI), parallel to `originals`.
     monitors: Vec<MonitorInfo>,
     /// One overlay window per monitor, parallel to `originals`.
     windows: Vec<OverlayWindow>,
-    /// Active mode state machine; rebuilt from `settings` on `set_mode`.
-    mode: Box<dyn OverlayMode>,
-    /// Freeze-time settings snapshot (dim opacity + mode parameters).
+    /// Composable mode layers + primary mode; layers are rebuilt from the
+    /// freeze-time [`ModeParams`] on every activation.
+    modes: ModeStack,
+    /// Freeze-time settings snapshot (dim opacity + veil color + mode params).
     settings: AppSettings,
 }
 
 /// Owns the frozen captures, one [`crate::overlay::window::OverlayWindow`] per
-/// monitor, and the active mode state machine.
+/// monitor, and the composable mode layers.
 ///
 /// Single UI-thread object (not `Send`/`Sync`). The session state lives in a
 /// shared cell so the overlay windows' event sink can route window events back
@@ -66,8 +98,8 @@ pub struct OverlayController {
     /// `Some` while frozen. `None` ⇒ not frozen (all state derived from this,
     /// so a sink-triggered exit can never desync a separate `frozen` flag).
     inner: Rc<RefCell<Option<FreezeState>>>,
-    /// Active mode kind; reset to Spotlight on every freeze. Meaningless while
-    /// unfrozen (returns the last used kind).
+    /// Primary (last-activated) mode kind; reset to Spotlight on every freeze.
+    /// Meaningless while unfrozen (returns the last used kind).
     active: ModeKind,
 }
 
@@ -88,8 +120,19 @@ impl OverlayController {
         self.inner.borrow().as_ref().map_or(0, |s| s.windows.len())
     }
 
+    /// Border-flash repetitions for a mode activation: Spotlight = 1,
+    /// Zoom = 2, Snip = 3 (product spec).
+    pub fn flash_count(kind: ModeKind) -> u32 {
+        match kind {
+            ModeKind::Spotlight => 1,
+            ModeKind::Zoom => 2,
+            ModeKind::Snip => 3,
+        }
+    }
+
     /// Capture all monitors ONCE via `capturer`, create one overlay window per
-    /// monitor presenting the darkened capture, and enter Spotlight mode.
+    /// monitor, enter Spotlight mode, present the initial frames, and flash
+    /// the border once.
     ///
     /// Settings are SNAPSHOT at freeze time: changing hotkeys/radius/zoom while
     /// frozen takes effect on the next freeze. No-op when already frozen.
@@ -134,16 +177,18 @@ impl OverlayController {
             frames,
             monitors,
             windows,
-            mode: build_mode(ModeKind::Spotlight, &settings),
+            modes: ModeStack::new(mode_params(&settings)),
             settings,
         };
 
         // Spotlight is the default mode (product spec). Seed the live cursor
-        // position, then present the initial full frame on every monitor.
-        seed_cursor_position(&mut *state.mode, &state.monitors);
+        // position, present the initial frame on every monitor, then flash
+        // the border once (freeze == spotlight activation).
+        seed_cursor(&mut state);
         for m in 0..state.windows.len() {
             render_and_present(&mut state, m, None);
         }
+        flash_border(&mut state, Self::flash_count(ModeKind::Spotlight));
 
         *self.inner.borrow_mut() = Some(state);
         self.active = ModeKind::Spotlight;
@@ -162,74 +207,91 @@ impl OverlayController {
         self.active
     }
 
-    /// Switch the active mode (rebuilds the mode state machine from the freeze
-    /// snapshot, full repaint). No-op when not frozen.
-    ///
-    /// Also a no-op when `kind` is already active, so re-pressing the current
-    /// mode key does not reset mode state (spotlight radius, zoom factor,
-    /// in-progress snip).
+    /// PLAIN mode key: FULL switch — reset ALL layers to fresh state (zoom
+    /// back to 1.0, snip selection cleared, spotlight radius back to default,
+    /// cursor re-seeded) and make `kind` the only active layer; full repaint
+    /// and border flash follow. Always resets, even when `kind` is already
+    /// the only active layer (spec: a plain press is a full switch).
+    /// No-op when not frozen.
     pub fn set_mode(&mut self, kind: ModeKind) {
-        if kind == self.active {
-            return;
-        }
         let mut slot = self.inner.borrow_mut();
         let Some(state) = slot.as_mut() else {
             return;
         };
-        // Mode parameters come from the freeze-time snapshot; live settings
+        // Layer parameters come from the freeze-time snapshot; live settings
         // edits therefore apply on the NEXT freeze, per the freeze contract.
-        state.mode = build_mode(kind, &state.settings);
-        seed_cursor_position(&mut *state.mode, &state.monitors);
+        state.modes.set_mode(kind);
+        seed_cursor(state);
         for m in 0..state.windows.len() {
             render_and_present(state, m, None);
         }
         self.active = kind;
+        flash_border(state, Self::flash_count(kind));
     }
 
-    /// Route an overlay window event to the active mode, then apply its
-    /// [`crate::overlay::modes::ModeEffect`]: for each requested repaint, render
-    /// the mode frame and `present` it.
+    /// SHIFT+mode key: ADD `kind`'s layer (fresh state) WITHOUT resetting the
+    /// existing layers, make it the primary mode, full repaint + border
+    /// flash. No-op when the layer is already active or when not frozen.
+    pub fn add_mode(&mut self, kind: ModeKind) {
+        let mut slot = self.inner.borrow_mut();
+        let Some(state) = slot.as_mut() else {
+            return;
+        };
+        if state.modes.is_active(kind) {
+            return; // adding an active layer is a no-op: no reset, no flash
+        }
+        state.modes.add_mode(kind);
+        seed_cursor(state);
+        for m in 0..state.windows.len() {
+            render_and_present(state, m, None);
+        }
+        self.active = kind;
+        flash_border(state, Self::flash_count(kind));
+    }
+
+    /// Route an overlay window event to the mode stack, then apply its
+    /// [`crate::overlay::modes::ModeEffect`]: for each requested repaint,
+    /// re-compose the frame and `present` it.
     ///
-    /// The cancel (Esc), copy (Ctrl+C), mode-switch, and reset-zoom gestures are
-    /// NOT handled here — the app catches them as global hotkeys and calls
-    /// [`unfreeze`](Self::unfreeze), [`snip_copy_and_close`](Self::snip_copy_and_close),
-    /// [`set_mode`](Self::set_mode), or [`reset_view`](Self::reset_view).
+    /// The cancel (Esc), copy (Ctrl+C), mode-switch (plain/Shift), and
+    /// reset-zoom gestures are NOT handled here — the app catches them as
+    /// global hotkeys and calls [`unfreeze`](Self::unfreeze),
+    /// [`snip_copy_and_close`](Self::snip_copy_and_close),
+    /// [`set_mode`](Self::set_mode) / [`add_mode`](Self::add_mode), or
+    /// [`reset_view`](Self::reset_view).
     pub fn handle_overlay_event(&mut self, monitor: usize, event: OverlayEvent) {
         dispatch_event(&self.inner, monitor, event);
     }
 
-    /// Reset-view hotkey path (default binding `0`): call the active mode's
-    /// [`crate::overlay::modes::OverlayMode::reset_view`] and apply the
-    /// returned [`crate::overlay::modes::ModeEffect`]'s repaints via
-    /// `present`. Only Zoom overrides `reset_view` today (restores 1.0 and
-    /// repaints the cursor monitor); every other mode returns an empty
-    /// effect, making this a cheap no-op. No-op when not frozen.
+    /// Reset-view hotkey path (default binding `0`): zoom back to 1.0 when the
+    /// zoom layer is active and apply the repaint; a cheap no-op otherwise
+    /// (and whenever not frozen).
     ///
     /// This is a DEDICATED entry point, deliberately not routed through
-    /// [`handle_overlay_event`](Self::handle_overlay_event): modes treat
-    /// `on_key` as a no-op (keys that matter are global hotkeys), so a
-    /// synthesized key event would silently do nothing.
+    /// [`handle_overlay_event`](Self::handle_overlay_event): layers never see
+    /// key events (keys that matter are global hotkeys), so a synthesized key
+    /// event would silently do nothing.
     pub fn reset_view(&mut self) {
         let mut slot = self.inner.borrow_mut();
         let Some(state) = slot.as_mut() else {
             return;
         };
-        let effect = state.mode.reset_view();
-        // `ModeEffect::exit` is reserved for the event path; `reset_view`
-        // implementations never request exit, so only repaints are applied.
+        let effect = state.modes.reset_view();
         for &(m, dirty) in &effect.repaint {
             render_and_present(state, m, dirty);
         }
     }
 
-    /// Ctrl+C contract: when a snip selection exists, crop it from the ORIGINAL
-    /// (undarkened) capture and copy it to the clipboard; otherwise copy the
-    /// FULL frame of the monitor currently under the cursor ("focused screen").
-    /// Then unfreeze. `Ok(())` no-op when not frozen.
+    /// Ctrl+C contract: when a snip selection exists, crop it from the
+    /// monitor's COMPOSED BASE (the zoomed view when the zoom layer is active
+    /// on that monitor — WYSIWYG with the presented frame — else the ORIGINAL
+    /// capture) and copy it to the clipboard; otherwise copy the FULL original
+    /// frame of the monitor currently under the cursor ("focused screen").
+    /// Works from ANY mode combination. Then unfreeze. `Ok(())` no-op when
+    /// not frozen.
     ///
     /// The selection is monitor-local (drags clamp at that monitor's edges);
-    /// the crop comes from that monitor's original frame via
-    /// [`crop_normalized`], which normalizes any drag direction.
+    /// the crop normalizes any drag direction via [`crop_normalized`].
     pub fn snip_copy_and_close(&mut self) -> Result<()> {
         // Closing is unconditional, so take the session state out up-front;
         // `None` (not frozen) is the documented no-op and never touches the
@@ -240,16 +302,11 @@ impl OverlayController {
 
         let cursor = cursor_position_virtual().unwrap_or_default();
         let rects: Vec<Rect> = state.monitors.iter().map(|m| m.rect).collect();
-        let plan = decide_copy_plan(
-            state.mode.kind(),
-            state.mode.snip_selection(),
-            cursor,
-            &rects,
-        );
+        let plan = decide_copy_plan(state.modes.snip_selection(), cursor, &rects);
 
         let copy_result = match plan {
             Some(CopyPlan::Snip { monitor, a, b }) => {
-                match crop_normalized(&state.originals[monitor], a, b) {
+                match copy_crop(&state.originals[monitor], state.modes.zoom_on(monitor), a, b) {
                     Some(snip) => copy_dib_to_clipboard(&snip),
                     // Unreachable — decide_copy_plan pre-validated the clipped
                     // rect. Keep the "Ctrl+C always copies something" invariant.
@@ -286,6 +343,25 @@ impl Default for OverlayController {
     }
 }
 
+/// Freeze-time [`ModeParams`] snapshot from settings. The zoom triple is
+/// sanitized so a hand-edited settings file can never break the layer
+/// constructor.
+fn mode_params(settings: &AppSettings) -> ModeParams {
+    let (zoom_step, zoom_min, zoom_max) = sanitize_zoom_params(
+        settings.zoom.step_factor,
+        settings.zoom.min,
+        settings.zoom.max,
+    );
+    ModeParams {
+        spotlight_radius: settings.spotlight.default_radius,
+        radius_modifier: settings.hotkeys.spotlight_radius_modifier,
+        zoom_step,
+        zoom_min,
+        zoom_max,
+        zoom_modifier: settings.hotkeys.zoom_modifier,
+    }
+}
+
 /// Shared event path for the window sink and
 /// [`OverlayController::handle_overlay_event`]. Handles the reserved
 /// `ModeEffect::exit` by tearing the session down; teardown runs AFTER the
@@ -300,22 +376,24 @@ fn dispatch_event(inner: &Rc<RefCell<Option<FreezeState>>>, monitor: usize, even
     drop(taken);
 }
 
-/// Feed `event` to the active mode and apply the resulting `ModeEffect`'s
-/// dirty-region repaints. Returns `true` when the mode requested exit.
+/// Feed `event` to the mode stack and apply the resulting `ModeEffect`'s
+/// dirty-region repaints. Returns `true` when the stack requested exit.
 fn apply_overlay_event(state: &mut FreezeState, monitor: usize, event: OverlayEvent) -> bool {
     if monitor >= state.windows.len() {
         return false; // stale event from an already-destroyed window
     }
     let effect = match event {
-        OverlayEvent::MouseMove { at } => state.mode.on_mouse_move(monitor, at),
+        OverlayEvent::MouseMove { at } => state.modes.on_mouse_move(monitor, at),
         OverlayEvent::MouseWheel {
             at,
             delta,
             modifiers,
-        } => state.mode.on_wheel(monitor, at, delta, modifiers),
-        OverlayEvent::LeftButtonDown { at } => state.mode.on_left_button_down(monitor, at),
-        OverlayEvent::LeftButtonUp { at } => state.mode.on_left_button_up(monitor, at),
-        OverlayEvent::KeyDown { vk, modifiers } => state.mode.on_key(vk, modifiers),
+        } => state.modes.on_wheel(monitor, at, delta, modifiers),
+        OverlayEvent::LeftButtonDown { at } => state.modes.on_left_button_down(monitor, at),
+        OverlayEvent::LeftButtonUp { at } => state.modes.on_left_button_up(monitor, at),
+        // Keys never reach the layers: everything key-driven is a global
+        // hotkey handled by the app (documented in the module header).
+        OverlayEvent::KeyDown { .. } => ModeEffect::none(),
     };
     for &(m, dirty) in &effect.repaint {
         render_and_present(state, m, dirty);
@@ -323,62 +401,90 @@ fn apply_overlay_event(state: &mut FreezeState, monitor: usize, event: OverlayEv
     effect.exit
 }
 
-/// Re-render monitor `m`'s full frame through the active mode and present it.
+/// Re-compose monitor `m`'s full frame from the active layers and present it.
 /// `dirty: Some(rect)` lets the window composite only that region (the
-/// spotlight per-mouse-move fast path); the mode still renders the complete
-/// frame per its contract. Present failures are best-effort ignored: stale
-/// pixels until the next repaint beat a dead overlay.
+/// per-mouse-move fast path); the frame itself is always composed completely
+/// (compose_frame overwrites every pixel). Present failures are best-effort
+/// ignored: stale pixels until the next repaint beat a dead overlay.
 fn render_and_present(state: &mut FreezeState, m: usize, dirty: Option<Rect>) {
     if m >= state.windows.len() {
-        return; // defensive: a mode asked to repaint a nonexistent monitor
+        return; // defensive: a layer asked to repaint a nonexistent monitor
     }
-    // Split borrows across disjoint fields: mode (read) renders from
-    // originals[m] (read) into frames[m] (write), then windows[m] presents.
+    compose_frame_for(state, m);
+    // Split borrows across disjoint fields: frames[m] (read) presented by
+    // windows[m] (write).
+    let frame = &state.frames[m];
+    let window = &mut state.windows[m];
+    let _ = window.present(frame, dirty);
+}
+
+/// Compose monitor `m`'s frame: build the
+/// [`crate::overlay::composite::RenderState`] from the active layers and run
+/// the shared pipeline (zoom base → colored darken → spotlight hole → snip
+/// selection) into the persistent frame buffer.
+fn compose_frame_for(state: &mut FreezeState, m: usize) {
+    // Split borrows across disjoint fields: modes (read) builds the render
+    // state, originals[m] (read) + frames[m] (write) are the pixel buffers,
+    // settings (read) supplies the veil parameters.
     let FreezeState {
         originals,
         frames,
-        windows,
-        mode,
+        modes,
         settings,
         ..
     } = state;
-    mode.render(m, &originals[m], &mut frames[m], settings.overlay.dim_opacity);
-    let _ = windows[m].present(&frames[m], dirty);
+    let render_state = modes.render_state(m);
+    let viewport = Rect::new(0, 0, originals[m].width, originals[m].height);
+    compose_frame(
+        &originals[m],
+        &mut frames[m],
+        viewport,
+        &render_state,
+        settings.overlay.dim_opacity,
+        settings.overlay.color,
+    );
 }
 
-/// Build a fresh mode state machine from the freeze-time settings snapshot.
-fn build_mode(kind: ModeKind, settings: &AppSettings) -> Box<dyn OverlayMode> {
-    match kind {
-        ModeKind::Spotlight => Box::new(SpotlightMode::new(
-            settings.spotlight.default_radius,
-            settings.hotkeys.spotlight_radius_modifier,
-        )),
-        ModeKind::Zoom => {
-            let (step, min, max) = sanitize_zoom_params(
-                settings.zoom.step_factor,
-                settings.zoom.min,
-                settings.zoom.max,
-            );
-            Box::new(ZoomMode::new(step, min, max))
+/// Synchronous border flash on EVERY monitor: compose the frame, draw a
+/// white border ring, present, hold [`FLASH_ON_MS`]; re-compose (erasing the
+/// border), present, hold [`FLASH_OFF_MS`] — repeated `count` times. Blocks
+/// the UI thread for at most `count * (FLASH_ON_MS + FLASH_OFF_MS)` ms
+/// (360 ms worst case for Snip) — deliberate, per the product spec: the
+/// flash IS the mode-change feedback.
+fn flash_border(state: &mut FreezeState, count: u32) {
+    for _ in 0..count {
+        for m in 0..state.windows.len() {
+            compose_frame_for(state, m);
+            draw_border(&mut state.frames[m], FLASH_COLOR, FLASH_THICKNESS);
+            let frame = &state.frames[m];
+            let window = &mut state.windows[m];
+            let _ = window.present(frame, None);
         }
-        ModeKind::Snip => Box::new(SnipMode::new()),
+        std::thread::sleep(Duration::from_millis(FLASH_ON_MS));
+        for m in 0..state.windows.len() {
+            compose_frame_for(state, m);
+            let frame = &state.frames[m];
+            let window = &mut state.windows[m];
+            let _ = window.present(frame, None);
+        }
+        std::thread::sleep(Duration::from_millis(FLASH_OFF_MS));
     }
 }
 
-/// Feed the live cursor position into a freshly built mode (see module docs).
-/// The repaint effect is discarded — callers always full-repaint right after.
-fn seed_cursor_position(mode: &mut dyn OverlayMode, monitors: &[MonitorInfo]) {
-    if monitors.is_empty() {
+/// Feed the live cursor position into every active layer (see module docs).
+/// A full repaint always follows, so no repaint effect is needed.
+fn seed_cursor(state: &mut FreezeState) {
+    if state.monitors.is_empty() {
         return;
     }
     let Some(cursor) = cursor_position_virtual() else {
         return;
     };
-    let rects: Vec<Rect> = monitors.iter().map(|m| m.rect).collect();
+    let rects: Vec<Rect> = state.monitors.iter().map(|m| m.rect).collect();
     let Some(idx) = monitor_index_at(cursor, &rects) else {
-        return; // cursor outside every monitor: leave the mode's default origin
+        return; // cursor outside every monitor: leave the layers' default origin
     };
-    let _ = mode.on_mouse_move(idx, virtual_to_local(cursor, rects[idx]));
+    state.modes.seed_cursor(idx, virtual_to_local(cursor, rects[idx]));
 }
 
 /// Current cursor position in virtual-screen coordinates; `None` on failure.
@@ -392,7 +498,7 @@ fn cursor_position_virtual() -> Option<Point> {
 
 /// Clamp zoom settings to the `ZoomMode::new` contract (`step > 1.0`,
 /// `min >= 1.0`, `max > min`) so a hand-edited settings file can never break
-/// the mode constructor. Values already in range pass through untouched.
+/// the layer constructor. Values already in range pass through untouched.
 fn sanitize_zoom_params(step: f32, min: f32, max: f32) -> (f32, f32, f32) {
     let step = if step.is_finite() && step > 1.0 {
         step
@@ -418,7 +524,8 @@ fn sanitize_zoom_params(step: f32, min: f32, max: f32) -> (f32, f32, f32) {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CopyPlan {
     /// Crop the snip selection (monitor-local endpoints, any drag direction)
-    /// from that monitor's ORIGINAL frame.
+    /// from that monitor's COMPOSED BASE (zoomed view when zoom is active
+    /// there, else the original frame).
     Snip { monitor: usize, a: Point, b: Point },
     /// Copy the focused monitor's full ORIGINAL frame.
     FullMonitor { monitor: usize },
@@ -426,12 +533,13 @@ enum CopyPlan {
 
 /// Pure copy-target decision, factored out for headless testing.
 ///
-/// Snip mode + a selection whose normalized rect (clipped to that monitor's
-/// local bounds) is non-empty ⇒ crop plan; every other case ⇒ full frame of
-/// the focused monitor. Returns `None` only when `monitors` is empty.
-/// Computed on raw geometry fields so the decision is identical in tests.
+/// A selection whose normalized rect (clipped to that monitor's local bounds)
+/// is non-empty ⇒ crop plan; every other case ⇒ full frame of the focused
+/// monitor. (A selection can only EXIST while the snip layer is active, so
+/// its presence is the whole gate.) Returns `None` only when `monitors` is
+/// empty. Computed on raw geometry fields so the decision is identical in
+/// tests.
 fn decide_copy_plan(
-    mode: ModeKind,
     selection: Option<SnipSelection>,
     cursor_virtual: Point,
     monitors: &[Rect],
@@ -439,8 +547,7 @@ fn decide_copy_plan(
     if monitors.is_empty() {
         return None;
     }
-    if mode == ModeKind::Snip
-        && let Some(sel) = selection
+    if let Some(sel) = selection
         && sel.monitor < monitors.len()
         && snip_rect_is_copyable(sel.a, sel.b, monitors[sel.monitor])
     {
@@ -455,10 +562,35 @@ fn decide_copy_plan(
     })
 }
 
+/// Crop the rect between `a`/`b` from the monitor's COMPOSED BASE: when the
+/// zoom layer is active on that monitor (`zoom` = `(factor, focus)`), the
+/// base is the `zoom_resample`d view — exactly what the presented frame's
+/// spotlight hole / selection shows (WYSIWYG) — otherwise the ORIGINAL
+/// capture. Returns `None` for an empty/out-of-bounds rect (any drag
+/// direction is normalized). One-off allocation on the copy path only —
+/// never on a repaint path.
+fn copy_crop(
+    original: &DibBuffer,
+    zoom: Option<(f32, Point)>,
+    a: Point,
+    b: Point,
+) -> Option<DibBuffer> {
+    match zoom {
+        Some((factor, focus)) => {
+            let viewport = Rect::new(0, 0, original.width, original.height);
+            // Nearest is the render path's filter: zero interpolation cost,
+            // and the copy must match the presented frame pixel-for-pixel.
+            let base = zoom_resample(original, viewport, factor, focus, ZoomFilter::Nearest);
+            crop_normalized(&base, a, b)
+        }
+        None => crop_normalized(original, a, b),
+    }
+}
+
 /// `true` when the normalized drag rect, clipped to the monitor's local
 /// bounds, has positive area. Mirrors `composite::crop_normalized`'s
 /// normalize-then-clip semantics on raw fields (the decision must not depend
-/// on pixel buffers). Endpoints may arrive in any drag direction; modes clamp
+/// on pixel buffers). Endpoints may arrive in any drag direction; layers clamp
 /// drags at monitor edges, so out-of-bounds points are only defensive input.
 fn snip_rect_is_copyable(a: Point, b: Point, monitor: Rect) -> bool {
     let x0 = a.x.min(b.x).max(0);
@@ -488,9 +620,11 @@ fn focus_monitor_index(cursor_virtual: Point, monitors: &[Rect]) -> usize {
 #[cfg(test)]
 mod tests {
     //! Headless-safe: no windows, no hotkeys, no clipboard, no capture. The
-    //! copy DECISION logic is pure field math; `snip_copy_and_close` is only
-    //! exercised while unfrozen (documented no-op, clipboard untouched).
+    //! copy DECISION logic and the zoomed-base crop are pure buffer math;
+    //! `snip_copy_and_close` is only exercised while unfrozen (documented
+    //! no-op, clipboard untouched).
     use super::*;
+    use crate::settings::model::AppSettings;
 
     /// Primary 1920x1080 at (0,0) + secondary 2560x1440 LEFT of it (negative x).
     fn two_monitors() -> Vec<Rect> {
@@ -503,6 +637,28 @@ mod tests {
             a: Point::new(ax, ay),
             b: Point::new(bx, by),
         })
+    }
+
+    /// Synthetic buffer from a pixel generator (pub fields — no reliance on
+    /// `DibBuffer::new`, which belongs to another module).
+    fn make_buf(w: u32, h: u32, f: impl Fn(u32, u32) -> [u8; 4]) -> DibBuffer {
+        let mut pixels = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                pixels.extend_from_slice(&f(x, y));
+            }
+        }
+        DibBuffer {
+            width: w,
+            height: h,
+            stride: w * 4,
+            pixels,
+        }
+    }
+
+    fn px(buf: &DibBuffer, x: u32, y: u32) -> [u8; 4] {
+        let i = (y * buf.stride + x * 4) as usize;
+        buf.pixels[i..i + 4].try_into().unwrap()
     }
 
     // ---- controller state machine (unfrozen paths only) ----
@@ -531,10 +687,11 @@ mod tests {
     }
 
     #[test]
-    fn set_mode_when_unfrozen_is_noop() {
+    fn set_mode_and_add_mode_when_unfrozen_are_noops() {
         let mut c = OverlayController::new();
         c.set_mode(ModeKind::Zoom);
-        c.set_mode(ModeKind::Snip);
+        c.add_mode(ModeKind::Snip);
+        c.add_mode(ModeKind::Spotlight);
         assert!(!c.is_frozen());
         assert_eq!(c.active_mode(), ModeKind::Spotlight);
     }
@@ -567,43 +724,56 @@ mod tests {
         assert_eq!(c.monitor_count(), 0);
     }
 
-    // ---- reset_view plumbing (D1 regression) ----
-
-    #[test]
-    fn reset_view_plumbing_reaches_mode_and_returns_repaint() {
-        // D1 regression: the frozen reset-zoom path is
-        // `app → OverlayController::reset_view → mode.reset_view → apply the
-        // effect's repaints via render_and_present`. The window presents are
-        // Win32-only, but the controller's half of the plumbing — invoking
-        // `reset_view` on the active mode THROUGH THE TRAIT OBJECT and
-        // consuming its effect exactly the way `OverlayController::reset_view`
-        // does — is pure. Drive a ZoomMode behind `Box<dyn OverlayMode>` (the
-        // exact type the controller holds) through the same two steps.
-        let mut mode: Box<dyn OverlayMode> =
-            Box::new(ZoomMode::new(1.25, 1.0, 16.0));
-        mode.on_mouse_move(0, Point::new(10, 10));
-        mode.on_wheel(0, Point::new(10, 10), 120, crate::hotkeys::gesture::Modifiers::NONE);
-        let effect = mode.reset_view();
-        // The effect the controller would present: full repaint of the cursor
-        // monitor, and (verified in zoom.rs) zoom is back to 1.0.
-        assert_eq!(effect.repaint, vec![(0, None)]);
-        assert!(!effect.exit);
-        // Modes that don't override reset_view (the controller's Spotlight /
-        // Snip states) yield an empty effect — reset_view is a safe no-op.
-        let mut spotlight: Box<dyn OverlayMode> =
-            Box::new(crate::overlay::modes::spotlight::SpotlightMode::new(
-                100,
-                crate::hotkeys::gesture::Modifiers::CTRL,
-            ));
-        assert_eq!(spotlight.reset_view(), crate::overlay::modes::ModeEffect::none());
-    }
-
     #[test]
     fn snip_copy_when_unfrozen_is_ok_noop_and_touches_nothing() {
         let mut c = OverlayController::new();
         // Must return Ok WITHOUT calling GetCursorPos/copy_dib_to_clipboard.
         assert!(c.snip_copy_and_close().is_ok());
         assert!(!c.is_frozen());
+    }
+
+    // ---- flash_count (spec: S=1, Z=2, C=3) ----
+
+    #[test]
+    fn flash_count_maps_one_two_three() {
+        assert_eq!(OverlayController::flash_count(ModeKind::Spotlight), 1);
+        assert_eq!(OverlayController::flash_count(ModeKind::Zoom), 2);
+        assert_eq!(OverlayController::flash_count(ModeKind::Snip), 3);
+    }
+
+    #[test]
+    fn flash_timings_are_the_spec_values() {
+        // Pinned so an accidental edit of the feedback cadence fails loudly.
+        assert_eq!(FLASH_ON_MS, 70);
+        assert_eq!(FLASH_OFF_MS, 50);
+        assert_eq!(FLASH_THICKNESS, 6);
+        assert_eq!(FLASH_COLOR, Rgb { r: 255, g: 255, b: 255 });
+    }
+
+    // ---- mode_params ----
+
+    #[test]
+    fn mode_params_snapshots_settings() {
+        let s = AppSettings::default();
+        let p = mode_params(&s);
+        assert_eq!(p.spotlight_radius, s.spotlight.default_radius);
+        assert_eq!(p.radius_modifier, s.hotkeys.spotlight_radius_modifier);
+        assert_eq!(p.zoom_modifier, s.hotkeys.zoom_modifier);
+        assert_eq!(p.zoom_step, s.zoom.step_factor);
+        assert_eq!(p.zoom_min, s.zoom.min);
+        assert_eq!(p.zoom_max, s.zoom.max);
+    }
+
+    #[test]
+    fn mode_params_sanitizes_zoom() {
+        let mut s = AppSettings::default();
+        s.zoom.step_factor = 0.5;
+        s.zoom.min = 0.25;
+        s.zoom.max = f32::NAN;
+        let p = mode_params(&s);
+        assert_eq!(p.zoom_step, 1.25);
+        assert_eq!(p.zoom_min, 1.0);
+        assert!(p.zoom_max > p.zoom_min);
     }
 
     // ---- focus_monitor_index ----
@@ -671,9 +841,9 @@ mod tests {
     // ---- decide_copy_plan ----
 
     #[test]
-    fn plan_is_snip_for_nonempty_selection_in_snip_mode() {
+    fn plan_is_snip_for_nonempty_selection() {
         let m = two_monitors();
-        let plan = decide_copy_plan(ModeKind::Snip, snip(0, 10, 10, 110, 60), Point::new(5, 5), &m);
+        let plan = decide_copy_plan(snip(0, 10, 10, 110, 60), Point::new(5, 5), &m);
         assert_eq!(
             plan,
             Some(CopyPlan::Snip {
@@ -687,7 +857,7 @@ mod tests {
     #[test]
     fn plan_is_snip_for_negative_drag() {
         let m = two_monitors();
-        let plan = decide_copy_plan(ModeKind::Snip, snip(0, 110, 60, 10, 10), Point::new(5, 5), &m);
+        let plan = decide_copy_plan(snip(0, 110, 60, 10, 10), Point::new(5, 5), &m);
         assert_eq!(
             plan,
             Some(CopyPlan::Snip {
@@ -703,7 +873,7 @@ mod tests {
         let m = two_monitors();
         // Selection coords are MONITOR-LOCAL: monitor 1's negative virtual
         // origin is irrelevant here; its width/height bound the clip.
-        let plan = decide_copy_plan(ModeKind::Snip, snip(1, 0, 0, 500, 500), Point::new(5, 5), &m);
+        let plan = decide_copy_plan(snip(1, 0, 0, 500, 500), Point::new(5, 5), &m);
         assert_eq!(
             plan,
             Some(CopyPlan::Snip {
@@ -717,48 +887,113 @@ mod tests {
     #[test]
     fn plan_falls_back_to_full_frame_for_zero_area_selection() {
         let m = two_monitors();
-        let plan = decide_copy_plan(ModeKind::Snip, snip(0, 50, 50, 50, 50), Point::new(7, 7), &m);
+        let plan = decide_copy_plan(snip(0, 50, 50, 50, 50), Point::new(7, 7), &m);
         assert_eq!(plan, Some(CopyPlan::FullMonitor { monitor: 0 }));
     }
 
     #[test]
     fn plan_falls_back_for_fully_outside_selection() {
         let m = two_monitors();
-        let plan = decide_copy_plan(ModeKind::Snip, snip(0, -500, 0, -400, 100), Point::new(7, 7), &m);
+        let plan = decide_copy_plan(snip(0, -500, 0, -400, 100), Point::new(7, 7), &m);
         assert_eq!(plan, Some(CopyPlan::FullMonitor { monitor: 0 }));
     }
 
     #[test]
     fn plan_falls_back_for_invalid_selection_monitor() {
         let m = two_monitors();
-        let plan = decide_copy_plan(ModeKind::Snip, snip(99, 0, 0, 100, 100), Point::new(7, 7), &m);
+        let plan = decide_copy_plan(snip(99, 0, 0, 100, 100), Point::new(7, 7), &m);
         assert_eq!(plan, Some(CopyPlan::FullMonitor { monitor: 0 }));
-    }
-
-    #[test]
-    fn plan_ignores_selection_outside_snip_mode() {
-        let m = two_monitors();
-        // A selection can only exist in Snip mode, but the mode gate is explicit.
-        for kind in [ModeKind::Spotlight, ModeKind::Zoom] {
-            let plan = decide_copy_plan(kind, snip(0, 10, 10, 110, 60), Point::new(7, 7), &m);
-            assert_eq!(plan, Some(CopyPlan::FullMonitor { monitor: 0 }));
-        }
     }
 
     #[test]
     fn plan_full_frame_uses_focused_monitor() {
         let m = two_monitors();
-        let plan = decide_copy_plan(ModeKind::Snip, None, Point::new(-100, 200), &m);
+        let plan = decide_copy_plan(None, Point::new(-100, 200), &m);
         assert_eq!(plan, Some(CopyPlan::FullMonitor { monitor: 1 }));
         // Cursor outside all monitors: fallback monitor 0.
-        let plan = decide_copy_plan(ModeKind::Zoom, None, Point::new(9999, 0), &m);
+        let plan = decide_copy_plan(None, Point::new(9999, 0), &m);
         assert_eq!(plan, Some(CopyPlan::FullMonitor { monitor: 0 }));
     }
 
     #[test]
     fn plan_is_none_without_monitors() {
-        let plan = decide_copy_plan(ModeKind::Snip, snip(0, 0, 0, 10, 10), Point::new(0, 0), &[]);
+        let plan = decide_copy_plan(snip(0, 0, 0, 10, 10), Point::new(0, 0), &[]);
         assert_eq!(plan, None);
+    }
+
+    // ---- copy_crop: snip from the composed (zoomed) base ----
+
+    /// Coordinate-encoding pattern: pixel (x, y) = [x, y, x^y, 255] (BGRA).
+    fn coord_pattern(x: u32, y: u32) -> [u8; 4] {
+        [x as u8, y as u8, (x ^ y) as u8, 255]
+    }
+
+    #[test]
+    fn copy_crop_without_zoom_crops_the_original() {
+        let src = make_buf(32, 32, coord_pattern);
+        let crop = copy_crop(&src, None, Point::new(4, 6), Point::new(12, 10)).unwrap();
+        assert_eq!((crop.width, crop.height), (8, 4));
+        for y in 0..crop.height {
+            for x in 0..crop.width {
+                assert_eq!(px(&crop, x, y), coord_pattern(x + 4, y + 6));
+            }
+        }
+    }
+
+    #[test]
+    fn copy_crop_with_zoom_crops_the_zoomed_base_not_the_original() {
+        // 32x32 original, zoom 2.0 around focus (16,16): output pixel o
+        // samples src 16 + (o + 0.5 - 16)/2 - 0.5 (composite mapping,
+        // nearest). The selection is in OUTPUT (screen) coordinates, so the
+        // crop must come from the resampled view — WYSIWYG.
+        let src = make_buf(32, 32, coord_pattern);
+        let a = Point::new(8, 8);
+        let b = Point::new(24, 24);
+        let zoomed = copy_crop(&src, Some((2.0, Point::new(16, 16))), a, b).unwrap();
+        let plain = copy_crop(&src, None, a, b).unwrap();
+        assert_eq!((zoomed.width, zoomed.height), (16, 16));
+        assert_ne!(
+            zoomed.pixels, plain.pixels,
+            "zoomed crop must differ from the unzoomed one"
+        );
+        // Exact mapping check for every cropped pixel.
+        let src_of = |o: u32| (16.0f32 + (o as f32 + 0.5 - 16.0) / 2.0 - 0.5).round() as u32;
+        for y in 0..16u32 {
+            for x in 0..16u32 {
+                let expect = coord_pattern(src_of(x + 8), src_of(y + 8));
+                assert_eq!(px(&zoomed, x, y), expect, "zoomed crop pixel ({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn copy_crop_zoomed_base_matches_compose_input_contract() {
+        // The crop must be pixel-identical to cropping the buffer the render
+        // path would have built (same resample call with the same viewport).
+        let src = make_buf(32, 32, coord_pattern);
+        let a = Point::new(3, 5);
+        let b = Point::new(29, 20);
+        let (factor, focus) = (1.5, Point::new(10, 22));
+        let crop = copy_crop(&src, Some((factor, focus)), a, b).unwrap();
+        let base = zoom_resample(
+            &src,
+            Rect::new(0, 0, 32, 32),
+            factor,
+            focus,
+            ZoomFilter::Nearest,
+        );
+        let expect = crop_normalized(&base, a, b).unwrap();
+        assert_eq!(crop.pixels, expect.pixels);
+    }
+
+    #[test]
+    fn copy_crop_degenerate_rect_is_none_in_both_bases() {
+        let src = make_buf(16, 16, coord_pattern);
+        assert!(copy_crop(&src, None, Point::new(4, 4), Point::new(4, 4)).is_none());
+        assert!(
+            copy_crop(&src, Some((2.0, Point::new(8, 8))), Point::new(4, 4), Point::new(4, 4))
+                .is_none()
+        );
     }
 
     // ---- sanitize_zoom_params ----

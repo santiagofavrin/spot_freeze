@@ -3,29 +3,36 @@
 //! `zoom_resample` driven through `ZoomSettings`-style clamp math exactly the
 //! way the controller applies it.
 //!
+//! REWORK NOTE (composable modes update): `ZoomMode` is now a pure LAYER —
+//! the `ModeStack` routing matrix decides WHICH wheel events reach it (zoom
+//! modifier whenever active, plain wheel when zoom is primary), so the
+//! layer's `on_wheel` takes no `modifiers` argument and applies every wheel
+//! it receives. Rendering moved out of the layer: the controller reads
+//! [`ModeStack::render_state`] and hands the `RenderState` to
+//! `composite::compose_frame` (pixel-exact compose coverage lives in
+//! `composition_pipeline.rs`; the render_state contract is pinned here).
+//!
 //! ASSUMPTION (documented controller contract, pieced together from the frozen
 //! docs): the overlay window reports wheel `delta` in raw Win32 units — one
 //! notch = `WHEEL_DELTA` = 120, with sub-notch deltas possible from
-//! smooth-scroll hardware (`OverlayEvent::MouseWheel`: "`delta` is the RAW
-//! Win32 wheel delta in `WHEEL_DELTA` (120) units") — and `ZoomMode::on_wheel`
-//! applies `zoom *= step_factor^(delta / 120)` clamped to `[zoom.min,
-//! zoom.max]` ("Multiplies zoom by `step_factor^(delta / 120)`, clamped to
-//! [min, max]", src/overlay/modes/zoom.rs). One notch = 120 delta units = one
-//! step_factor multiplication. The resulting zoom (always > 0, >= min) is what
-//! the mode passes to `zoom_resample` ("`zoom` must be > 0 — callers clamp it
+//! smooth-scroll hardware — and `ZoomMode::on_wheel` applies
+//! `zoom *= step_factor^(delta / 120)` clamped to `[zoom.min, zoom.max]`
+//! (src/overlay/modes/zoom.rs). One notch = 120 delta units = one step_factor
+//! multiplication. The resulting zoom (always > 0, >= min) is what the
+//! pipeline passes to `zoom_resample` ("`zoom` must be > 0 — callers clamp it
 //! to the settings min/max", src/overlay/composite.rs), with `focus` = cursor
 //! monitor-local position and `viewport` = the monitor-local frame rect
 //! (its x/y are ignored by the resampler).
 
 mod common;
 
-use common::{buffer_with, darkened_pixel};
+use common::buffer_with;
 use spotfreeze::capture::DibBuffer;
 use spotfreeze::geometry::{Point, Rect};
 use spotfreeze::hotkeys::gesture::Modifiers;
-use spotfreeze::overlay::composite::{zoom_resample, ZoomFilter};
+use spotfreeze::overlay::composite::{ZoomFilter, zoom_resample};
 use spotfreeze::overlay::modes::zoom::ZoomMode;
-use spotfreeze::overlay::modes::OverlayMode;
+use spotfreeze::overlay::modes::{ModeKind, ModeParams, ModeStack};
 use spotfreeze::settings::model::ZoomSettings;
 
 /// One wheel notch in raw delta units (`WHEEL_DELTA`).
@@ -44,6 +51,19 @@ fn assert_uniform(buf: &DibBuffer, want: [u8; 4], ctx: &str) {
 /// model; `zoom_settings_documented_defaults` verifies the model itself.
 const DEFAULT_ZOOM: (f32, f32, f32) = (1.25, 1.0, 16.0);
 
+/// ModeParams matching the documented defaults (spotlight fields irrelevant
+/// here but present — the stack always starts with a spotlight layer).
+fn default_params() -> ModeParams {
+    ModeParams {
+        spotlight_radius: 150,
+        radius_modifier: Modifiers::CTRL,
+        zoom_step: DEFAULT_ZOOM.0,
+        zoom_min: DEFAULT_ZOOM.1,
+        zoom_max: DEFAULT_ZOOM.2,
+        zoom_modifier: Modifiers::SHIFT,
+    }
+}
+
 #[test]
 fn zoom_settings_documented_defaults() {
     let s = ZoomSettings::default();
@@ -57,15 +77,15 @@ fn wheel_applies_step_factor_per_notch_and_clamps_to_settings_bounds() {
     assert_eq!(zm.zoom(), 1.0, "initial zoom is 1.0");
 
     // One notch up: * step_factor.
-    let _ = zm.on_wheel(0, Point::new(5, 5), NOTCH, Modifiers::NONE);
+    let _ = zm.on_wheel(0, Point::new(5, 5), NOTCH);
     assert!((zm.zoom() - 1.25).abs() < 1e-6, "one notch = one step");
 
     // One notch down: back to 1.0.
-    let _ = zm.on_wheel(0, Point::new(5, 5), -NOTCH, Modifiers::NONE);
+    let _ = zm.on_wheel(0, Point::new(5, 5), -NOTCH);
     assert!((zm.zoom() - 1.0).abs() < 1e-6);
 
     // Two notches in one event: step^2 (raw-delta contract, see module docs).
-    let _ = zm.on_wheel(0, Point::new(5, 5), 2 * NOTCH, Modifiers::NONE);
+    let _ = zm.on_wheel(0, Point::new(5, 5), 2 * NOTCH);
     assert!(
         (zm.zoom() - 1.5625).abs() < 1e-5,
         "delta 240 = two notches = step^2, got {}",
@@ -73,15 +93,15 @@ fn wheel_applies_step_factor_per_notch_and_clamps_to_settings_bounds() {
     );
 
     // Far down: clamped exactly at min.
-    let _ = zm.on_wheel(0, Point::new(5, 5), -NOTCH, Modifiers::NONE); // back to ~1.0
+    let _ = zm.on_wheel(0, Point::new(5, 5), -NOTCH); // back to ~1.0
     for _ in 0..20 {
-        let _ = zm.on_wheel(0, Point::new(5, 5), -NOTCH, Modifiers::NONE);
+        let _ = zm.on_wheel(0, Point::new(5, 5), -NOTCH);
     }
     assert_eq!(zm.zoom(), min, "clamped at settings min");
 
     // Far up: clamped exactly at max (16.0 needs ~13 notches at 1.25).
     for _ in 0..50 {
-        let _ = zm.on_wheel(0, Point::new(5, 5), NOTCH, Modifiers::NONE);
+        let _ = zm.on_wheel(0, Point::new(5, 5), NOTCH);
     }
     assert_eq!(zm.zoom(), max, "clamped at settings max");
 
@@ -188,13 +208,13 @@ fn zoom_resample_magnifies_around_focus() {
 
 #[test]
 fn controller_style_flow_zoom_state_feeds_resample() {
-    // Drive the mode like the controller does, then hand its zoom to the
-    // resampler with the cursor as focus (the render path's contract).
+    // Drive the layer like the ModeStack does, then hand its zoom to the
+    // resampler with the cursor as focus (the compose path's contract).
     let (step_factor, min, max) = DEFAULT_ZOOM;
     let mut zm = ZoomMode::new(step_factor, min, max);
     let cursor = Point::new(32, 32);
     let _ = zm.on_mouse_move(0, cursor);
-    let _ = zm.on_wheel(0, cursor, NOTCH, Modifiers::NONE); // zoom = 1.25
+    let _ = zm.on_wheel(0, cursor, NOTCH); // zoom = 1.25
     let zoom = zm.zoom();
     assert!(zoom > 1.0 && zoom <= max, "clamped, resamplable zoom");
 
@@ -206,24 +226,49 @@ fn controller_style_flow_zoom_state_feeds_resample() {
 }
 
 #[test]
-fn zoom_render_cursor_monitor_shows_original_others_darkened() {
-    // Mode render contract: cursor monitor = zoom_resample of the ORIGINAL
-    // (undarkened); every other monitor = plain darkened original.
-    let original = buffer_with(32, 32, |_, _| [50, 60, 70, 255]);
-    let mut zm = ZoomMode::new(1.25, 1.0, 16.0);
-    let _ = zm.on_mouse_move(0, Point::new(16, 16)); // cursor on monitor 0, zoom 1.0
+fn render_state_carries_zoom_only_on_the_cursor_monitor() {
+    // Rework render-path contract (replaces the old ZoomMode::render pin):
+    // the layer contributes to `ModeStack::render_state` — and thereby to
+    // `compose_frame` — ONLY on the monitor its cursor is on; every other
+    // monitor gets a layer-free RenderState (plain darkened frame).
+    let mut stack = ModeStack::new(default_params());
+    stack.set_mode(ModeKind::Zoom); // full switch: zoom is the only layer
+    let cursor = Point::new(16, 16);
+    let _ = stack.on_mouse_move(0, cursor);
+    // Plain wheel reaches zoom because zoom is primary (routing matrix).
+    let _ = stack.on_wheel(0, cursor, NOTCH, Modifiers::NONE);
+    let zoom = stack.zoom().expect("zoom layer active").zoom();
+    assert!((zoom - 1.25).abs() < 1e-6);
 
-    let mut out0 = DibBuffer::new(32, 32);
-    zm.render(0, &original, &mut out0, 160);
-    assert_uniform(&out0, [50, 60, 70, 255], "cursor monitor: undarkened zoom view");
+    let rs0 = stack.render_state(0);
+    assert_eq!(rs0.zoom, Some((zoom, cursor)), "zoom layer on cursor monitor");
+    assert!(rs0.spotlight.is_none(), "set_mode dropped the spotlight layer");
+    assert!(rs0.snip.is_none());
 
-    let mut out1 = DibBuffer::new(32, 32);
-    zm.render(1, &original, &mut out1, 160);
-    assert_uniform(
-        &out1,
-        darkened_pixel([50, 60, 70, 255], 160),
-        "other monitor: plain darkened",
+    let rs1 = stack.render_state(1);
+    assert_eq!(rs1.zoom, None, "no zoom contribution off the cursor monitor");
+    assert!(rs1.spotlight.is_none());
+    assert!(rs1.snip.is_none());
+}
+
+#[test]
+fn render_state_zoom_modifier_wheel_zooms_when_layer_active() {
+    // Shift+wheel (the default zoom_modifier) reaches the zoom layer whenever
+    // it is active — even when zoom is NOT the primary mode.
+    let mut stack = ModeStack::new(default_params()); // starts: spotlight only
+    stack.add_mode(ModeKind::Zoom); // layer added, primary becomes Zoom
+    let _ = stack.on_mouse_move(0, Point::new(8, 8));
+    let _ = stack.on_wheel(0, Point::new(8, 8), NOTCH, Modifiers::SHIFT);
+    let zoom = stack.zoom().expect("zoom layer").zoom();
+    assert!(
+        (zoom - 1.25).abs() < 1e-6,
+        "Shift+wheel zooms while the zoom layer is active, got {zoom}"
     );
+    let rs = stack.render_state(0);
+    assert_eq!(rs.zoom, Some((zoom, Point::new(8, 8))));
+    // Spotlight is still active too (add_mode is additive): the hole follows
+    // the same cursor.
+    assert_eq!(rs.spotlight, Some((Point::new(8, 8), 150)));
 }
 
 /// Small namespace so the uniform-source tests read cleanly.

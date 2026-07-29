@@ -3,10 +3,19 @@
 //! `SnipMode` synthetic drag events => `snip_selection` => `crop_normalized`
 //! => exact expected sub-rectangle pixels.
 //!
+//! REWORK NOTE (composable modes update): the snip LAYER no longer renders —
+//! the controller hands `SnipSelection` endpoints to `composite::compose_frame`
+//! via `ModeStack::render_state` (pipeline stage: "snip selection
+//! copy+border"). The render test below drives `compose_frame` directly with
+//! the layer-produced selection. The selection BORDER (color/thickness) is
+//! not pinned by the SHARED API SPEC, so assertions keep a 2 px margin off
+//! the ring; layered snip-on-zoomed-base pixels are covered in
+//! `composition_pipeline.rs`.
+//!
 //! The controller contract being simulated (src/overlay/controller.rs,
-//! `snip_copy_and_close`): Ctrl+C crops the selection from the ORIGINAL
-//! (undarkened) capture of `SnipSelection.monitor` — the selection endpoints
-//! are monitor-local pixels — and copies the crop to the clipboard.
+//! `snip_copy_and_close`): Ctrl+C crops the selection from the composed BASE
+//! of `SnipSelection.monitor` — the selection endpoints are monitor-local
+//! pixels — and copies the crop to the clipboard.
 //!
 //! GAP (Win32/display-coupled, NOT covered headless — listed for Stage 3/4):
 //! the final `capture::copy_dib_to_clipboard` step touches the real system
@@ -15,12 +24,12 @@
 
 mod common;
 
-use common::{buffer_with, darkened_pixel};
+use common::{BLACK, buffer_with, darkened_pixel};
 use spotfreeze::capture::DibBuffer;
-use spotfreeze::geometry::Point;
-use spotfreeze::overlay::composite::crop_normalized;
+use spotfreeze::geometry::{Point, Rect};
+use spotfreeze::overlay::composite::{RenderState, compose_frame, crop_normalized};
 use spotfreeze::overlay::modes::snip::SnipMode;
-use spotfreeze::overlay::modes::{OverlayMode, SnipSelection};
+use spotfreeze::overlay::modes::SnipSelection;
 
 /// Coordinate-encoding pattern: pixel (x, y) = [x, y, x^y, 255] (BGRA).
 fn coord_pattern(x: u32, y: u32) -> [u8; 4] {
@@ -124,7 +133,7 @@ fn new_drag_replaces_previous_selection_and_tracks_monitor() {
     assert_eq!(first.monitor, 0);
 
     // New drag on ANOTHER monitor replaces the old selection wholesale —
-    // the controller will crop from that monitor's original capture.
+    // the controller will crop from that monitor's composed base.
     let _ = snip.on_left_button_down(1, Point::new(2, 3));
     let _ = snip.on_left_button_up(1, Point::new(20, 30));
     let sel = snip.snip_selection().expect("replaced selection");
@@ -170,63 +179,67 @@ fn crop_clips_to_buffer_bounds() {
 }
 
 #[test]
-fn render_darkens_everything_except_the_selection() {
-    // SnipMode render contract: darken everywhere EXCEPT the selected
-    // rectangle, which shows the original pixels (src/overlay/modes/snip.rs).
-    //
-    // DEVIATION NOTE (flagged for Stage 3/4): the landed implementation
-    // additionally draws a 2 px selection border (1 px outside + 1 px inside
-    // the selection rect edge) by INVERTING the underlying frame pixels —
-    // the frozen trait doc does not mention a border. The DOC-level
-    // invariants (interior = exact original, far outside = exact darkened)
-    // hold everywhere away from that ring; the ring itself is pinned below
-    // as implemented.
+fn compose_frame_snip_only_shows_original_inside_dimmed_outside() {
+    // Rework render contract: RenderState.snip = Some((a, b)) with no zoom
+    // layer => the selection shows the ORIGINAL pixels (base IS the original),
+    // everything outside stays darkened. The layer produces the endpoints;
+    // compose_frame does the pixels. Border ring: margin-safe (module docs).
     let original = buffer_with(40, 30, coord_pattern);
     let mut snip = SnipMode::new();
     drag(&mut snip, 0, Point::new(8, 6), Point::new(20, 18)); // rect x 8..20, y 6..18
+    let sel = snip.snip_selection().expect("selection");
 
+    let state = RenderState {
+        zoom: None,
+        spotlight: None,
+        snip: Some((sel.a, sel.b)),
+    };
     let mut out = DibBuffer::new(40, 30);
-    snip.render(0, &original, &mut out, 160);
+    compose_frame(&original, &mut out, Rect::new(0, 0, 40, 30), &state, 160, BLACK);
 
-    let invert = |p: [u8; 4]| [!p[0], !p[1], !p[2], p[3]];
-    for y in 0..30i32 {
-        for x in 0..40i32 {
-            let got = out.pixel(x as u32, y as u32).unwrap();
-            let in_sel = (8..20).contains(&x) && (6..18).contains(&y);
-            let base = if in_sel {
-                original.pixel(x as u32, y as u32).unwrap()
-            } else {
-                darkened_pixel(original.pixel(x as u32, y as u32).unwrap(), 160)
-            };
-            // Implemented border ring: full span on the two outer + two inner
-            // edge rows/columns of rc=(8,6,12,12); side columns on middle rows.
-            let on_edge_row = matches!(y, 5 | 6 | 17 | 18) && (7..=20).contains(&x);
-            let on_side_col = (7..17).contains(&y) && matches!(x, 7 | 8 | 19 | 20);
-            let want = if on_edge_row || on_side_col {
-                invert(base)
-            } else {
-                base
-            };
-            assert_eq!(got, want, "render mismatch at ({x}, {y})");
+    // Interior, >= 2 px off every rect edge (rect pixels x 8..=19, y 6..=17):
+    // EXACT original.
+    for y in 8..=15i32 {
+        for x in 10..=17i32 {
+            assert_eq!(
+                out.pixel(x as u32, y as u32).unwrap(),
+                original.pixel(x as u32, y as u32).unwrap(),
+                "selection interior ({x}, {y})"
+            );
         }
     }
-
-    // Doc-level invariants, margin-safe away from the border ring:
-    // deep interior == EXACT original; far outside == EXACT darkened.
-    assert_eq!(out.pixel(12, 12).unwrap(), original.pixel(12, 12).unwrap());
+    // Exterior, >= 3 px away from the rect: EXACT darkened original.
+    for (x, y) in [
+        (0u32, 0u32),
+        (39, 29),
+        (0, 29),
+        (39, 0),
+        (2, 15),
+        (25, 2),
+        (25, 25),
+        (4, 3),
+    ] {
+        assert_eq!(
+            out.pixel(x, y).unwrap(),
+            darkened_pixel(original.pixel(x, y).unwrap(), 160),
+            "outside selection ({x}, {y})"
+        );
+    }
+    // Deep-interior / deep-exterior invariants.
+    assert_eq!(out.pixel(14, 12).unwrap(), original.pixel(14, 12).unwrap());
     assert_eq!(
         out.pixel(0, 0).unwrap(),
         darkened_pixel(original.pixel(0, 0).unwrap(), 160)
     );
-    assert_eq!(
-        out.pixel(39, 29).unwrap(),
-        darkened_pixel(original.pixel(39, 29).unwrap(), 160)
-    );
 
-    // With no selection, render darkens the whole frame and draws nothing else.
-    let plain = SnipMode::new();
+    // No selection (snip: None) => uniformly darkened frame.
+    let plain = RenderState {
+        zoom: None,
+        spotlight: None,
+        snip: None,
+    };
     let mut out2 = DibBuffer::new(40, 30);
-    plain.render(0, &original, &mut out2, 160);
+    compose_frame(&original, &mut out2, Rect::new(0, 0, 40, 30), &plain, 160, BLACK);
     for y in 0..30u32 {
         for x in 0..40u32 {
             assert_eq!(

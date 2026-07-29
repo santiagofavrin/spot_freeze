@@ -1,12 +1,12 @@
-//! Spotlight mode: the frozen screen is darkened except a clear circle around
-//! the cursor. Pure state machine — rendering goes through
-//! [`crate::overlay::composite::spotlight_hole`].
+//! Spotlight LAYER: the frozen screen is darkened except a clear circle around
+//! the cursor. Pure state machine — pixel work moved to
+//! [`crate::overlay::composite::compose_frame`], which the controller feeds
+//! with this layer's [`SpotlightMode::cursor`]/[`SpotlightMode::radius`] via
+//! [`crate::overlay::modes::ModeStack::render_state`].
 
-use super::{ModeEffect, ModeKind, OverlayMode};
-use crate::capture::DibBuffer;
-use crate::hotkeys::gesture::Modifiers;
+use super::ModeEffect;
 use crate::geometry::{Point, Rect};
-use crate::overlay::composite::{darken, spotlight_hole};
+use crate::hotkeys::gesture::Modifiers;
 
 /// Smallest selectable spotlight radius (physical px).
 const MIN_RADIUS: u32 = 10;
@@ -58,11 +58,15 @@ fn circle_repaint(old: (usize, Rect), new: (usize, Rect)) -> ModeEffect {
     effect
 }
 
-/// Spotlight mode state: cursor position + circle radius.
+/// Spotlight layer state: cursor position + circle radius.
 ///
 /// Wheel events resize the circle ONLY while `radius_modifier` (settings:
 /// `hotkeys.spotlight_radius_modifier`, default Ctrl) is held; other wheel
-/// events are ignored (no-op effect).
+/// events are ignored (no-op effect). The [`super::ModeStack`] offers every
+/// wheel event to the active layer and relies on this internal gate — a
+/// `radius_modifier` of [`Modifiers::NONE`] therefore means "no modifier
+/// required": every wheel event resizes (bitflags `contains(NONE)` is always
+/// true).
 ///
 /// Wheel deltas arrive in RAW Win32 units (one notch = [`WHEEL_DELTA`] = 120).
 /// Smooth-scroll hardware (precision touchpads, high-resolution wheels) sends
@@ -87,8 +91,6 @@ impl SpotlightMode {
     ///
     /// The radius is clamped to `10..=1000` px, the same range wheel resizing
     /// is clamped to, so a rogue settings value cannot break the invariant.
-    /// A `radius_modifier` of [`Modifiers::NONE`] means "no modifier required":
-    /// every wheel event resizes (bitflags `contains(NONE)` is always true).
     pub fn new(default_radius: u32, radius_modifier: Modifiers) -> Self {
         Self {
             cursor: Point::default(),
@@ -103,15 +105,19 @@ impl SpotlightMode {
     pub fn radius(&self) -> u32 {
         self.radius
     }
-}
 
-impl OverlayMode for SpotlightMode {
-    fn kind(&self) -> ModeKind {
-        ModeKind::Spotlight
+    /// Cursor position the circle is centered on (monitor-local px).
+    pub fn cursor(&self) -> Point {
+        self.cursor
+    }
+
+    /// Monitor the cursor (and therefore the hole) is on.
+    pub fn cursor_monitor(&self) -> usize {
+        self.cursor_monitor
     }
 
     /// Tracks the cursor; requests a repaint of the hole's old + new regions.
-    fn on_mouse_move(&mut self, monitor: usize, at: Point) -> ModeEffect {
+    pub fn on_mouse_move(&mut self, monitor: usize, at: Point) -> ModeEffect {
         if monitor == self.cursor_monitor && at == self.cursor {
             return ModeEffect::none();
         }
@@ -129,9 +135,10 @@ impl OverlayMode for SpotlightMode {
     /// `wheel_accum` and each event consumes only the delta its whole-pixel
     /// step accounts for, so a stream of tiny deltas (e.g. precision-touchpad
     /// `+6` ticks) still resizes once the banked delta reaches a whole pixel.
-    /// The wheel's cursor position is tracked too, so a dirty region covers
-    /// both the old and the new circle.
-    fn on_wheel(
+    /// Deltas arriving while the modifier is NOT held return early and are
+    /// never banked. The wheel's cursor position is tracked too, so a dirty
+    /// region covers both the old and the new circle.
+    pub fn on_wheel(
         &mut self,
         monitor: usize,
         at: Point,
@@ -163,78 +170,11 @@ impl OverlayMode for SpotlightMode {
         self.radius = new_radius;
         circle_repaint(old, (monitor, circle_bbox(at, new_radius)))
     }
-
-    fn on_left_button_down(&mut self, _monitor: usize, _at: Point) -> ModeEffect {
-        ModeEffect::none()
-    }
-
-    fn on_left_button_up(&mut self, _monitor: usize, _at: Point) -> ModeEffect {
-        ModeEffect::none()
-    }
-
-    fn on_key(&mut self, _vk: u32, _modifiers: Modifiers) -> ModeEffect {
-        ModeEffect::none()
-    }
-
-    /// Darken the original, then cut the original pixels back in inside the
-    /// circle (only on the monitor where the cursor currently is).
-    fn render(&self, monitor: usize, original: &DibBuffer, out: &mut DibBuffer, dim_alpha: u8) {
-        // Contract: same dimensions. Guarded (not asserted) so a buggy caller
-        // degrades to a plain darkened frame instead of panicking in release.
-        let same_dims = original.width == out.width
-            && original.height == out.height
-            && original.stride == out.stride
-            && original.pixels.len() == out.pixels.len();
-        if same_dims {
-            out.pixels.copy_from_slice(&original.pixels);
-        }
-        darken(out, dim_alpha);
-        if same_dims && monitor == self.cursor_monitor {
-            spotlight_hole(out, original, self.cursor, self.radius);
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ---- helpers -------------------------------------------------------
-
-    /// Synthetic buffer from a pixel generator (pub fields — no reliance on
-    /// `DibBuffer::new`, which belongs to another module).
-    fn make_buf(w: u32, h: u32, f: impl Fn(u32, u32) -> [u8; 4]) -> DibBuffer {
-        let mut pixels = Vec::with_capacity((w * h * 4) as usize);
-        for y in 0..h {
-            for x in 0..w {
-                pixels.extend_from_slice(&f(x, y));
-            }
-        }
-        DibBuffer {
-            width: w,
-            height: h,
-            stride: w * 4,
-            pixels,
-        }
-    }
-
-    fn px(buf: &DibBuffer, x: u32, y: u32) -> [u8; 4] {
-        let i = (y * buf.stride + x * 4) as usize;
-        buf.pixels[i..i + 4].try_into().unwrap()
-    }
-
-    /// Darken contract math (mirrors composite::darken docs).
-    fn dimmed(c: [u8; 4], dim_alpha: u8) -> [u8; 4] {
-        let keep = 255 - dim_alpha as u32;
-        [
-            (c[0] as u32 * keep / 255) as u8,
-            (c[1] as u32 * keep / 255) as u8,
-            (c[2] as u32 * keep / 255) as u8,
-            c[3],
-        ]
-    }
-
-    const COLOR: [u8; 4] = [200, 100, 50, 255];
 
     // ---- construction / state ------------------------------------------
 
@@ -246,18 +186,10 @@ mod tests {
     }
 
     #[test]
-    fn kind_is_spotlight() {
-        assert_eq!(SpotlightMode::new(100, Modifiers::CTRL).kind(), ModeKind::Spotlight);
-    }
-
-    #[test]
-    fn buttons_and_keys_are_noops() {
-        let mut m = SpotlightMode::new(100, Modifiers::CTRL);
-        assert_eq!(m.on_left_button_down(0, Point::new(5, 5)), ModeEffect::none());
-        assert_eq!(m.on_left_button_up(0, Point::new(5, 5)), ModeEffect::none());
-        assert_eq!(m.on_key(0x1B, Modifiers::NONE), ModeEffect::none());
-        assert_eq!(m.snip_selection(), None);
-        assert_eq!(m.reset_view(), ModeEffect::none());
+    fn new_starts_cursor_at_origin_monitor_zero() {
+        let m = SpotlightMode::new(100, Modifiers::CTRL);
+        assert_eq!(m.cursor(), Point::new(0, 0));
+        assert_eq!(m.cursor_monitor(), 0);
     }
 
     // ---- mouse move ------------------------------------------------------
@@ -298,6 +230,8 @@ mod tests {
                 (1, Some(Rect::new(10, 20, 41, 41))),
             ],
         );
+        assert_eq!(m.cursor_monitor(), 1);
+        assert_eq!(m.cursor(), Point::new(30, 40));
     }
 
     // ---- wheel -----------------------------------------------------------
@@ -449,76 +383,5 @@ mod tests {
             e.repaint,
             vec![(0, Some(Rect::new(40, 40, 211, 211)))],
         );
-    }
-
-    // ---- render ----------------------------------------------------------
-
-    #[test]
-    fn render_darkens_everywhere_except_circle() {
-        let original = make_buf(40, 40, |_, _| COLOR);
-        let mut out = make_buf(40, 40, |_, _| [0, 0, 0, 0]);
-        let mut m = SpotlightMode::new(10, Modifiers::CTRL);
-        m.on_mouse_move(0, Point::new(20, 20));
-        m.render(0, &original, &mut out, 128);
-
-        let dim = dimmed(COLOR, 128);
-        for y in 0..40i32 {
-            for x in 0..40i32 {
-                let dx = x - 20;
-                let dy = y - 20;
-                let inside = dx * dx + dy * dy <= 100;
-                let expect = if inside { COLOR } else { dim };
-                assert_eq!(px(&out, x as u32, y as u32), expect, "({x},{y})");
-            }
-        }
-    }
-
-    #[test]
-    fn render_other_monitors_are_fully_darkened() {
-        let original = make_buf(16, 16, |_, _| COLOR);
-        let mut out = make_buf(16, 16, |_, _| [0, 0, 0, 0]);
-        let mut m = SpotlightMode::new(10, Modifiers::CTRL);
-        m.on_mouse_move(0, Point::new(8, 8));
-        m.render(1, &original, &mut out, 128); // monitor 1: cursor is on 0
-        let dim = dimmed(COLOR, 128);
-        for y in 0..16 {
-            for x in 0..16 {
-                assert_eq!(px(&out, x, y), dim, "({x},{y})");
-            }
-        }
-    }
-
-    #[test]
-    fn render_pattern_preserves_exact_pixels_inside_hole() {
-        // Non-uniform pattern: the hole must show the ORIGINAL bytes, and the
-        // dimmed region must be the darkened pattern (not a flat fill).
-        let pattern = |x: u32, y: u32| [(x * 3) as u8, (y * 5) as u8, (x + y) as u8, 255];
-        let original = make_buf(30, 30, pattern);
-        let mut out = make_buf(30, 30, |_, _| [0, 0, 0, 0]);
-        let mut m = SpotlightMode::new(12, Modifiers::CTRL);
-        m.on_mouse_move(0, Point::new(15, 15));
-        m.render(0, &original, &mut out, 100);
-        for y in 0..30i32 {
-            for x in 0..30i32 {
-                let dx = x - 15;
-                let dy = y - 15;
-                let c = pattern(x as u32, y as u32);
-                let expect = if dx * dx + dy * dy <= 144 {
-                    c
-                } else {
-                    dimmed(c, 100)
-                };
-                assert_eq!(px(&out, x as u32, y as u32), expect, "({x},{y})");
-            }
-        }
-    }
-
-    #[test]
-    fn render_dim_alpha_zero_leaves_original() {
-        let original = make_buf(10, 10, |x, y| [x as u8, y as u8, 7, 255]);
-        let mut out = make_buf(10, 10, |_, _| [1, 2, 3, 4]);
-        let m = SpotlightMode::new(10, Modifiers::CTRL);
-        m.render(0, &original, &mut out, 0);
-        assert_eq!(out.pixels, original.pixels);
     }
 }

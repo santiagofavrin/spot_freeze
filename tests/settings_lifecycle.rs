@@ -12,7 +12,7 @@ mod common;
 
 use common::TempDirGuard;
 use spotfreeze::hotkeys::gesture::{HotkeyGesture, Modifiers};
-use spotfreeze::settings::model::AppSettings;
+use spotfreeze::settings::model::{AppSettings, Rgb};
 use spotfreeze::settings::store;
 
 #[test]
@@ -24,6 +24,17 @@ fn documented_default_values() {
     assert_eq!(s.zoom.min, 1.0, "zoom.min");
     assert_eq!(s.zoom.max, 16.0, "zoom.max");
     assert_eq!(s.overlay.dim_opacity, 160, "overlay.dim_opacity");
+    // Rework additions (composable modes update, SHARED API SPEC):
+    assert_eq!(
+        s.overlay.color,
+        Rgb { r: 0, g: 0, b: 0 },
+        "overlay.color default = black"
+    );
+    assert_eq!(
+        s.hotkeys.zoom_modifier,
+        Modifiers::SHIFT,
+        "hotkeys.zoom_modifier default = Shift"
+    );
 }
 
 #[test]

@@ -4,14 +4,25 @@
 //! geometry and is exhaustively unit-tested headless. Coordinates are
 //! BUFFER-LOCAL physical pixels unless a function explicitly says
 //! virtual-screen.
+//!
+//! The render pipeline for one monitor's frame is [`compose_frame`], fed with
+//! a [`RenderState`] built by the mode stack (composable layers):
+//! **zoom base → colored darken → spotlight hole (reveals the ZOOMED base) →
+//! snip selection (interior + border ring)**.
 
 use crate::capture::DibBuffer;
 use crate::geometry::{Point, Rect};
+use crate::settings::model::Rgb;
 
-/// Darken `buf` IN PLACE by blending toward black:
-/// `channel' = channel * (255 - dim_alpha) / 255` for B, G, R; alpha untouched.
-/// `dim_alpha` 0 = no change, 255 = fully black.
-pub fn darken(buf: &mut DibBuffer, dim_alpha: u8) {
+/// Darken `buf` IN PLACE by blending toward the veil `color`:
+/// `channel' = (channel * (255 - dim_alpha) + color_channel * dim_alpha) / 255`
+/// for B, G, R (ONE division, single truncation); alpha untouched.
+///
+/// `color = Rgb::BLACK` reduces EXACTLY to the legacy black-veil formula
+/// (`channel * (255 - dim_alpha) / 255`). `dim_alpha` 0 = no change,
+/// 255 = exactly the veil color. Buffer channels are BGRA: `color.b` blends
+/// into channel 0, `color.g` into 1, `color.r` into 2.
+pub fn darken(buf: &mut DibBuffer, dim_alpha: u8, color: Rgb) {
     if dim_alpha == 0 {
         return; // identity — avoid touching memory at all
     }
@@ -20,24 +31,17 @@ pub fn darken(buf: &mut DibBuffer, dim_alpha: u8) {
         return; // empty buffer: chunks_exact_mut(0) would panic
     }
     let keep = (255 - dim_alpha) as u32;
+    let a = dim_alpha as u32;
+    let veil = [color.b as u32, color.g as u32, color.r as u32];
     // Row-slice iteration: one bounds check per row instead of per pixel.
     for row in buf.pixels.chunks_exact_mut(stride) {
-        if dim_alpha == 255 {
-            // Fully black: zero B/G/R only, keep alpha bytes.
-            for px in row.chunks_exact_mut(4) {
-                px[0] = 0;
-                px[1] = 0;
-                px[2] = 0;
-            }
-        } else {
-            for px in row.chunks_exact_mut(4) {
-                // Exact contract math: floor(ch * (255 - dim_alpha) / 255).
-                // Max value is 255*255 = 65025 — u32 cannot overflow.
-                px[0] = (px[0] as u32 * keep / 255) as u8;
-                px[1] = (px[1] as u32 * keep / 255) as u8;
-                px[2] = (px[2] as u32 * keep / 255) as u8;
-                // px[3] (alpha) untouched.
-            }
+        for px in row.chunks_exact_mut(4) {
+            // Exact contract math: floor((ch * (255 - a) + veil * a) / 255).
+            // Max value is 255*255 + 255*255 = 130050 — u32 cannot overflow.
+            px[0] = ((px[0] as u32 * keep + veil[0] * a) / 255) as u8;
+            px[1] = ((px[1] as u32 * keep + veil[1] * a) / 255) as u8;
+            px[2] = ((px[2] as u32 * keep + veil[2] * a) / 255) as u8;
+            // px[3] (alpha) untouched.
         }
     }
 }
@@ -245,6 +249,233 @@ pub fn zoom_resample(
     out
 }
 
+/// Per-monitor input to [`compose_frame`]: which composable layers contribute
+/// to THIS monitor's frame, and where. Built by
+/// [`crate::overlay::modes::ModeStack::render_state`] — each layer contributes
+/// only on the monitor its state lives on.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RenderState {
+    /// `(factor, focus)` when the zoom layer is active on this monitor:
+    /// `factor` is the magnification (>= 1.0), `focus` the monitor-local
+    /// cursor position the zoomed view is centered on.
+    pub zoom: Option<(f32, Point)>,
+    /// `(center, radius)` when the spotlight layer is active on this monitor:
+    /// the circle of undarkened base around the cursor (monitor-local).
+    pub spotlight: Option<(Point, u32)>,
+    /// `(a, b)` drag endpoints of the snip selection (monitor-local, ANY drag
+    /// direction — normalized internally) when present on this monitor.
+    pub snip: Option<(Point, Point)>,
+}
+
+/// Compose one monitor's frame into `out`, COMPLETELY overwriting it, in the
+/// spec pipeline order:
+///
+/// 1. **Zoom base**: when `state.zoom` is set, the base is
+///    [`zoom_resample`] of `original` over `viewport` with
+///    [`ZoomFilter::Nearest`] (the render path's filter — zero interpolation
+///    cost, and the snip-copy path crops the identical resample, so the copy
+///    matches the presented frame pixel-for-pixel); otherwise the base IS
+///    `original`.
+/// 2. **Colored darken**: [`darken`] applies the veil (`dim_alpha`, `color`)
+///    to the base copied into `out`.
+/// 3. **Spotlight hole**: [`spotlight_hole`] restores the UNDARKENED base
+///    inside the circle.
+/// 4. **Snip selection**: the interior reveals the undarkened base and a 2 px
+///    border ring (1 px outside + 1 px inside the rect edge) is drawn by
+///    INVERTING the current frame pixels — inversion contrasts with both the
+///    darkened veil and the restored base on any content, needs no settings
+///    color, and matches the layer's dirty-region contract
+///    ([`crate::overlay::modes::snip`]).
+///
+/// `viewport.x`/`viewport.y` are ignored (mirroring [`zoom_resample`]);
+/// `out` may differ in size from `original` — every stage operates on the
+/// common rectangle only. No allocations on the no-zoom path.
+pub fn compose_frame(
+    original: &DibBuffer,
+    out: &mut DibBuffer,
+    viewport: Rect,
+    state: &RenderState,
+    dim_alpha: u8,
+    color: Rgb,
+) {
+    // 1. Base: the zoomed view when the zoom layer is active on this monitor,
+    //    else the original capture. `zoomed` owns the resample (if any) so
+    //    `base` can borrow from either source uniformly.
+    let zoomed;
+    let base: &DibBuffer = match state.zoom {
+        Some((factor, focus)) => {
+            zoomed = zoom_resample(original, viewport, factor, focus, ZoomFilter::Nearest);
+            &zoomed
+        }
+        None => original,
+    };
+
+    // 2. Copy the base into `out`, then darken in place (the veil).
+    copy_into(out, base);
+    darken(out, dim_alpha, color);
+
+    // 3. Spotlight hole reveals the undarkened base inside the circle.
+    if let Some((center, radius)) = state.spotlight {
+        spotlight_hole(out, base, center, radius);
+    }
+
+    // 4. Snip selection: interior reveals the undarkened base; the border
+    //    ring inverts whatever the frame currently shows (painted LAST so the
+    //    ring is never overwritten by the other layers).
+    if let Some((a, b)) = state.snip {
+        let rect = Rect::from_points(a, b);
+        if !rect.is_empty() {
+            restore_rect(out, base, rect);
+            invert_border_ring(out, rect);
+        }
+    }
+}
+
+/// Copy `src` into `dst` over their common rectangle (row-slice memcpy per
+/// row). Same-size buffers (the controller's per-monitor case) are a straight
+/// full-frame copy.
+fn copy_into(dst: &mut DibBuffer, src: &DibBuffer) {
+    let w = dst.width.min(src.width) as usize;
+    let h = dst.height.min(src.height) as usize;
+    if w == 0 || h == 0 {
+        return;
+    }
+    let dstride = dst.stride as usize;
+    let sstride = src.stride as usize;
+    let row_bytes = w * 4;
+    for y in 0..h {
+        let di = y * dstride;
+        let si = y * sstride;
+        dst.pixels[di..di + row_bytes].copy_from_slice(&src.pixels[si..si + row_bytes]);
+    }
+}
+
+/// Copy the base pixels of the NORMALIZED, pre-clipped rect `r` back over the
+/// frame (the snip selection interior). Clipped to both buffers' common
+/// rectangle; a fully-outside rect is a no-op.
+fn restore_rect(out: &mut DibBuffer, base: &DibBuffer, r: Rect) {
+    let w = out.width.min(base.width) as i32;
+    let h = out.height.min(base.height) as i32;
+    let x0 = r.x.max(0);
+    let y0 = r.y.max(0);
+    let x1 = (r.x + r.width as i32).min(w);
+    let y1 = (r.y + r.height as i32).min(h);
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let dstride = out.stride as usize;
+    let sstride = base.stride as usize;
+    let row_bytes = (x1 - x0) as usize * 4;
+    for y in y0..y1 {
+        let di = y as usize * dstride + x0 as usize * 4;
+        let si = y as usize * sstride + x0 as usize * 4;
+        out.pixels[di..di + row_bytes].copy_from_slice(&base.pixels[si..si + row_bytes]);
+    }
+}
+
+/// Pixels the snip selection border extends OUTSIDE the selection rect (the
+/// full ring is `SNIP_BORDER_OUT + 1` px: one more ring just inside the edge).
+/// Mirrors the layer's dirty-region contract in `modes::snip`.
+const SNIP_BORDER_OUT: i32 = 1;
+
+/// Invert B/G/R of the pixel span `x0..=x1` on row `y` (alpha untouched);
+/// clipped to the buffer, so out-of-bounds spans are safely ignored.
+fn invert_span(buf: &mut DibBuffer, y: i32, x0: i32, x1: i32) {
+    if y < 0 || y >= buf.height as i32 {
+        return;
+    }
+    let x0 = x0.max(0);
+    let x1 = x1.min(buf.width as i32 - 1);
+    if x0 > x1 {
+        return;
+    }
+    let stride = buf.stride as usize;
+    let row = y as usize * stride;
+    for x in x0..=x1 {
+        let i = row + x as usize * 4;
+        buf.pixels[i] = !buf.pixels[i];
+        buf.pixels[i + 1] = !buf.pixels[i + 1];
+        buf.pixels[i + 2] = !buf.pixels[i + 2];
+    }
+}
+
+/// Draw the snip selection border as a 2 px ring (1 px outside + 1 px inside
+/// the rect edge) by INVERTING the current frame pixels. `rc` is the
+/// normalized selection rect (buffer-local, unclipped input tolerated).
+fn invert_border_ring(buf: &mut DibBuffer, rc: Rect) {
+    let bw = buf.width as i32;
+    let bh = buf.height as i32;
+    if bw == 0 || bh == 0 {
+        return;
+    }
+    let rright = rc.x + rc.width as i32;
+    let rbottom = rc.y + rc.height as i32;
+    // Clipped outer-ring bounds, inclusive.
+    let ox0 = (rc.x - SNIP_BORDER_OUT).max(0);
+    let oy0 = (rc.y - SNIP_BORDER_OUT).max(0);
+    let ox1 = (rright + SNIP_BORDER_OUT - 1).min(bw - 1);
+    let oy1 = (rbottom + SNIP_BORDER_OUT - 1).min(bh - 1);
+    if ox0 > ox1 || oy0 > oy1 {
+        return;
+    }
+    for y in oy0..=oy1 {
+        // The two edge rows on each side (outer + inner ring) span the full
+        // width; middle rows touch only the two side columns. For 1-px-wide
+        // selections the side columns overlap into a full-width span.
+        if y <= rc.y || y >= rbottom - 1 || rc.width == 1 {
+            invert_span(buf, y, ox0, ox1);
+        } else {
+            invert_span(buf, y, ox0, rc.x);
+            invert_span(buf, y, rright - 1, ox1);
+        }
+    }
+}
+
+/// Draw a solid border ring `thickness` px wide around the frame edge in
+/// `color` (B/G/R channels; alpha untouched) — the mode-change flash frame
+/// painted by the controller on top of a freshly composed frame.
+///
+/// `thickness` is clamped to the buffer dimensions: an oversized thickness
+/// simply fills the whole frame. `thickness == 0` is a no-op.
+pub fn draw_border(buf: &mut DibBuffer, color: Rgb, thickness: u32) {
+    let w = buf.width as usize;
+    let h = buf.height as usize;
+    if thickness == 0 || w == 0 || h == 0 {
+        return;
+    }
+    let t = (thickness as usize).min(w).min(h);
+    let stride = buf.stride as usize;
+    for y in 0..h {
+        let row = &mut buf.pixels[y * stride..y * stride + w * 4];
+        if y < t || y >= h - t {
+            // Top/bottom bands: full-width rows.
+            for px in row.chunks_exact_mut(4) {
+                px[0] = color.b;
+                px[1] = color.g;
+                px[2] = color.r;
+            }
+        } else {
+            // Middle rows: left and right bands only (overlap when the ring
+            // fills the width — painting twice is harmless).
+            for x in 0..t {
+                px_assign(&mut row[x * 4..], color);
+            }
+            for x in (w - t)..w {
+                px_assign(&mut row[x * 4..], color);
+            }
+        }
+    }
+}
+
+/// Set the B/G/R channels of the pixel at the start of `px` (a >= 4-byte
+/// slice into the frame); alpha untouched.
+#[inline]
+fn px_assign(px: &mut [u8], color: Rgb) {
+    px[0] = color.b;
+    px[1] = color.g;
+    px[2] = color.r;
+}
+
 /// Crop `src` to the rectangle between drag endpoints `a` and `b` given in ANY
 /// drag direction (negative drags are normalized), clipped to buffer bounds.
 /// Returns `None` when the normalized/clipped rectangle is empty.
@@ -343,18 +574,29 @@ mod tests {
 
     // ---- darken --------------------------------------------------------
 
+    /// The default veil (black) — the legacy behavior.
+    const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
+    /// A non-black veil for the colored-darken pins: #802020 (dark red).
+    const VEIL: Rgb = Rgb {
+        r: 0x80,
+        g: 0x20,
+        b: 0x20,
+    };
+
     #[test]
     fn darken_alpha_zero_is_noop() {
-        let mut buf = make_buf(16, 16, pattern);
-        let before = buf.pixels.clone();
-        darken(&mut buf, 0);
-        assert_eq!(buf.pixels, before);
+        for color in [BLACK, VEIL] {
+            let mut buf = make_buf(16, 16, pattern);
+            let before = buf.pixels.clone();
+            darken(&mut buf, 0, color);
+            assert_eq!(buf.pixels, before);
+        }
     }
 
     #[test]
     fn darken_full_alpha_is_black_but_keeps_alpha() {
         let mut buf = make_buf(8, 8, |x, y| [x as u8, y as u8, 200, 123]);
-        darken(&mut buf, 255);
+        darken(&mut buf, 255, BLACK);
         for y in 0..8 {
             for x in 0..8 {
                 assert_eq!(px(&buf, x, y), [0, 0, 0, 123]);
@@ -364,11 +606,12 @@ mod tests {
 
     #[test]
     fn darken_exact_channel_math() {
-        // Exhaustive over representative channel values × dim alphas.
+        // Exhaustive over representative channel values × dim alphas (black
+        // veil == the legacy formula exactly).
         for &ch in &[0u8, 1, 2, 127, 128, 200, 254, 255] {
             for &a in &[0u8, 1, 63, 128, 191, 254, 255] {
                 let mut buf = solid(1, 1, [ch, ch, ch, 77]);
-                darken(&mut buf, a);
+                darken(&mut buf, a, BLACK);
                 let expect = (ch as u32 * (255 - a as u32) / 255) as u8;
                 assert_eq!(px(&buf, 0, 0), [expect, expect, expect, 77], "ch={ch} a={a}");
             }
@@ -376,9 +619,42 @@ mod tests {
     }
 
     #[test]
+    fn darken_colored_veil_exact_channel_math() {
+        // channel' = (ch * (255 - a) + veil_ch * a) / 255, ONE division; BGRA:
+        // color.b -> ch 0, color.g -> ch 1, color.r -> ch 2; alpha untouched.
+        let blend = |ch: u8, veil: u8, a: u8| {
+            ((ch as u32 * (255 - a as u32) + veil as u32 * a as u32) / 255) as u8
+        };
+        for &ch in &[0u8, 1, 127, 200, 255] {
+            for &a in &[1u8, 63, 160, 191, 254] {
+                let mut buf = solid(1, 1, [ch, ch, ch, 77]);
+                darken(&mut buf, a, VEIL);
+                let want = [
+                    blend(ch, VEIL.b, a),
+                    blend(ch, VEIL.g, a),
+                    blend(ch, VEIL.r, a),
+                    77,
+                ];
+                assert_eq!(px(&buf, 0, 0), want, "ch={ch} a={a}");
+            }
+        }
+    }
+
+    #[test]
+    fn darken_full_alpha_is_exactly_the_veil_color() {
+        let mut buf = make_buf(4, 4, |x, y| [x as u8, y as u8, 90, 55]);
+        darken(&mut buf, 255, VEIL);
+        for y in 0..4 {
+            for x in 0..4 {
+                assert_eq!(px(&buf, x, y), [VEIL.b, VEIL.g, VEIL.r, 55]);
+            }
+        }
+    }
+
+    #[test]
     fn darken_empty_buffer_no_panic() {
         let mut buf = DibBuffer::default();
-        darken(&mut buf, 128);
+        darken(&mut buf, 128, VEIL);
         assert!(buf.pixels.is_empty());
     }
 
@@ -678,5 +954,206 @@ mod tests {
         let p = Point::new(37, 42);
         assert_eq!(virtual_to_local(p, primary), p);
         assert_eq!(local_to_virtual(p, primary), p);
+    }
+
+    // ---- compose_frame ---------------------------------------------------
+
+    /// Reference colored-dim math, mirroring the documented darken formula.
+    fn dimmed(p: [u8; 4], a: u8, color: Rgb) -> [u8; 4] {
+        let ch = |c: u8, v: u8| ((c as u32 * (255 - a as u32) + v as u32 * a as u32) / 255) as u8;
+        [ch(p[0], color.b), ch(p[1], color.g), ch(p[2], color.r), p[3]]
+    }
+
+    #[test]
+    fn compose_no_layers_is_plain_colored_dim_of_original() {
+        let original = make_buf(16, 12, pattern);
+        let mut out = DibBuffer::new(16, 12);
+        compose_frame(
+            &original,
+            &mut out,
+            Rect::new(0, 0, 16, 12),
+            &RenderState::default(),
+            160,
+            VEIL,
+        );
+        for y in 0..12 {
+            for x in 0..16 {
+                assert_eq!(px(&out, x, y), dimmed(pattern(x, y), 160, VEIL), "({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn compose_dim_alpha_zero_is_the_original_frame() {
+        let original = make_buf(8, 8, pattern);
+        let mut out = DibBuffer::new(8, 8);
+        compose_frame(
+            &original,
+            &mut out,
+            Rect::new(0, 0, 8, 8),
+            &RenderState::default(),
+            0,
+            VEIL,
+        );
+        assert_eq!(out, original);
+    }
+
+    #[test]
+    fn compose_spotlight_hole_reveals_original_colored_dim_outside() {
+        let original = make_buf(16, 16, pattern);
+        let state = RenderState {
+            zoom: None,
+            spotlight: Some((Point::new(8, 8), 2)),
+            snip: None,
+        };
+        let mut out = DibBuffer::new(16, 16);
+        compose_frame(&original, &mut out, Rect::new(0, 0, 16, 16), &state, 160, VEIL);
+        for y in 0..16i32 {
+            for x in 0..16i32 {
+                let inside = (x - 8) * (x - 8) + (y - 8) * (y - 8) <= 4;
+                let p = pattern(x as u32, y as u32);
+                let want = if inside { p } else { dimmed(p, 160, VEIL) };
+                assert_eq!(px(&out, x as u32, y as u32), want, "({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn compose_zoom_spotlight_reveals_the_zoomed_base() {
+        // 2x zoom around (8,8); the hole must show the ZOOMED base, not the
+        // original: output (10,8) samples src 8 + (10.5-8)/2 - 0.5 = 8.75 ->
+        // 9 (nearest) — discriminated against original(10,8) below.
+        let original = make_buf(16, 16, pattern);
+        let focus = Point::new(8, 8);
+        let state = RenderState {
+            zoom: Some((2.0, focus)),
+            spotlight: Some((Point::new(8, 8), 3)),
+            snip: None,
+        };
+        let zoomed = zoom_resample(
+            &original,
+            Rect::new(0, 0, 16, 16),
+            2.0,
+            focus,
+            ZoomFilter::Nearest,
+        );
+        let mut out = DibBuffer::new(16, 16);
+        compose_frame(&original, &mut out, Rect::new(0, 0, 16, 16), &state, 160, BLACK);
+        // Inside the hole: exact zoomed base. Outside: dimmed zoomed base.
+        assert_eq!(px(&out, 8, 8), px(&zoomed, 8, 8));
+        assert_eq!(px(&out, 0, 0), dimmed(px(&zoomed, 0, 0), 160, BLACK));
+        // The hole is the zoomed base, not the original.
+        assert_eq!(px(&out, 10, 8), px(&zoomed, 10, 8));
+        assert_ne!(px(&out, 10, 8), pattern(10, 8));
+    }
+
+    #[test]
+    fn compose_snip_shows_base_inside_dimmed_outside_with_inverted_ring() {
+        let original = make_buf(20, 20, pattern);
+        let (a, b) = (Point::new(5, 5), Point::new(12, 10)); // rect x 5..12, y 5..10
+        let state = RenderState {
+            zoom: None,
+            spotlight: None,
+            snip: Some((a, b)),
+        };
+        let mut out = DibBuffer::new(20, 20);
+        compose_frame(&original, &mut out, Rect::new(0, 0, 20, 20), &state, 160, BLACK);
+
+        // Deep interior (>= 2 px off every edge): exact original.
+        for y in 7..=7u32 {
+            for x in 7..=10u32 {
+                assert_eq!(px(&out, x, y), pattern(x, y), "interior ({x},{y})");
+            }
+        }
+        // Far exterior: dimmed original.
+        assert_eq!(px(&out, 0, 0), dimmed(pattern(0, 0), 160, BLACK));
+        assert_eq!(px(&out, 19, 19), dimmed(pattern(19, 19), 160, BLACK));
+        // The ring is 1 px OUTSIDE + 1 px INSIDE the rect edge, inverted:
+        // outer-ring pixel (4,5) shows the inverted DIMMED original; inner-ring
+        // pixel (5,6) shows the inverted RESTORED original; one px further
+        // out/in the frame is untouched by the ring.
+        let outer = px(&out, 4, 5);
+        let expect_outer = {
+            let d = dimmed(pattern(4, 5), 160, BLACK);
+            [!d[0], !d[1], !d[2], d[3]]
+        };
+        assert_eq!(outer, expect_outer, "outer ring inverts the dimmed frame");
+        let inner = px(&out, 5, 6);
+        let p56 = pattern(5, 6);
+        assert_eq!(inner, [!p56[0], !p56[1], !p56[2], p56[3]], "inner ring inverts the base");
+        assert_eq!(px(&out, 6, 6), pattern(6, 6), "just inside the ring: plain base");
+        assert_eq!(px(&out, 3, 5), dimmed(pattern(3, 5), 160, BLACK), "beyond the ring");
+        // Negative drags normalize identically.
+        let state2 = RenderState {
+            zoom: None,
+            spotlight: None,
+            snip: Some((b, a)),
+        };
+        let mut out2 = DibBuffer::new(20, 20);
+        compose_frame(&original, &mut out2, Rect::new(0, 0, 20, 20), &state2, 160, BLACK);
+        assert_eq!(out.pixels, out2.pixels);
+    }
+
+    #[test]
+    fn compose_degenerate_snip_renders_nothing() {
+        let original = make_buf(8, 8, pattern);
+        let state = RenderState {
+            zoom: None,
+            spotlight: None,
+            snip: Some((Point::new(4, 4), Point::new(4, 4))),
+        };
+        let mut out = DibBuffer::new(8, 8);
+        compose_frame(&original, &mut out, Rect::new(0, 0, 8, 8), &state, 160, BLACK);
+        for y in 0..8 {
+            for x in 0..8 {
+                assert_eq!(px(&out, x, y), dimmed(pattern(x, y), 160, BLACK), "({x},{y})");
+            }
+        }
+    }
+
+    // ---- draw_border (mode-change flash frame) ----------------------------
+
+    #[test]
+    fn draw_border_paints_a_solid_ring_and_keeps_alpha() {
+        let mut buf = solid(10, 8, [1, 2, 3, 200]);
+        let white = Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        };
+        draw_border(&mut buf, white, 2);
+        for y in 0..8u32 {
+            for x in 0..10u32 {
+                let in_ring = !(2..8).contains(&x) || !(2..6).contains(&y);
+                let want = if in_ring {
+                    [255, 255, 255, 200]
+                } else {
+                    [1, 2, 3, 200]
+                };
+                assert_eq!(px(&buf, x, y), want, "({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn draw_border_zero_thickness_and_empty_buffer_are_noops() {
+        let mut buf = make_buf(4, 4, pattern);
+        let before = buf.pixels.clone();
+        draw_border(&mut buf, Rgb::BLACK, 0);
+        assert_eq!(buf.pixels, before);
+        let mut empty = DibBuffer::default();
+        draw_border(&mut empty, Rgb::BLACK, 6); // must not panic
+        assert!(empty.pixels.is_empty());
+    }
+
+    #[test]
+    fn draw_border_oversized_thickness_fills_the_frame() {
+        let mut buf = solid(4, 4, [9, 9, 9, 255]);
+        draw_border(&mut buf, Rgb { r: 1, g: 2, b: 3 }, 100);
+        for y in 0..4 {
+            for x in 0..4 {
+                assert_eq!(px(&buf, x, y), [3, 2, 1, 255]);
+            }
+        }
     }
 }

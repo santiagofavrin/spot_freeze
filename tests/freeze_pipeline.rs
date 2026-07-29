@@ -4,6 +4,11 @@
 //! => darken => spotlight_hole => original pixels restored EXACTLY inside the
 //! circle only.
 //!
+//! REWORK NOTE (composable modes update): `darken` now takes the veil color
+//! (`darken(buf, dim_alpha, color)`, SHARED API SPEC). These scenario tests
+//! keep the original black-veil behavior by passing `BLACK`, for which the
+//! colored formula reduces exactly to the old one.
+//!
 //! The controller contract being simulated (src/overlay/controller.rs docs):
 //! capture ONCE per monitor at freeze time, keep the originals, darken a copy
 //! for display, and per mouse move restore the original pixels inside the
@@ -18,7 +23,7 @@
 
 mod common;
 
-use common::{buffer_with, darkened_pixel, pattern_a, pattern_b};
+use common::{BLACK, buffer_with, darkened_pixel, pattern_a, pattern_b};
 use spotfreeze::capture::DibBuffer;
 use spotfreeze::geometry::{Point, Rect};
 use spotfreeze::overlay::composite::{darken, monitor_index_at, spotlight_hole, virtual_to_local};
@@ -45,7 +50,7 @@ fn assert_fully_darkened(original: &DibBuffer, dark: &DibBuffer, dim: u8) {
 fn darken_scales_bgr_toward_black_and_keeps_alpha() {
     let original = buffer_with(16, 12, pattern_a);
     let mut dark = original.clone();
-    darken(&mut dark, DIM);
+    darken(&mut dark, DIM, BLACK);
     assert_fully_darkened(&original, &dark, DIM);
     // alpha untouched everywhere
     for y in 0..dark.height {
@@ -60,11 +65,11 @@ fn darken_extremes_are_identity_and_black() {
     let original = buffer_with(8, 8, pattern_a);
 
     let mut same = original.clone();
-    darken(&mut same, 0);
+    darken(&mut same, 0, BLACK);
     assert_eq!(same, original, "dim_alpha 0 = no change");
 
     let mut black = original.clone();
-    darken(&mut black, 255);
+    darken(&mut black, 255, BLACK);
     for y in 0..black.height {
         for x in 0..black.width {
             assert_eq!(
@@ -96,8 +101,8 @@ fn freeze_darken_then_spotlight_restores_exactly_inside_circle() {
     // Darken copies for display; originals stay intact.
     let mut dark0 = orig0.clone();
     let mut dark1 = orig1.clone();
-    darken(&mut dark0, DIM);
-    darken(&mut dark1, DIM);
+    darken(&mut dark0, DIM, BLACK);
+    darken(&mut dark1, DIM, BLACK);
     assert_fully_darkened(&orig0, &dark0, DIM);
     assert_fully_darkened(&orig1, &dark1, DIM);
     assert_eq!(orig0.pixel(3, 3).unwrap(), pattern_a(3, 3), "original intact");
@@ -155,7 +160,7 @@ fn freeze_darken_then_spotlight_restores_exactly_inside_circle() {
 fn spotlight_hole_clips_when_center_is_outside_buffer() {
     let orig = buffer_with(32, 32, pattern_a);
     let mut dark = orig.clone();
-    darken(&mut dark, DIM);
+    darken(&mut dark, DIM, BLACK);
 
     // Center beyond the top-left corner; only the overlapping arc is restored.
     let mut frame = dark.clone();
@@ -192,8 +197,8 @@ fn end_to_end_negative_virtual_x_cursor_maps_to_monitor_local_hole() {
 
     let mut dark0 = orig0.clone();
     let mut dark1 = orig1.clone();
-    darken(&mut dark0, DIM);
-    darken(&mut dark1, DIM);
+    darken(&mut dark0, DIM, BLACK);
+    darken(&mut dark1, DIM, BLACK);
     let mut frames = [dark0, dark1];
 
     // Cursor at virtual (-30, 20): on the LEFT monitor (index 1, negative x).

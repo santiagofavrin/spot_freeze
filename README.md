@@ -2,26 +2,35 @@
 
 A tiny, fast Windows 11 utility that lives in the system tray and **freezes your
 screen** on a global hotkey — then lets you spotlight a region, zoom in, or snip
-part of the frozen frame to the clipboard.
+part of the frozen frame to the clipboard. Modes are **composable**: stack a
+spotlight on top of a zoom, or draw a snip over both.
 
 SpotFreeze is built for speed: a single native Rust binary (raw Win32, no GUI
 framework, no runtime), a few MB on disk, and near-zero idle RAM/CPU. The screen
-is captured **once** at freeze time; the spotlight "hole" is re-composited per
-mouse move over the cursor circle only — never a full repaint.
+is captured **once** at freeze time; overlay frames are re-composited from
+reusable buffers — never a full repaint from scratch.
 
 ## Features
 
-- **Freeze the screen** with a customizable global hotkey (`Ctrl+Alt+F` out of
-  the box). All monitors are captured at once; each monitor gets its own
-  darkened overlay, so multi-monitor setups are fully covered.
+- **Freeze the screen** with a customizable global hotkey (`Win+F` out of the
+  box, including full support for `Win`+key combos). All monitors are captured
+  at once; each monitor gets its own darkened overlay, so multi-monitor setups
+  are fully covered.
 - **Spotlight mode** — a bright circle follows your cursor over the dimmed
   frozen screen. Hold `Ctrl` and scroll the mouse wheel to resize it.
 - **Zoom mode** — magnify the frozen frame around the cursor with the mouse
-  wheel (1.0×–16.0×, ×1.25 per notch by default).
+  wheel (1.0×–16.0×, ×1.25 per notch by default). Zoom is also reachable from
+  *any* mode: hold `Shift` and scroll.
 - **Snip mode** — drag a rectangle on the frozen screen and copy it to the
   clipboard (see *Copying screenshots* below).
+- **Composable modes** — layer spotlight, zoom, and snip on top of each other
+  instead of being locked into one at a time (see *Mixing modes* below).
+- **Border flash feedback** — every mode change flashes the screen border so
+  you always know which mode you just entered.
+- **Customizable overlay** — pick the dim-veil color and opacity.
 - **Every hotkey is rebindable** from the built-in settings window, with
-  conflict validation.
+  conflict validation. Rebinding captures whatever you press — including
+  `Win`+key combinations.
 - **Tray-based** — no window until you ask for one. Left-click the tray icon
   for settings, right-click for the Settings/Exit menu.
 - **Human-friendly settings** — a commented JSONC file next to the exe;
@@ -34,17 +43,47 @@ active while the screen is frozen.
 
 | Action | Default | Scope |
 | --- | --- | --- |
-| Toggle screen freeze | `Ctrl+Alt+F` | Global — works from any app |
-| Switch to Spotlight mode | `1` | While frozen |
-| Switch to Zoom mode | `2` | While frozen |
-| Switch to Snip mode | `3` | While frozen |
-| Resize spotlight circle | `Ctrl` + mouse wheel | Spotlight mode |
-| Reset zoom to 1.0× | `0` | Zoom mode |
+| Toggle screen freeze | `Win+F` | Global — works from any app |
+| Spotlight mode | `S` | While frozen |
+| Zoom mode | `Z` | While frozen |
+| Snip mode | `C` | While frozen |
+| Add a mode as a layer (no reset) | `Shift` + mode key (`Shift+S`/`Shift+Z`/`Shift+C`) | While frozen |
+| Zoom in / out (from any mode) | `Shift` + mouse wheel | While frozen — adds the zoom layer on the spot if it isn't active yet (no border flash) |
+| Zoom in / out (zoom is primary mode) | Mouse wheel | Zoom mode |
+| Resize spotlight circle | `Ctrl` + mouse wheel | While spotlight is active |
+| Reset zoom to 1.0× | `0` | While zoom is active |
 | Copy screenshot to clipboard | `Ctrl+C` | While frozen (see below) |
 | Unfreeze / cancel | `Esc` | While frozen |
 
 Other defaults: spotlight radius `150` px, dim-veil opacity `160` (0–255),
-zoom step `1.25` (min `1.0`, max `16.0`).
+dim-veil color black (`#000000`), zoom step `1.25` (min `1.0`, max `16.0`).
+
+Freezing starts in Spotlight mode. `Esc` unfreezes and `Ctrl+C` copies and
+closes — from **any** mode combination.
+
+## Mixing modes
+
+Modes are **composable layers**, not exclusive states. How you press a mode key
+decides whether the other layers survive:
+
+- **Plain mode key (`S` / `Z` / `C`) — full switch.** Resets *all* mode state
+  (zoom back to 1.0×, snip selection cleared, spotlight radius back to the
+  default) and activates only that mode.
+- **`Shift` + mode key — add a layer.** Activates that mode *on top of* the
+  current combination without touching any existing layer. Example: while
+  zoomed in, press `Shift+S` to add a spotlight circle over the magnified view;
+  while spotlighted, press `Shift+Z` to start zooming without losing the
+  spotlight.
+
+The wheel follows the layers, not the "current mode": `Ctrl`+wheel resizes the
+spotlight whenever a spotlight is active, `Shift`+wheel zooms from any layer
+combination (implicitly adding the zoom layer — without a border flash — when
+it isn't active yet), and a plain wheel zooms when Zoom is the primary mode.
+
+**Border flash feedback:** every mode change flashes the screen border a number
+of times that identifies the mode — **1 flash** for Spotlight (`S`), **2** for
+Zoom (`Z`), **3** for Snip (`C`). Freezing the screen starts in Spotlight mode,
+so you also see a single flash right at freeze time.
 
 ## Install
 
@@ -61,9 +100,12 @@ all default values. No installer, no registry writes, no admin rights needed.
 **Left-click the tray icon** (or right-click → *Settings*) to open the settings
 window. From there you can:
 
-- Rebind every hotkey by pressing the new key combination; conflicting
-  bindings are rejected.
+- Rebind every hotkey by pressing the new key combination — including
+  `Win`+key combos; conflicting bindings are rejected.
 - Adjust the spotlight radius, dim-veil opacity, and zoom limits.
+- **Customize the overlay color** — pick a color with the color picker or type
+  a `#RRGGBB` hex value. The veil outside spotlight/selection areas is drawn
+  in this color at the configured opacity.
 - Exit via right-click → *Exit* (a Yes/No confirmation prevents accidents).
 
 Settings are stored in `settings.json` beside `spotfreeze.exe`. It is a JSONC
@@ -71,10 +113,31 @@ file — comments and trailing commas are allowed — and is written atomically,
 a crash mid-save can never corrupt it. Missing keys fall back to defaults, and
 changes apply on the next freeze.
 
+Example `settings.json` (excerpt):
+
+```jsonc
+{
+  "hotkeys": {
+    "freeze_toggle": "Win+F",
+    "mode_spotlight": "S",
+    "mode_zoom": "Z",
+    "mode_snip": "C",
+    // Modifier held + wheel to zoom from ANY mode (default: "Shift").
+    "zoom_modifier": "Shift",
+    // Modifier held + wheel to resize the spotlight (default: "Ctrl").
+    "spotlight_radius_modifier": "Ctrl",
+  },
+  "overlay": {
+    "dim_opacity": 160,     // 0 = invisible veil, 255 = solid
+    "color": "#000000",     // veil color as #RRGGBB (default: black)
+  },
+}
+```
+
 ## Copying screenshots
 
 While frozen, pressing `Ctrl+C` (the copy binding) copies to the clipboard and
-then unfreezes:
+then unfreezes — from any mode or mode combination:
 
 - **If you drew a selection** in Snip mode → the selected rectangle is copied,
   cropped from the *original, undarkened* capture.
@@ -139,6 +202,7 @@ a workflow artifact for ad-hoc verification.
 ## Tech
 
 Rust (stable, MSVC, edition 2024) on top of Microsoft's official `windows-rs`
-crate — tray via `Shell_NotifyIconW`, global hotkeys via `RegisterHotKey`, GDI
-`BitBlt` capture into DIB sections, and per-monitor layered overlay windows
-presented with `UpdateLayeredWindow`. No GUI framework, no Electron, no JIT.
+crate — tray via `Shell_NotifyIconW`, global hotkeys via a low-level keyboard
+hook (`WH_KEYBOARD_LL`, so `Win`+key combos bind reliably), GDI `BitBlt`
+capture into DIB sections, and per-monitor layered overlay windows presented
+with `UpdateLayeredWindow`. No GUI framework, no Electron, no JIT.

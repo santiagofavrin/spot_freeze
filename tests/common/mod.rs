@@ -6,8 +6,12 @@
 #![allow(dead_code)]
 
 use spotfreeze::capture::DibBuffer;
+use spotfreeze::settings::model::Rgb;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
+
+/// The default overlay veil color (`overlay.color` documented default: black).
+pub const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -77,6 +81,7 @@ pub fn pattern_b(x: u32, y: u32) -> [u8; 4] {
 
 /// The documented darken formula from `overlay::composite::darken`:
 /// `channel' = channel * (255 - dim_alpha) / 255` (integer truncation).
+/// Equivalent to [`dim_color_channel`] with a black veil color.
 pub fn darkened_channel(c: u8, dim_alpha: u8) -> u8 {
     (c as u32 * (255 - dim_alpha as u32) / 255) as u8
 }
@@ -87,6 +92,33 @@ pub fn darkened_pixel(p: [u8; 4], dim_alpha: u8) -> [u8; 4] {
         darkened_channel(p[0], dim_alpha),
         darkened_channel(p[1], dim_alpha),
         darkened_channel(p[2], dim_alpha),
+        p[3], // alpha untouched
+    ]
+}
+
+/// SPEC-ASSUMED colored-veil formula for the reworked
+/// `overlay::composite::darken(buf, dim_alpha, color)` (SHARED API SPEC):
+/// `channel' = (channel * (255 - dim_alpha) + color_channel * dim_alpha) / 255`
+/// in ONE division (single truncation), mirroring the old black-veil floor
+/// math (`color = black` reduces to it exactly) and giving
+/// `dim_alpha = 255 => exactly the veil color`.
+///
+/// INTEGRATION FLAG: if the landed `darken` truncates the two terms
+/// separately (`c*(255-a)/255 + color*a/255`), expectations computed with
+/// this helper can be off by 1 — switch this helper to the landed formula
+/// instead of weakening assertions.
+pub fn dim_color_channel(c: u8, color_ch: u8, dim_alpha: u8) -> u8 {
+    ((c as u32 * (255 - dim_alpha as u32) + color_ch as u32 * dim_alpha as u32) / 255) as u8
+}
+
+/// Colored-veil darkened `[B, G, R, A]` pixel per [`dim_color_channel`].
+/// Buffer channels are BGRA: `color.b` blends into channel 0, `color.g`
+/// into 1, `color.r` into 2; alpha untouched.
+pub fn dimmed_pixel_with(p: [u8; 4], dim_alpha: u8, color: Rgb) -> [u8; 4] {
+    [
+        dim_color_channel(p[0], color.b, dim_alpha),
+        dim_color_channel(p[1], color.g, dim_alpha),
+        dim_color_channel(p[2], color.r, dim_alpha),
         p[3], // alpha untouched
     ]
 }

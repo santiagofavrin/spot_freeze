@@ -21,11 +21,16 @@ const KEY_COMMENTS: &[(&str, &str)] = &[
         "modifier-only binding: key HELD while scrolling the wheel to resize the circle (not a full hotkey)",
     ),
     (
+        "zoom_modifier",
+        "modifier-only binding: key HELD while scrolling the wheel to zoom from any mode (not a full hotkey)",
+    ),
+    (
         "default_radius",
         "physical pixels on the monitor under the cursor",
     ),
     ("step_factor", "zoom multiplier per wheel notch (must be > 1.0)"),
-    ("dim_opacity", "0 = invisible veil, 255 = fully black"),
+    ("dim_opacity", "0 = invisible veil, 255 = fully opaque"),
+    ("color", "veil color as #RRGGBB hex"),
 ];
 
 /// `settings.json` in the directory of the running executable.
@@ -271,6 +276,33 @@ mod tests {
         assert!(template.starts_with('{'));
     }
 
+    #[test]
+    fn template_contains_new_keys_with_defaults() {
+        let template = to_jsonc_template(&AppSettings::default());
+        assert!(
+            template.contains("\"zoom_modifier\": \"Shift\""),
+            "zoom_modifier appears with its default: {template}"
+        );
+        assert!(
+            template.contains("\"color\": \"#000000\""),
+            "color appears as hex with its default: {template}"
+        );
+        assert!(
+            template.contains("\"freeze_toggle\": \"Win+F\""),
+            "new freeze hotkey default: {template}"
+        );
+        for (key, value) in [
+            ("mode_spotlight", "S"),
+            ("mode_zoom", "Z"),
+            ("mode_snip", "C"),
+        ] {
+            assert!(
+                template.contains(&format!("\"{key}\": \"{value}\"")),
+                "{key} default in template"
+            );
+        }
+    }
+
     // ---------- round-trip ----------
 
     #[test]
@@ -356,6 +388,79 @@ mod tests {
         assert_eq!(
             loaded.hotkeys.freeze_toggle,
             AppSettings::default().hotkeys.freeze_toggle
+        );
+    }
+
+    #[test]
+    fn old_file_without_color_or_zoom_modifier_loads_with_defaults() {
+        // Backward compat: a settings.json written before `color` and
+        // `zoom_modifier` existed must load, keep its explicit values, and
+        // get the new keys' defaults.
+        let tmp = TempFile::new("old_file");
+        fs::write(
+            tmp.path(),
+            r#"{
+    "hotkeys": {
+        "freeze_toggle": "Ctrl+Alt+F",
+        "mode_spotlight": "1",
+        "mode_zoom": "2",
+        "mode_snip": "3",
+        "spotlight_radius_modifier": "Ctrl",
+        "snip_copy": "Ctrl+C",
+        "cancel": "Esc",
+        "reset_zoom": "0"
+    },
+    "overlay": { "dim_opacity": 200 },
+}"#,
+        )
+        .unwrap();
+
+        let loaded = load(tmp.path()).expect("old settings file must still load");
+        // Explicit old values survive.
+        assert_eq!(
+            loaded.hotkeys.freeze_toggle,
+            crate::hotkeys::gesture::HotkeyGesture::parse("Ctrl+Alt+F").unwrap()
+        );
+        assert_eq!(loaded.overlay.dim_opacity, 200);
+        // New keys fall back to their defaults.
+        assert_eq!(
+            loaded.hotkeys.zoom_modifier,
+            crate::hotkeys::gesture::Modifiers::SHIFT
+        );
+        assert_eq!(loaded.overlay.color, crate::settings::model::Rgb::BLACK);
+    }
+
+    #[test]
+    fn custom_color_and_zoom_modifier_round_trip() {
+        let tmp = TempFile::new("new_keys_roundtrip");
+        let mut settings = AppSettings::default();
+        settings.overlay.color = crate::settings::model::Rgb {
+            r: 0x12,
+            g: 0xAB,
+            b: 0xFF,
+        };
+        settings.hotkeys.zoom_modifier = crate::hotkeys::gesture::Modifiers::ALT;
+
+        save(tmp.path(), &settings).expect("save");
+        let on_disk = fs::read_to_string(tmp.path()).unwrap();
+        assert!(on_disk.contains("\"#12ABFF\""), "color as hex: {on_disk}");
+        assert!(
+            on_disk.contains("\"zoom_modifier\": \"Alt\""),
+            "zoom_modifier as display string: {on_disk}"
+        );
+        assert_eq!(load(tmp.path()).expect("load"), settings);
+    }
+
+    #[test]
+    fn malformed_color_errors() {
+        let tmp = TempFile::new("bad_color");
+        fs::write(tmp.path(), r#"{ "overlay": { "color": "black" } }"#).unwrap();
+
+        let err = load(tmp.path()).expect_err("malformed color must error");
+        let shown = format!("{err:#}");
+        assert!(
+            shown.contains("#RRGGBB"),
+            "error explains the expected format: {shown}"
         );
     }
 
