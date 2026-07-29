@@ -78,10 +78,6 @@ fn old_schema_full_file_loads_with_new_key_defaults() {
         HotkeyGesture::new(Modifiers::NONE, '1' as u32)
     );
     assert_eq!(
-        loaded.hotkeys.mode_zoom,
-        HotkeyGesture::new(Modifiers::NONE, '2' as u32)
-    );
-    assert_eq!(
         loaded.hotkeys.mode_snip,
         HotkeyGesture::new(Modifiers::NONE, '3' as u32)
     );

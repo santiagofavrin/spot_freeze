@@ -117,9 +117,6 @@ pub struct HotkeySettings {
     /// While frozen: switch to Spotlight mode (`Shift`+this key ADDS Spotlight
     /// as a layer instead of switching). Default: `S`.
     pub mode_spotlight: HotkeyGesture,
-    /// While frozen: switch to Zoom mode (`Shift`+this key ADDS Zoom as a
-    /// layer instead of switching). Default: `Z`.
-    pub mode_zoom: HotkeyGesture,
     /// While frozen: switch to Snip mode (`Shift`+this key ADDS Snip as a
     /// layer instead of switching). Default: `C`.
     pub mode_snip: HotkeyGesture,
@@ -146,7 +143,6 @@ impl Default for HotkeySettings {
         Self {
             freeze_toggle: HotkeyGesture::parse("Win+F").unwrap(),
             mode_spotlight: HotkeyGesture::parse("S").unwrap(),
-            mode_zoom: HotkeyGesture::parse("Z").unwrap(),
             mode_snip: HotkeyGesture::parse("C").unwrap(),
             spotlight_radius_modifier: Modifiers::CTRL,
             zoom_modifier: Modifiers::SHIFT,
@@ -231,7 +227,6 @@ mod tests {
         let d = HotkeySettings::default();
         assert_eq!(d.freeze_toggle, gesture("Win+F"));
         assert_eq!(d.mode_spotlight, gesture("S"));
-        assert_eq!(d.mode_zoom, gesture("Z"));
         assert_eq!(d.mode_snip, gesture("C"));
         assert_eq!(d.spotlight_radius_modifier, Modifiers::CTRL);
         assert_eq!(d.zoom_modifier, Modifiers::SHIFT);

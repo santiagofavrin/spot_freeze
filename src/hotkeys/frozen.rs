@@ -31,22 +31,21 @@ pub struct FrozenRegistration {
     pub action: FrozenAction,
 }
 
-/// The three mode bindings as `(gesture, kind)` pairs, read from `hotkeys`.
-/// The bound keys (default `S` / `Z` / `C`) are just data living in the
-/// settings model — nothing here hardcodes a key name; only the iteration
-/// order is fixed.
-fn mode_bindings(hotkeys: &HotkeySettings) -> [(HotkeyGesture, ModeKind); 3] {
+/// The two mode bindings as `(gesture, kind)` pairs, read from `hotkeys`.
+/// The bound keys (default `S` / `C`) are just data living in the settings
+/// model — nothing here hardcodes a key name; only the iteration order is
+/// fixed. Zoom has no binding: it is wheel-driven (`zoom_modifier` + wheel).
+fn mode_bindings(hotkeys: &HotkeySettings) -> [(HotkeyGesture, ModeKind); 2] {
     [
         (hotkeys.mode_spotlight, ModeKind::Spotlight),
-        (hotkeys.mode_zoom, ModeKind::Zoom),
         (hotkeys.mode_snip, ModeKind::Snip),
     ]
 }
 
 /// The ordered frozen-mode registration list derived from the CURRENT
-/// settings. For each of the three mode bindings, the PLAIN gesture (full
+/// settings. For each of the two mode bindings, the PLAIN gesture (full
 /// switch) followed by its DERIVED Shift+variant (additive layer); then
-/// `reset_zoom`, `snip_copy`, `cancel`. Nine registrations in the common case.
+/// `reset_zoom`, `snip_copy`, `cancel`. Seven registrations in the common case.
 ///
 /// Conflict guard: a derived Shift+variant whose gesture is already claimed —
 /// by the always-active freeze toggle, by ANY user-configured frozen binding
@@ -62,7 +61,7 @@ pub fn plan_frozen_registrations(hotkeys: &HotkeySettings) -> Vec<FrozenRegistra
 
     // Every user-configured gesture claims its slot UP FRONT, regardless of
     // plan position, so a derived Shift+variant can never steal an explicitly
-    // configured binding (e.g. mode_zoom = "Shift+S" beats the Shift+S
+    // configured binding (e.g. mode_snip = "Shift+S" beats the Shift+S
     // derived from mode_spotlight = "S", even though spotlight plans first).
     let mut claimed: Vec<HotkeyGesture> = Vec::with_capacity(4 + 2 * bindings.len());
     claimed.push(hotkeys.freeze_toggle);
@@ -71,7 +70,7 @@ pub fn plan_frozen_registrations(hotkeys: &HotkeySettings) -> Vec<FrozenRegistra
     claimed.push(hotkeys.cancel);
     claimed.extend(bindings.iter().map(|(gesture, _)| *gesture));
 
-    let mut plan = Vec::with_capacity(9);
+    let mut plan = Vec::with_capacity(7);
     for (gesture, kind) in bindings {
         plan.push(FrozenRegistration {
             gesture,
@@ -124,7 +123,6 @@ mod tests {
         HotkeySettings {
             freeze_toggle: gesture("Ctrl+Alt+Q"),
             mode_spotlight: gesture("F5"),
-            mode_zoom: gesture("F6"),
             mode_snip: gesture("F7"),
             snip_copy: gesture("Ctrl+Enter"),
             cancel: gesture("Ctrl+Backspace"),
@@ -152,7 +150,6 @@ mod tests {
             mode_bindings(&h),
             [
                 (gesture("F5"), ModeKind::Spotlight),
-                (gesture("F6"), ModeKind::Zoom),
                 (gesture("F7"), ModeKind::Snip),
             ]
         );
@@ -167,8 +164,6 @@ mod tests {
         let expected = vec![
             (gesture("F5"), FrozenAction::SetMode(ModeKind::Spotlight)),
             (gesture("Shift+F5"), FrozenAction::AddMode(ModeKind::Spotlight)),
-            (gesture("F6"), FrozenAction::SetMode(ModeKind::Zoom)),
-            (gesture("Shift+F6"), FrozenAction::AddMode(ModeKind::Zoom)),
             (gesture("F7"), FrozenAction::SetMode(ModeKind::Snip)),
             (gesture("Shift+F7"), FrozenAction::AddMode(ModeKind::Snip)),
             (gesture("Ctrl+F8"), FrozenAction::ResetZoom),
@@ -179,13 +174,12 @@ mod tests {
     }
 
     #[test]
-    fn default_settings_plan_has_all_nine_registrations() {
+    fn default_settings_plan_has_all_seven_registrations() {
         // Structural smoke test over the shipped defaults, whatever keys they
-        // bind (holds for both the old and the reworked default key set):
-        // every mode gets a full-switch AND an additive-layer gesture.
+        // bind: every mode gets a full-switch AND an additive-layer gesture.
         let plan = plan_frozen_registrations(&HotkeySettings::default());
-        assert_eq!(plan.len(), 9);
-        for kind in [ModeKind::Spotlight, ModeKind::Zoom, ModeKind::Snip] {
+        assert_eq!(plan.len(), 7);
+        for kind in [ModeKind::Spotlight, ModeKind::Snip] {
             assert!(has_action(&plan, FrozenAction::SetMode(kind)), "{kind:?}");
             assert!(has_action(&plan, FrozenAction::AddMode(kind)), "{kind:?}");
         }
@@ -216,25 +210,25 @@ mod tests {
         // Plain and Shift+variant would be identical: only the plain switch
         // is planned, and no duplicate registration is attempted.
         let h = HotkeySettings {
-            mode_zoom: gesture("Shift+F6"),
+            mode_snip: gesture("Shift+F7"),
             ..custom_hotkeys()
         };
         let plan = plan_frozen_registrations(&h);
         assert_eq!(
-            planned(&plan, gesture("Shift+F6")),
-            vec![FrozenAction::SetMode(ModeKind::Zoom)]
+            planned(&plan, gesture("Shift+F7")),
+            vec![FrozenAction::SetMode(ModeKind::Snip)]
         );
-        assert_eq!(plan.len(), 8);
+        assert_eq!(plan.len(), 6);
     }
 
     #[test]
     fn explicit_mode_binding_wins_over_earlier_derived_variant() {
-        // mode_zoom explicitly owns "Shift+F5": the Shift+variant derived from
+        // mode_snip explicitly owns "Shift+F5": the Shift+variant derived from
         // mode_spotlight ("F5") must yield EVEN THOUGH spotlight plans first —
         // user-configured bindings claim their slots up front.
         let h = HotkeySettings {
             mode_spotlight: gesture("F5"),
-            mode_zoom: gesture("Shift+F5"),
+            mode_snip: gesture("Shift+F5"),
             ..custom_hotkeys()
         };
         let plan = plan_frozen_registrations(&h);
@@ -244,12 +238,12 @@ mod tests {
         );
         assert_eq!(
             planned(&plan, gesture("Shift+F5")),
-            vec![FrozenAction::SetMode(ModeKind::Zoom)]
+            vec![FrozenAction::SetMode(ModeKind::Snip)]
         );
         assert!(!has_action(&plan, FrozenAction::AddMode(ModeKind::Spotlight)));
-        // Zoom's own variant is skipped too: it already contains Shift.
-        assert!(!has_action(&plan, FrozenAction::AddMode(ModeKind::Zoom)));
-        assert_eq!(plan.len(), 7); // 3 plains + snip variant + reset/copy/cancel
+        // Snip's own variant is skipped too: it already contains Shift.
+        assert!(!has_action(&plan, FrozenAction::AddMode(ModeKind::Snip)));
+        assert_eq!(plan.len(), 5); // 2 plains + reset/copy/cancel
     }
 
     #[test]
@@ -265,7 +259,7 @@ mod tests {
             vec![FrozenAction::Copy]
         );
         assert!(!has_action(&plan, FrozenAction::AddMode(ModeKind::Snip)));
-        assert_eq!(plan.len(), 8);
+        assert_eq!(plan.len(), 6);
     }
 
     #[test]
@@ -284,7 +278,7 @@ mod tests {
             vec![FrozenAction::SetMode(ModeKind::Spotlight)]
         );
         assert!(!has_action(&plan, FrozenAction::AddMode(ModeKind::Spotlight)));
-        assert_eq!(plan.len(), 8);
+        assert_eq!(plan.len(), 6);
     }
 
     #[test]
@@ -294,7 +288,7 @@ mod tests {
         // the offender in the failure report. Their identical Shift+variants
         // collide, so only the first mode's additive layer is planned.
         let h = HotkeySettings {
-            mode_zoom: gesture("F5"), // duplicates mode_spotlight
+            mode_snip: gesture("F5"), // duplicates mode_spotlight
             ..custom_hotkeys()
         };
         let plan = plan_frozen_registrations(&h);
@@ -302,14 +296,14 @@ mod tests {
             planned(&plan, gesture("F5")),
             vec![
                 FrozenAction::SetMode(ModeKind::Spotlight),
-                FrozenAction::SetMode(ModeKind::Zoom),
+                FrozenAction::SetMode(ModeKind::Snip),
             ]
         );
         assert_eq!(
             planned(&plan, gesture("Shift+F5")),
             vec![FrozenAction::AddMode(ModeKind::Spotlight)]
         );
-        assert_eq!(plan.len(), 8); // 3 plains (one duplicated) + 2 surviving variants + reset/copy/cancel
+        assert_eq!(plan.len(), 6); // 2 plains (one duplicated) + 1 surviving variant + reset/copy/cancel
     }
 
     // ---- match_frozen_key ----
@@ -329,11 +323,11 @@ mod tests {
 
     #[test]
     fn match_first_of_duplicate_gestures_wins() {
-        // mode_zoom duplicates mode_spotlight's plain gesture: the FIRST plan
+        // mode_snip duplicates mode_spotlight's plain gesture: the FIRST plan
         // entry fires, matching the registration layer, which rejects the
         // later duplicate.
         let h = HotkeySettings {
-            mode_zoom: gesture("F5"), // duplicates mode_spotlight
+            mode_snip: gesture("F5"), // duplicates mode_spotlight
             ..custom_hotkeys()
         };
         let plan = plan_frozen_registrations(&h);

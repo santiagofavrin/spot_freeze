@@ -70,11 +70,10 @@ screen is frozen.
 | --- | --- | --- |
 | Toggle screen freeze | `Win+F` | Global — works from any app |
 | Spotlight mode | `S` | While frozen |
-| Zoom mode | `Z` | While frozen |
 | Snip mode | `C` | While frozen |
-| Add a mode as a layer (no reset) | `Shift` + mode key (`Shift+S`/`Shift+Z`/`Shift+C`) | While frozen |
+| Add a mode as a layer (no reset) | `Shift` + mode key (`Shift+S`/`Shift+C`) | While frozen |
 | Zoom in / out (from any mode) | `Shift` + mouse wheel | While frozen — adds the zoom layer on the spot if it isn't active yet (no border flash) |
-| Zoom in / out (zoom is primary mode) | Mouse wheel | Zoom mode |
+| Zoom in / out (zoom is primary mode) | Mouse wheel | While frozen, after zoom was added |
 | Resize spotlight circle | `Ctrl` + mouse wheel | While spotlight is active |
 | Reset zoom to 1.0× | `0` | While zoom is active |
 | Copy screenshot to clipboard | `Ctrl+C` | While frozen (see below) |
@@ -84,21 +83,22 @@ Other defaults: spotlight radius `150` px, dim-veil opacity `160` (0–255),
 dim-veil color black (`#000000`), zoom step `1.25` (min `1.0`, max `16.0`).
 
 Freezing starts in Spotlight mode. `Esc` unfreezes and `Ctrl+C` copies and
-closes — from **any** mode combination.
+closes — from **any** mode combination. Zoom has no key: it is always one
+`Shift`+wheel notch away.
 
 ## Mixing modes
 
 Modes are **composable layers**, not exclusive states. How you press a mode key
 decides whether the other layers survive:
 
-- **Plain mode key (`S` / `Z` / `C`) — full switch.** Resets *all* mode state
+- **Plain mode key (`S` / `C`) — full switch.** Resets *all* mode state
   (zoom back to 1.0×, snip selection cleared, spotlight radius back to the
   default) and activates only that mode.
 - **`Shift` + mode key — add a layer.** Activates that mode *on top of* the
   current combination without touching any existing layer. Example: while
   zoomed in, press `Shift+S` to add a spotlight circle over the magnified view;
-  while spotlighted, press `Shift+Z` to start zooming without losing the
-  spotlight.
+  while snipping, press `Shift+S` to get the spotlight back without losing the
+  selection.
 
 The wheel follows the layers, not the "current mode": `Ctrl`+wheel resizes the
 spotlight whenever a spotlight is active, `Shift`+wheel zooms from any layer
@@ -106,9 +106,9 @@ combination (implicitly adding the zoom layer — without a border flash — whe
 it isn't active yet), and a plain wheel zooms when Zoom is the primary mode.
 
 **Border flash feedback:** every mode change flashes the screen border a number
-of times that identifies the mode — **1 flash** for Spotlight (`S`), **2** for
-Zoom (`Z`), **3** for Snip (`C`). Freezing the screen starts in Spotlight mode,
-so you also see a single flash right at freeze time.
+of times that identifies the mode — **1 flash** for Spotlight (`S`), **3** for
+Snip (`C`). Freezing the screen starts in Spotlight mode, so you also see a
+single flash right at freeze time.
 
 ## Install
 
@@ -201,7 +201,6 @@ Example `spotfreeze.jsonc` (excerpt):
   "hotkeys": {
     "freeze_toggle": "Win+F",
     "mode_spotlight": "S",
-    "mode_zoom": "Z",
     "mode_snip": "C",
     // Modifier held + wheel to zoom from ANY mode (default: "Shift").
     "zoom_modifier": "Shift",

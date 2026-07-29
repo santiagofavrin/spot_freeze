@@ -102,7 +102,6 @@ fn defaults_save_hand_edited_jsonc_loads_with_default_merge() {
     // default merge: untouched hotkeys keep their defaults
     let dh = AppSettings::default().hotkeys;
     assert_eq!(loaded.hotkeys.mode_spotlight, dh.mode_spotlight);
-    assert_eq!(loaded.hotkeys.mode_zoom, dh.mode_zoom);
     assert_eq!(loaded.hotkeys.mode_snip, dh.mode_snip);
     assert_eq!(loaded.hotkeys.snip_copy, dh.snip_copy);
     assert_eq!(loaded.hotkeys.cancel, dh.cancel);

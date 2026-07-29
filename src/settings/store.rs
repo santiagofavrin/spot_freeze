@@ -420,7 +420,6 @@ mod tests {
         for hotkey_key in [
             "freeze_toggle",
             "mode_spotlight",
-            "mode_zoom",
             "mode_snip",
             "snip_copy",
             "cancel",
@@ -460,11 +459,7 @@ mod tests {
             template.contains("\"freeze_toggle\": \"Win+F\""),
             "new freeze hotkey default: {template}"
         );
-        for (key, value) in [
-            ("mode_spotlight", "S"),
-            ("mode_zoom", "Z"),
-            ("mode_snip", "C"),
-        ] {
+        for (key, value) in [("mode_spotlight", "S"), ("mode_snip", "C")] {
             assert!(
                 template.contains(&format!("\"{key}\": \"{value}\"")),
                 "{key} default in template"

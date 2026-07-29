@@ -2,8 +2,8 @@
 //!
 //! New out-of-box defaults (user feedback):
 //! - `freeze_toggle` = **Win+F** (was Ctrl+Alt+F)
-//! - `mode_spotlight` = **S**, `mode_zoom` = **Z**, `mode_snip` = **C**
-//!   (were 1/2/3)
+//! - `mode_spotlight` = **S**, `mode_snip` = **C** (were 1/2/3; the Zoom
+//!   mode key was removed — zoom is wheel-driven via `zoom_modifier`)
 //! - NEW `zoom_modifier` = **Shift** (wheel-zoom chord, modifier-only)
 //! - `spotlight_radius_modifier` stays **Ctrl**
 //!
@@ -25,11 +25,10 @@ use std::collections::HashSet;
 /// `spotlight_radius_modifier` / `zoom_modifier` are covered separately —
 /// they are `Modifiers`, not gestures, so they cannot "conflict" with key
 /// gestures).
-fn gesture_fields(h: &HotkeySettings) -> [(&'static str, HotkeyGesture); 7] {
+fn gesture_fields(h: &HotkeySettings) -> [(&'static str, HotkeyGesture); 6] {
     [
         ("freeze_toggle", h.freeze_toggle),
         ("mode_spotlight", h.mode_spotlight),
-        ("mode_zoom", h.mode_zoom),
         ("mode_snip", h.mode_snip),
         ("snip_copy", h.snip_copy),
         ("cancel", h.cancel),
@@ -44,16 +43,15 @@ fn shift_variant(g: HotkeyGesture) -> HotkeyGesture {
 }
 
 /// The auto-registered Shift+mode variants (composable layer adds).
-fn shift_mode_variants(h: &HotkeySettings) -> [(&'static str, HotkeyGesture); 3] {
+fn shift_mode_variants(h: &HotkeySettings) -> [(&'static str, HotkeyGesture); 2] {
     [
         ("mode_spotlight+Shift", shift_variant(h.mode_spotlight)),
-        ("mode_zoom+Shift", shift_variant(h.mode_zoom)),
         ("mode_snip+Shift", shift_variant(h.mode_snip)),
     ]
 }
 
-/// Every gesture the app registers out of the box: the 7 bindings plus the
-/// 3 auto-registered Shift+mode variants.
+/// Every gesture the app registers out of the box: the 6 bindings plus the
+/// 2 auto-registered Shift+mode variants.
 fn all_registered(h: &HotkeySettings) -> Vec<(&'static str, HotkeyGesture)> {
     gesture_fields(h)
         .into_iter()
@@ -75,11 +73,6 @@ fn documented_default_gestures_are_exact() {
         h.mode_spotlight,
         HotkeyGesture::new(Modifiers::NONE, 'S' as u32),
         "mode_spotlight = S"
-    );
-    assert_eq!(
-        h.mode_zoom,
-        HotkeyGesture::new(Modifiers::NONE, 'Z' as u32),
-        "mode_zoom = Z"
     );
     assert_eq!(
         h.mode_snip,
@@ -106,7 +99,6 @@ fn default_display_strings_match_docs() {
     let expected = [
         "Win+F", // freeze_toggle
         "S",     // mode_spotlight
-        "Z",     // mode_zoom
         "C",     // mode_snip
         "Ctrl+C", // snip_copy
         "Esc",   // cancel
@@ -176,7 +168,7 @@ fn defaults_are_pairwise_non_conflicting() {
 
     // HotkeyGesture equality is exact (modifiers + vk), so equality doubles as
     // conflict detection (gesture.rs contract). The check spans ALL registered
-    // bindings: the 7 settings gestures AND the 3 auto-registered Shift+mode
+    // bindings: the 6 settings gestures AND the 2 auto-registered Shift+mode
     // variants (S vs Shift+S differ, but Shift+S must not collide with
     // anything else, e.g. a Ctrl+Shift/Ctrl+Alt binding).
     let registered = all_registered(&h);
@@ -198,7 +190,6 @@ fn shift_mode_variants_are_exactly_shift_ored_mode_keys() {
     let h = HotkeySettings::default();
     let expected = [
         ("mode_spotlight+Shift", "Shift+S"),
-        ("mode_zoom+Shift", "Shift+Z"),
         ("mode_snip+Shift", "Shift+C"),
     ];
     for ((name, g), (want_name, want_display)) in

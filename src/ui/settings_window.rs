@@ -196,25 +196,23 @@ pub fn open(
 // Pure validation logic (no Win32) — unit-tested at the bottom of this file.
 // ---------------------------------------------------------------------------
 
-/// The 7 full-gesture bindings, in display-row order.
+/// The 6 full-gesture bindings, in display-row order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum GestureField {
     FreezeToggle,
     ModeSpotlight,
-    ModeZoom,
     ModeSnip,
     SnipCopy,
     Cancel,
     ResetZoom,
 }
 
-const GESTURE_ROW_COUNT: usize = 7;
+const GESTURE_ROW_COUNT: usize = 6;
 
 impl GestureField {
     const ALL: [Self; GESTURE_ROW_COUNT] = [
         Self::FreezeToggle,
         Self::ModeSpotlight,
-        Self::ModeZoom,
         Self::ModeSnip,
         Self::SnipCopy,
         Self::Cancel,
@@ -225,7 +223,6 @@ impl GestureField {
         match self {
             Self::FreezeToggle => "Freeze toggle (global)",
             Self::ModeSpotlight => "Mode: Spotlight",
-            Self::ModeZoom => "Mode: Zoom",
             Self::ModeSnip => "Mode: Snip",
             Self::SnipCopy => "Snip: copy to clipboard",
             Self::Cancel => "Cancel / unfreeze",
@@ -237,7 +234,6 @@ impl GestureField {
         match self {
             Self::FreezeToggle => hotkeys.freeze_toggle,
             Self::ModeSpotlight => hotkeys.mode_spotlight,
-            Self::ModeZoom => hotkeys.mode_zoom,
             Self::ModeSnip => hotkeys.mode_snip,
             Self::SnipCopy => hotkeys.snip_copy,
             Self::Cancel => hotkeys.cancel,
@@ -249,7 +245,6 @@ impl GestureField {
         match self {
             Self::FreezeToggle => hotkeys.freeze_toggle = gesture,
             Self::ModeSpotlight => hotkeys.mode_spotlight = gesture,
-            Self::ModeZoom => hotkeys.mode_zoom = gesture,
             Self::ModeSnip => hotkeys.mode_snip = gesture,
             Self::SnipCopy => hotkeys.snip_copy = gesture,
             Self::Cancel => hotkeys.cancel = gesture,
@@ -1872,7 +1867,6 @@ mod tests {
             hotkeys: HotkeySettings {
                 freeze_toggle: gesture(Modifiers::CTRL | Modifiers::ALT, 0x46),
                 mode_spotlight: gesture(Modifiers::NONE, 0x31),
-                mode_zoom: gesture(Modifiers::NONE, 0x32),
                 mode_snip: gesture(Modifiers::NONE, 0x33),
                 spotlight_radius_modifier: Modifiers::CTRL,
                 zoom_modifier: Modifiers::SHIFT,
