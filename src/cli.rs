@@ -11,6 +11,8 @@ pub enum CliAction {
     Run,
     /// Re-spawn detached from the terminal and exit immediately.
     Daemon,
+    /// Ask the running instance to toggle the freeze (compositor keybinds).
+    Toggle,
     /// Print [`HELP`] to stdout and exit 0.
     Help,
     /// Print [`version_string`] to stdout and exit 0.
@@ -21,7 +23,12 @@ pub enum CliAction {
 pub const HELP: &str = "\
 SpotFreeze — freeze the screen, then spotlight / zoom / snip to clipboard.
 
-Usage: spotfreeze [OPTIONS]
+Usage: spotfreeze [OPTIONS] [COMMAND]
+
+Commands:
+  toggle       Ask the running SpotFreeze instance to toggle the freeze
+               (Linux only; for compositor keybinds, e.g. in hyprland.conf:
+                bind = SUPER, F, exec, spotfreeze toggle)
 
 Options:
       --daemon     Start detached from the terminal (nohup-style): the
@@ -49,6 +56,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<CliAction, String
             "--daemon" => CliAction::Daemon,
             "-h" | "--help" => CliAction::Help,
             "-V" | "--version" => CliAction::Version,
+            "toggle" => CliAction::Toggle,
             other => return Err(format!("unknown argument '{other}'; try --help")),
         };
         if let Some(previous) = action {
@@ -67,6 +75,7 @@ fn flag_name(action: CliAction) -> &'static str {
     match action {
         CliAction::Run => "(run)",
         CliAction::Daemon => "--daemon",
+        CliAction::Toggle => "toggle",
         CliAction::Help => "--help",
         CliAction::Version => "--version",
     }
@@ -128,6 +137,7 @@ mod tests {
         assert_eq!(parse_args(&["-h"]), Ok(CliAction::Help));
         assert_eq!(parse_args(&["--version"]), Ok(CliAction::Version));
         assert_eq!(parse_args(&["-V"]), Ok(CliAction::Version));
+        assert_eq!(parse_args(&["toggle"]), Ok(CliAction::Toggle));
     }
 
     #[test]
@@ -146,10 +156,11 @@ mod tests {
 
     #[test]
     fn help_documents_every_flag() {
-        for flag in ["--daemon", "--help", "--version"] {
+        for flag in ["--daemon", "--help", "--version", "toggle"] {
             assert!(HELP.contains(flag), "help mentions {flag}");
         }
         assert!(HELP.contains("nohup"), "the daemon flag explains itself");
+        assert!(HELP.contains("hyprland.conf"), "toggle shows the compositor bind");
     }
 
     #[test]

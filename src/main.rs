@@ -21,6 +21,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         CliAction::Daemon => cli::spawn_detached(),
+        CliAction::Toggle => toggle_running_instance(),
         CliAction::Run => run_app(),
     };
     match result {
@@ -30,6 +31,13 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn toggle_running_instance() -> anyhow::Result<()> {
+    #[cfg(target_os = "linux")]
+    return spotfreeze::platform::wayland::ipc::toggle_running_instance();
+    #[cfg(not(target_os = "linux"))]
+    anyhow::bail!("toggle is only supported on Linux (Wayland)")
 }
 
 fn run_app() -> anyhow::Result<()> {

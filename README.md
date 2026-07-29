@@ -46,14 +46,18 @@ re-composited from reusable buffers — never a full repaint from scratch.
 
 - **Linux and macOS** — settings are edited as text: the tray menu's *Edit
   settings* (*Edit Settings…* on macOS) opens `spotfreeze.jsonc` in your default
-  editor, and changes apply on the next freeze. There is no graphical settings
-  window on these platforms.
-- **Linux (Wayland)** — the global hotkey is bound through the XDG
-  GlobalShortcuts portal; on Hyprland this requires `xdg-desktop-portal-hyprland`
-  to be installed. The tray icon needs a StatusNotifierWatcher host (waybar,
-  KDE Plasma, GNOME with an AppIndicator extension) to display — without one
-  the tray icon is simply absent and the hotkey still works. Exiting from the
-  tray is immediate (no confirmation dialog).
+  editor. Changes apply on the next freeze, or immediately via the tray's
+  *Reload settings* (*Reload Settings* on macOS) — that also re-registers a
+  changed freeze binding on the spot. There is no graphical settings window on
+  these platforms.
+- **Linux (Wayland)** — on Hyprland, bind the freeze hotkey in `hyprland.conf`
+  (see *Install*): `bind = SUPER, F, exec, spotfreeze toggle`. On KDE/GNOME the
+  XDG GlobalShortcuts portal is used instead (Hyprland also supports the portal,
+  but only with a manual `global` bind in `hyprland.conf`). The tray icon needs
+  a StatusNotifierWatcher host (waybar, KDE Plasma, GNOME with an AppIndicator
+  extension) to display — without one the tray icon is simply absent and the
+  hotkey still works. Exiting from the tray is immediate (no confirmation
+  dialog).
 - **macOS** — requires macOS 14+ on Apple Silicon. Capturing the screen needs
   the Screen Recording permission: the first freeze prompts you to grant it in
   System Settings → Privacy & Security → Screen Recording. No Accessibility
@@ -130,9 +134,19 @@ writes, no admin rights needed.
 2. Run the `spotfreeze` binary — it appears as an icon in the system tray.
 
 The binary needs `libwayland` and `libxkbcommon` present at runtime — both are
-standard on any Wayland desktop, so there is usually nothing to install. For
-the global hotkey, the compositor's portal backend must be installed: on
-Hyprland that means `xdg-desktop-portal-hyprland`.
+standard on any Wayland desktop, so there is usually nothing to install.
+
+**The freeze hotkey on Hyprland** is a compositor bind running the CLI toggle —
+add to `~/.config/hypr/hyprland.conf` and reload Hyprland:
+
+```
+bind = SUPER, F, exec, spotfreeze toggle
+```
+
+(Pick any combo you like — it does not have to match `freeze_toggle` in
+`spotfreeze.jsonc`; the CLI toggles the running instance directly. The XDG
+GlobalShortcuts portal is also supported for desktops that auto-bind it, like
+KDE and GNOME.)
 
 ### macOS
 
@@ -148,9 +162,11 @@ Hyprland that means `xdg-desktop-portal-hyprland`.
 ## Command line
 
 ```
-spotfreeze [--daemon] [--help] [--version]
+spotfreeze [toggle] [--daemon] [--help] [--version]
 ```
 
+- `toggle` — ask the running instance to toggle the freeze and exit. Linux
+  only; this is what compositor keybinds call (see *Install*).
 - `--daemon` — start detached from the terminal (nohup-style): the process
   survives the terminal being closed afterwards. Linux/macOS only.
 - `--help` — print usage and exit.

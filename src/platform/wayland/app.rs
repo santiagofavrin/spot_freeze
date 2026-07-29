@@ -32,6 +32,7 @@ use crate::platform::shared::edit;
 use crate::platform::wayland::capture::WaylandCapturer;
 use crate::platform::wayland::clipboard::WaylandServices;
 use crate::platform::wayland::hotkeys_portal::PortalHotkey;
+use crate::platform::wayland::ipc;
 use crate::platform::wayland::shell::{self, Shell};
 use crate::platform::wayland::tray::WaylandTray;
 use crate::settings::model::AppSettings;
@@ -271,6 +272,16 @@ pub fn run() -> Result<()> {
         ),
     }
 
+    // IPC listener for `spotfreeze toggle` (compositor keybinds; works
+    // regardless of the portal).
+    let ipc_listener = match ipc::bind_listener() {
+        Ok(listener) => Some(listener),
+        Err(e) => {
+            eprintln!("spotfreeze: could not bind the IPC socket (`spotfreeze toggle` will not work): {e:#}");
+            None
+        }
+    };
+
     // Frozen-mode key routing: the input module reports every KeyDown here;
     // match the freeze-time plan and post the action.
     state.shell.set_key_listener({
@@ -293,6 +304,26 @@ pub fn run() -> Result<()> {
             }
         })
         .map_err(|e| anyhow!("registering the intent channel: {}", e.error))?;
+    if let Some(listener) = ipc_listener {
+        match listener.try_clone() {
+            Ok(poll_listener) => {
+                handle
+                    .insert_source(
+                        Generic::new(poll_listener, Interest::READ, Mode::Level),
+                        move |_, _, state| {
+                            if ipc::drain_toggle(&listener) {
+                                state.toggle_freeze();
+                            }
+                            Ok(PostAction::Continue)
+                        },
+                    )
+                    .map_err(|e| anyhow!("registering the IPC source: {}", e.error))?;
+            }
+            Err(e) => eprintln!(
+                "spotfreeze: could not poll the IPC socket (`spotfreeze toggle` will not work): {e:#}"
+            ),
+        }
+    }
     let wayland_fd = state
         .shell
         .poll_fd()
