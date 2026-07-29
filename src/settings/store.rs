@@ -22,6 +22,10 @@ const LEGACY_SETTINGS_FILE_NAMES: &[&str] = &["spotfreeze.json", "settings.json"
 /// Key names must be unique across the whole serialized settings document.
 const KEY_COMMENTS: &[(&str, &str)] = &[
     (
+        "freeze_toggle",
+        "global freeze hotkey (Windows/macOS); moot on Hyprland — bind `spotfreeze toggle` in hyprland.conf instead",
+    ),
+    (
         "spotlight_radius_modifier",
         "modifier-only binding: key HELD while scrolling the wheel to resize the circle (not a full hotkey)",
     ),
@@ -416,9 +420,9 @@ mod tests {
                 "comment for {key} must sit directly above the key line: {next_line}"
             );
         }
-        // Hotkey bindings stay uncommented (self-explanatory).
+        // Hotkey bindings stay uncommented (self-explanatory), except
+        // freeze_toggle (its Hyprland caveat is not obvious).
         for hotkey_key in [
-            "freeze_toggle",
             "mode_spotlight",
             "mode_snip",
             "snip_copy",
