@@ -88,8 +88,10 @@ pub struct SettingsCallbacks {
 ///   write-back reaches the app exclusively through [`SettingsCallbacks::on_saved`].
 /// * `parent`: the app's hidden message window (or `None`).
 /// * Rebindable entries: every field of [`crate::settings::model::HotkeySettings`]
-///   (freeze toggle, three mode keys, spotlight radius modifier, snip copy,
-///   cancel, reset zoom), plus the numeric radius/zoom/dim fields.
+///   — the full gestures (freeze toggle, mode keys, zoom hold, snip copy,
+///   cancel, reset zoom) as gesture rows and the two modifier-only chords
+///   (spotlight radius, zoom) as checkbox rows — plus the numeric
+///   radius/zoom/dim fields.
 ///
 /// Non-blocking: creates the window and returns immediately; the caller's
 /// message loop drives it. Must be called on the UI thread.
@@ -197,24 +199,26 @@ pub fn open(
 // Pure validation logic (no Win32) — unit-tested at the bottom of this file.
 // ---------------------------------------------------------------------------
 
-/// The 6 full-gesture bindings, in display-row order.
+/// The 7 full-gesture bindings, in display-row order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum GestureField {
     FreezeToggle,
     ModeSpotlight,
     ModeSnip,
+    ZoomHold,
     SnipCopy,
     Cancel,
     ResetZoom,
 }
 
-const GESTURE_ROW_COUNT: usize = 6;
+const GESTURE_ROW_COUNT: usize = 7;
 
 impl GestureField {
     const ALL: [Self; GESTURE_ROW_COUNT] = [
         Self::FreezeToggle,
         Self::ModeSpotlight,
         Self::ModeSnip,
+        Self::ZoomHold,
         Self::SnipCopy,
         Self::Cancel,
         Self::ResetZoom,
@@ -224,7 +228,8 @@ impl GestureField {
         match self {
             Self::FreezeToggle => "Freeze toggle (global)",
             Self::ModeSpotlight => "Mode: Spotlight",
-            Self::ModeSnip => "Mode: Snip",
+            Self::ModeSnip => "Mode: Capture",
+            Self::ZoomHold => "Zoom hold toggle",
             Self::SnipCopy => "Snip: copy to clipboard",
             Self::Cancel => "Cancel / unfreeze",
             Self::ResetZoom => "Zoom: reset to 100%",
@@ -236,6 +241,7 @@ impl GestureField {
             Self::FreezeToggle => hotkeys.freeze_toggle,
             Self::ModeSpotlight => hotkeys.mode_spotlight,
             Self::ModeSnip => hotkeys.mode_snip,
+            Self::ZoomHold => hotkeys.zoom_hold,
             Self::SnipCopy => hotkeys.snip_copy,
             Self::Cancel => hotkeys.cancel,
             Self::ResetZoom => hotkeys.reset_zoom,
@@ -247,6 +253,7 @@ impl GestureField {
             Self::FreezeToggle => hotkeys.freeze_toggle = gesture,
             Self::ModeSpotlight => hotkeys.mode_spotlight = gesture,
             Self::ModeSnip => hotkeys.mode_snip = gesture,
+            Self::ZoomHold => hotkeys.zoom_hold = gesture,
             Self::SnipCopy => hotkeys.snip_copy = gesture,
             Self::Cancel => hotkeys.cancel = gesture,
             Self::ResetZoom => hotkeys.reset_zoom = gesture,
@@ -1822,6 +1829,58 @@ mod tests {
         assert_eq!(find_duplicate_gesture(&gestures), None);
     }
 
+    // --- GestureField rows cover every HotkeySettings gesture field ---------
+
+    #[test]
+    fn every_hotkey_gesture_field_has_a_row() {
+        // One distinct sentinel per HotkeyGesture field of HotkeySettings.
+        // Adding a field to HotkeySettings breaks this literal at compile
+        // time until the field is listed here; listing it without a matching
+        // GestureField row then fails the comparison below.
+        let hotkeys = HotkeySettings {
+            freeze_toggle: gesture(Modifiers::NONE, 0x70), // F1 … F7
+            mode_spotlight: gesture(Modifiers::NONE, 0x71),
+            mode_snip: gesture(Modifiers::NONE, 0x72),
+            zoom_hold: gesture(Modifiers::NONE, 0x73),
+            spotlight_radius_modifier: Modifiers::CTRL,
+            zoom_modifier: Modifiers::SHIFT,
+            snip_copy: gesture(Modifiers::NONE, 0x74),
+            cancel: gesture(Modifiers::NONE, 0x75),
+            reset_zoom: gesture(Modifiers::NONE, 0x76),
+        };
+        let field_gestures = [
+            hotkeys.freeze_toggle,
+            hotkeys.mode_spotlight,
+            hotkeys.mode_snip,
+            hotkeys.zoom_hold,
+            hotkeys.snip_copy,
+            hotkeys.cancel,
+            hotkeys.reset_zoom,
+        ];
+        let row_gestures: Vec<HotkeyGesture> = GestureField::ALL
+            .iter()
+            .map(|field| field.get(&hotkeys))
+            .collect();
+        assert_eq!(
+            row_gestures.len(),
+            field_gestures.len(),
+            "one GestureField row per HotkeyGesture field"
+        );
+        for field_gesture in field_gestures {
+            assert!(
+                row_gestures.contains(&field_gesture),
+                "no GestureField row reads {field_gesture:?}"
+            );
+        }
+        // Every row writes back to the field it reads (no crossed get/set arms).
+        for field in GestureField::ALL {
+            let sentinel = gesture(Modifiers::ALT, 0x77); // Alt+F8
+            let mut h = hotkeys.clone();
+            field.set(&mut h, sentinel);
+            assert_eq!(field.get(&h), sentinel, "{field:?} set/get mismatch");
+        }
+    }
+
     // --- numeric field parsing ---------------------------------------------
 
     #[test]
@@ -1918,6 +1977,7 @@ mod tests {
                 freeze_toggle: gesture(Modifiers::CTRL | Modifiers::ALT, 0x46),
                 mode_spotlight: gesture(Modifiers::NONE, 0x31),
                 mode_snip: gesture(Modifiers::NONE, 0x33),
+                zoom_hold: gesture(Modifiers::NONE, 0x32),
                 spotlight_radius_modifier: Modifiers::CTRL,
                 zoom_modifier: Modifiers::SHIFT,
                 snip_copy: gesture(Modifiers::CTRL, 0x43),
@@ -1950,6 +2010,15 @@ mod tests {
         draft.hotkeys.cancel = draft.hotkeys.freeze_toggle;
         let err = validate_draft(&draft).unwrap_err();
         assert!(err.contains("both use"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn zoom_hold_participates_in_duplicate_validation() {
+        let mut draft = default_like_draft();
+        draft.hotkeys.zoom_hold = draft.hotkeys.cancel;
+        let err = validate_draft(&draft).unwrap_err();
+        assert!(err.contains("both use"), "unexpected error: {err}");
+        assert!(err.contains("Zoom hold toggle"), "names the row: {err}");
     }
 
     #[test]
