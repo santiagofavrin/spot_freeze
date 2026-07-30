@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.6.0](https://github.com/santiagofavrin/spot_freeze/compare/v1.5.0...v1.6.0) (2026-07-30)
+
+
+### Features
+
+* auto-start on windows and macOS ([937512a](https://github.com/santiagofavrin/spot_freeze/commit/937512aa23e6b1feeb474c6e6e0de7a9c62e24bd))
+* fade transition on freeze and unfreeze ([3b9a7d4](https://github.com/santiagofavrin/spot_freeze/commit/3b9a7d4f084d5ef5222e66e8680dc1af932c7b31))
+* layer modes, effected capture, zoom hold ([2a94ff8](https://github.com/santiagofavrin/spot_freeze/commit/2a94ff8ec4655d3468eaadc997c05e4e35c2fe3c))
+* mark TODO items done, list runtime checks ([eceb33e](https://github.com/santiagofavrin/spot_freeze/commit/eceb33e771b99a27daceae0329543279d2429764))
+
+
+### Bug Fixes
+
+* add zoom hold row to settings window ([a009c7f](https://github.com/santiagofavrin/spot_freeze/commit/a009c7f2fb0db09047f9fcc80735bf81aef2de9c))
+* coalesce wayland pointer motion events ([6cd5608](https://github.com/santiagofavrin/spot_freeze/commit/6cd56083423220027201da26ba6f4e0e1f6ebbdb))
+* keep wayland frozen plan while still frozen ([ccbdb66](https://github.com/santiagofavrin/spot_freeze/commit/ccbdb66363f1f6c65ab0973bf22338dc96caf714))
+* open settings editor reliably on macOS ([a2b60fb](https://github.com/santiagofavrin/spot_freeze/commit/a2b60fb207d05fca33df30d9761285867a13b4e1))
+* track modifiers in rebind capture hook ([680be9d](https://github.com/santiagofavrin/spot_freeze/commit/680be9d501e0653daa9e02519e0a887c0999978a))
+* unify capture stash ownership ([fa1733c](https://github.com/santiagofavrin/spot_freeze/commit/fa1733c48c35ee79397fd6d7e047bd4c05b9a1e3))
+
 ## [1.5.0](https://github.com/santiagofavrin/spot_freeze/compare/v1.4.0...v1.5.0) (2026-07-29)
 
 
