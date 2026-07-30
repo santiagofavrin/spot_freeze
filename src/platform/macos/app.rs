@@ -339,6 +339,9 @@ fn toggle_freeze(state: &Rc<RefCell<AppState>>) {
 /// settings are re-read at the next freeze).
 fn open_settings(state: &Rc<RefCell<AppState>>) {
     let path = state.borrow().settings_path.clone();
+    if !path.exists() {
+        let _ = store::load(&path);
+    }
     if let Err(e) = crate::platform::shared::edit::open_in_editor(&path) {
         queue_alert(format!("Could not open the settings file:\n{e:#}"));
     }

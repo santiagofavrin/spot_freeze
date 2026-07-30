@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::Command;
 
 /// Open `path` in the platform's default text editor: `xdg-open` on Linux
-/// (falling back to `$EDITOR`), `open` on macOS.
+/// (falling back to `$EDITOR`), `open -t` on macOS.
 pub fn open_in_editor(path: &Path) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -25,7 +25,7 @@ pub fn open_in_editor(path: &Path) -> Result<()> {
     }
     #[cfg(target_os = "macos")]
     {
-        spawn(Command::new("open").arg(path)).context("spawning open")
+        spawn(Command::new("open").arg("-t").arg(path)).context("spawning open")
     }
 }
 
