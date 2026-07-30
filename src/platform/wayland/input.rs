@@ -12,7 +12,12 @@
 //!   MONITOR-LOCAL PHYSICAL pixels (the crate contract). Wheel/axis events
 //!   need no cursor-based rerouting (unlike `WM_MOUSEWHEEL`, which goes to the
 //!   focus window): the compositor already targets the surface under the
-//!   pointer.
+//!   pointer. Motion is COALESCED to the newest position per dispatch batch:
+//!   `wl_pointer.motion` only updates the tracked position (buttons, wheel,
+//!   and the services cursor see it at once); the shell emits a single
+//!   `MouseMove` per batch via [`InputState::flush_motion`], so repaint work
+//!   stays proportional to dispatch batches, not to the device's event rate
+//!   (compositors forward motion uncoalesced).
 //! - `wl_keyboard.key` → `xkb_state_key_get_one_sym` → xkb keysym → Win32 VK
 //!   via [`crate::hotkeys::keymap`] → `OverlayEvent::KeyDown` to the focused
 //!   surface's sink (the controller's `KeyDown` arm is deliberately inert —
@@ -284,6 +289,9 @@ pub(crate) struct InputState {
     /// Pointer-focus surface + last pointer position (monitor-local physical).
     pointer_focus: Option<Rc<SurfaceRegistration>>,
     pointer_local: Point,
+    /// Latest tracked motion not yet emitted (coalesced per dispatch batch;
+    /// always for the current pointer focus — cleared on focus changes).
+    pending_motion: Option<Point>,
     /// Keyboard-focus surface (key event routing).
     keyboard_focus: Option<Rc<SurfaceRegistration>>,
     xkb: Option<Xkb>,
@@ -306,6 +314,7 @@ impl InputState {
             keyboard: None,
             pointer_focus: None,
             pointer_local: Point::default(),
+            pending_motion: None,
             keyboard_focus: None,
             xkb: None,
             pressed: HashSet::new(),
@@ -331,6 +340,44 @@ impl InputState {
         self.cursor_virtual
             .set(Some(Point::new(reg.rect.x + local.x, reg.rect.y + local.y)));
         local
+    }
+
+    /// Record a motion event: the tracked position updates immediately
+    /// (buttons, wheel, and the services cursor read it), but the `MouseMove`
+    /// emission is deferred to [`flush_motion`](Self::flush_motion), which the
+    /// shell calls once per dispatch batch — a burst of queued motions then
+    /// costs one controller repaint, not one per event.
+    fn track_motion(&mut self, surface_x: f64, surface_y: f64) {
+        let Some(focus) = self.pointer_focus.clone() else {
+            return;
+        };
+        let at = self.track_pointer(&focus, surface_x, surface_y);
+        self.pending_motion = Some(at);
+    }
+
+    /// Emit the batch's coalesced `MouseMove` (the newest tracked position),
+    /// if any motion arrived since the last flush.
+    pub(crate) fn flush_motion(&mut self) {
+        if let Some(at) = self.pending_motion.take() {
+            self.emit_pointer(OverlayEvent::MouseMove { at });
+        }
+    }
+
+    /// Pointer focus entered `reg`: track the enter position and emit its
+    /// move at once (crossings are rare, so they are not coalesced); motion
+    /// coalesced for the previous surface is stale and dropped.
+    fn focus_pointer(&mut self, reg: &Rc<SurfaceRegistration>, surface_x: f64, surface_y: f64) {
+        self.pending_motion = None;
+        let at = self.track_pointer(reg, surface_x, surface_y);
+        self.pointer_focus = Some(reg.clone());
+        (reg.sink)(reg.monitor_index, OverlayEvent::MouseMove { at });
+    }
+
+    /// Pointer focus left: coalesced motion does not survive the crossing.
+    fn unfocus_pointer(&mut self) {
+        self.pending_motion = None;
+        self.pointer_focus = None;
+        self.cursor_virtual.set(None);
     }
 
     fn emit_pointer(&self, event: OverlayEvent) {
@@ -477,23 +524,16 @@ impl Dispatch<wl_pointer::WlPointer, ()> for ShellState {
                 let Some(reg) = input.registration(&surface) else {
                     return;
                 };
-                let at = input.track_pointer(&reg, surface_x, surface_y);
-                input.pointer_focus = Some(reg.clone());
-                (reg.sink)(reg.monitor_index, OverlayEvent::MouseMove { at });
+                input.focus_pointer(&reg, surface_x, surface_y);
             }
             wl_pointer::Event::Leave { serial, .. } => {
                 input.note_serial(serial);
-                input.pointer_focus = None;
-                input.cursor_virtual.set(None);
+                input.unfocus_pointer();
             }
             wl_pointer::Event::Motion {
                 surface_x, surface_y, ..
             } => {
-                let Some(focus) = input.pointer_focus.clone() else {
-                    return;
-                };
-                let at = input.track_pointer(&focus, surface_x, surface_y);
-                (focus.sink)(focus.monitor_index, OverlayEvent::MouseMove { at });
+                input.track_motion(surface_x, surface_y);
             }
             wl_pointer::Event::Button {
                 serial,
@@ -741,5 +781,128 @@ mod tests {
         assert_eq!(axis_slot(WEnum::Value(wl_pointer::Axis::VerticalScroll)), 0);
         assert_eq!(axis_slot(WEnum::Value(wl_pointer::Axis::HorizontalScroll)), 1);
         assert_eq!(axis_slot(WEnum::Unknown(99)), 1);
+    }
+
+    // ---- motion coalescing ----
+
+    /// Registration whose sink records `(monitor, event)` into `log`.
+    fn recording_reg(
+        log: &Rc<RefCell<Vec<(usize, OverlayEvent)>>>,
+        monitor_index: usize,
+        scale: u32,
+    ) -> Rc<SurfaceRegistration> {
+        let log = log.clone();
+        Rc::new(SurfaceRegistration {
+            monitor_index,
+            sink: Rc::new(move |m, e| log.borrow_mut().push((m, e))),
+            scale,
+            rect: Rect::new(1920, 0, 1920, 1080),
+            keyboard_focus: Rc::new(Cell::new(false)),
+        })
+    }
+
+    #[test]
+    fn motion_is_coalesced_to_the_latest_position_per_flush() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut input = InputState::new();
+        input.focus_pointer(&recording_reg(&log, 2, 1), 10.0, 10.0);
+        assert_eq!(log.borrow().len(), 1, "enter emits its move immediately");
+        input.track_motion(20.0, 30.0);
+        input.track_motion(40.0, 50.0);
+        input.track_motion(60.0, 70.0);
+        assert_eq!(log.borrow().len(), 1, "motions are not emitted per event");
+        input.flush_motion();
+        assert_eq!(
+            *log.borrow(),
+            vec![
+                (2, OverlayEvent::MouseMove { at: Point::new(10, 10) }),
+                (2, OverlayEvent::MouseMove { at: Point::new(60, 70) }),
+            ]
+        );
+    }
+
+    #[test]
+    fn flush_without_motion_emits_nothing() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut input = InputState::new();
+        input.focus_pointer(&recording_reg(&log, 0, 1), 10.0, 10.0);
+        log.borrow_mut().clear();
+        input.flush_motion();
+        input.flush_motion();
+        assert!(log.borrow().is_empty());
+    }
+
+    #[test]
+    fn motion_scales_surface_local_coordinates() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut input = InputState::new();
+        input.focus_pointer(&recording_reg(&log, 1, 2), 0.0, 0.0);
+        log.borrow_mut().clear();
+        input.track_motion(25.5, 10.0);
+        input.flush_motion();
+        assert_eq!(
+            *log.borrow(),
+            vec![(1, OverlayEvent::MouseMove { at: Point::new(51, 20) })]
+        );
+    }
+
+    #[test]
+    fn motion_without_focus_is_dropped() {
+        let log: Rc<RefCell<Vec<(usize, OverlayEvent)>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut input = InputState::new();
+        input.track_motion(20.0, 30.0);
+        input.flush_motion();
+        assert!(log.borrow().is_empty());
+    }
+
+    #[test]
+    fn focus_changes_discard_coalesced_motion() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut input = InputState::new();
+        input.focus_pointer(&recording_reg(&log, 0, 1), 5.0, 5.0);
+        log.borrow_mut().clear();
+        input.track_motion(20.0, 20.0);
+        input.unfocus_pointer();
+        input.flush_motion();
+        assert!(log.borrow().is_empty(), "leave drops the coalesced motion");
+        input.track_motion(30.0, 30.0); // no focus: dropped
+        input.focus_pointer(&recording_reg(&log, 1, 1), 7.0, 8.0);
+        input.flush_motion();
+        assert_eq!(
+            *log.borrow(),
+            vec![(1, OverlayEvent::MouseMove { at: Point::new(7, 8) })],
+            "the enter move is the only survivor"
+        );
+    }
+
+    #[test]
+    fn wheel_sees_the_tracked_position_before_the_flush() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut input = InputState::new();
+        input.focus_pointer(&recording_reg(&log, 0, 1), 5.0, 5.0);
+        log.borrow_mut().clear();
+        input.track_motion(100.0, 200.0);
+        input.axes[0].add_value120(120);
+        input.flush_axis_frame();
+        assert_eq!(
+            *log.borrow(),
+            vec![(0, OverlayEvent::MouseWheel {
+                at: Point::new(100, 200),
+                delta: -120,
+                modifiers: Modifiers::NONE,
+            })],
+            "the wheel uses the newest tracked position, not the last emitted one"
+        );
+        input.flush_motion();
+        assert_eq!(log.borrow().len(), 2, "the coalesced move follows");
+    }
+
+    #[test]
+    fn motion_updates_the_virtual_cursor_immediately() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut input = InputState::new();
+        input.focus_pointer(&recording_reg(&log, 0, 1), 0.0, 0.0);
+        input.track_motion(100.0, 200.0);
+        assert_eq!(input.cursor_virtual.get(), Some(Point::new(2020, 200)));
     }
 }

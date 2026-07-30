@@ -384,19 +384,22 @@ impl Shell {
     }
 
     /// Dispatch events already read into the main queue (e.g. buffered by the
-    /// capture pump's socket reads) without touching the socket.
+    /// capture pump's socket reads) without touching the socket, then emit the
+    /// batch's coalesced pointer motion.
     pub fn dispatch_pending(&self) -> Result<()> {
         let core = &mut *self.core.borrow_mut();
         core.queue
             .dispatch_pending(&mut core.state)
             .context("dispatching Wayland events")?;
+        core.state.input.flush_motion();
         Ok(())
     }
 
     /// The pollable-fd callback: read the socket data that made the fd fire,
-    /// then dispatch everything pending. `prepare_read` returning `None` means
-    /// events are already buffered — drain and retry (bounded; single-threaded,
-    /// so draining always converges).
+    /// then dispatch everything pending and emit the batch's coalesced pointer
+    /// motion. `prepare_read` returning `None` means events are already
+    /// buffered — drain and retry (bounded; single-threaded, so draining
+    /// always converges).
     pub fn read_and_dispatch(&self) -> Result<()> {
         let core = &mut *self.core.borrow_mut();
         for _ in 0..2 {
@@ -414,6 +417,7 @@ impl Shell {
         core.queue
             .dispatch_pending(&mut core.state)
             .context("dispatching Wayland events")?;
+        core.state.input.flush_motion();
         Ok(())
     }
 
