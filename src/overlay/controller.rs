@@ -28,6 +28,19 @@
 //!   [`crate::overlay::composite::RenderState`] built from the active layers
 //!   ([`ModeStack::render_state`]) into the persistent per-monitor frame
 //!   buffer — no per-frame allocations in the render path.
+//! - **Freeze/unfreeze transition**: freeze fades the overlay IN and a full
+//!   unfreeze fades it OUT, driven by the pure step schedule in
+//!   [`crate::overlay::fade`] (<= 180 ms total, missed steps skipped). Where
+//!   the surface supports a constant window alpha ([`OverlaySurface::supports_alpha`]
+//!   — Windows layered windows, macOS) the fade is a per-step alpha update;
+//!   elsewhere (Wayland) it is a capped full-frame pixel blend
+//!   ([`crate::overlay::composite::blend_frames`]) into the preallocated
+//!   `fade_scratch` buffers through the normal present path. Esc from capture
+//!   mode and the Ctrl+C close stay instant (no fade). Fades are ATOMIC like
+//!   the border flash: they run synchronously on the UI thread; input
+//!   pressed during a fade queues or drops per platform without ever
+//!   corrupting the session (the interruption state machine is defined in
+//!   the fade module docs).
 //! - **Cursor seeding**: freshly activated layers receive one synthetic
 //!   mouse-move with the LIVE cursor position, so the first presented frame
 //!   already has the spotlight hole / zoom focus under the cursor instead of
@@ -50,10 +63,11 @@
 use crate::capture::{Capturer, DibBuffer, MonitorInfo};
 use crate::geometry::{Point, Rect};
 use crate::overlay::composite::{
-    RenderState, ZoomFilter, compose_frame, crop_normalized, draw_border, monitor_index_at,
-    virtual_to_local, zoom_resample,
+    RenderState, ZoomFilter, blend_frames, compose_frame, crop_normalized, draw_border,
+    monitor_index_at, virtual_to_local, zoom_resample,
 };
 use crate::overlay::events::{OverlayEvent, OverlayEventSink};
+use crate::overlay::fade::{FadeClock, FadeDirection, fade_step};
 use crate::overlay::modes::{ModeEffect, ModeKind, ModeParams, ModeStack, SnipSelection};
 use crate::platform::{OverlaySurface, PlatformServices, SurfaceFactory};
 use crate::settings::model::{AppSettings, Rgb};
@@ -144,6 +158,12 @@ struct FreezeState {
     /// every capture transition (set_mode/add_mode/toggle_mode/unfreeze)
     /// moves this stash and the mode stack's layer stash together.
     capture: Option<Vec<DibBuffer>>,
+    /// Per-monitor blend target for the pixel-blend fade (surfaces without
+    /// [`OverlaySurface::supports_alpha`]), allocated ONCE at freeze time and
+    /// reused by every fade step of the session — the fade never allocates
+    /// per step. EMPTY when every surface has a constant window alpha (the
+    /// fade then only updates `set_alpha`).
+    fade_scratch: Vec<DibBuffer>,
 }
 
 /// Owns the frozen captures, one [`OverlaySurface`] per monitor, and the
@@ -162,13 +182,23 @@ pub struct OverlayController {
     /// reset to Spotlight on every freeze and on Esc from capture mode.
     /// Meaningless while unfrozen (returns the last used kind).
     active: ModeKind,
+    /// Time source for the fade driver (system clock in production; tests
+    /// inject a manual clock via [`OverlayController::with_fade_clock`]).
+    clock: FadeClock,
 }
 
 impl OverlayController {
     pub fn new() -> Self {
+        Self::with_fade_clock(FadeClock::system())
+    }
+
+    /// Controller driving its fades on `clock` (tests: a manual clock, so
+    /// fades walk the full step schedule in zero wall-clock time).
+    pub fn with_fade_clock(clock: FadeClock) -> Self {
         Self {
             inner: Rc::new(RefCell::new(None)),
             active: ModeKind::Spotlight,
+            clock,
         }
     }
 
@@ -192,9 +222,9 @@ impl OverlayController {
     }
 
     /// Capture all monitors ONCE via `capturer`, create one overlay surface
-    /// per monitor via `surfaces`, enter Spotlight mode, present the initial
-    /// frames, and flash the border once. Cursor seeding and clipboard copies
-    /// go through `services`.
+    /// per monitor via `surfaces`, enter Spotlight mode, fade the overlay IN
+    /// (see [`crate::overlay::fade`]), and flash the border once. Cursor
+    /// seeding and clipboard copies go through `services`.
     ///
     /// Settings are SNAPSHOT at freeze time: changing hotkeys/radius/zoom while
     /// frozen takes effect on the next freeze. No-op when already frozen.
@@ -238,6 +268,16 @@ impl OverlayController {
             .iter()
             .map(|o| DibBuffer::new(o.width, o.height))
             .collect();
+        // The pixel-blend fade's scratch targets, preallocated for the whole
+        // session (constant-alpha surfaces fade without them).
+        let fade_scratch = if windows.iter().all(|w| w.supports_alpha()) {
+            Vec::new()
+        } else {
+            originals
+                .iter()
+                .map(|o| DibBuffer::new(o.width, o.height))
+                .collect()
+        };
 
         let settings = settings.clone();
         let monitor_count = monitors.len();
@@ -250,15 +290,15 @@ impl OverlayController {
             modes: ModeStack::new(mode_params(&settings)),
             settings,
             capture: None,
+            fade_scratch,
         };
 
         // Spotlight is the default mode (product spec). Seed the live cursor
-        // position, present the initial frame on every monitor, then flash
-        // the border once (freeze == spotlight activation).
+        // position, fade the overlay in (the initial frame reaches every
+        // monitor through the fade), then flash the border once (freeze ==
+        // spotlight activation).
         seed_cursor(&mut state, services);
-        for m in 0..state.windows.len() {
-            render_and_present(&mut state, m, None);
-        }
+        fade_in(&mut state, &self.clock);
         flash_border(&mut state, Self::flash_count(ModeKind::Spotlight));
 
         *self.inner.borrow_mut() = Some(state);
@@ -268,9 +308,10 @@ impl OverlayController {
 
     /// Esc / cancel contract: in CAPTURE mode this only EXITS capture — the
     /// pre-capture originals and the stashed spotlight/zoom state are
-    /// restored (the re-frozen base is dropped) and the session stays frozen;
-    /// anywhere else it destroys all overlay windows and drops the captures.
-    /// No-op when not frozen.
+    /// restored (the re-frozen base is dropped) and the session stays frozen
+    /// (deliberately INSTANT: no fade there); anywhere else it fades the
+    /// overlay OUT (see [`crate::overlay::fade`]), then destroys all overlay
+    /// windows and drops the captures. No-op when not frozen.
     pub fn unfreeze(&mut self) {
         {
             let mut slot = self.inner.borrow_mut();
@@ -283,8 +324,12 @@ impl OverlayController {
             }
         }
         // Take first, drop AFTER releasing the borrow: window teardown never
-        // runs while the cell is mutably borrowed.
-        let taken = self.inner.borrow_mut().take();
+        // runs while the cell is mutably borrowed. The fade runs on the taken
+        // state — sink events arriving mid-fade already see `None` and no-op.
+        let mut taken = self.inner.borrow_mut().take();
+        if let Some(state) = taken.as_mut() {
+            fade_out(state, &self.clock);
+        }
         drop(taken);
     }
 
@@ -630,6 +675,116 @@ fn spin_drain(state: &mut FreezeState, ms: u64) {
     }
 }
 
+/// Freeze fade-IN: compose every monitor's frame, then walk the pure step
+/// schedule ([`fade_step`]) to the exact opaque endpoint. Constant-alpha
+/// surfaces start fully transparent and only update `set_alpha` per step;
+/// the others blend `originals[m]` → `frames[m]` into `fade_scratch[m]` per
+/// step (alpha 0 == the original capture == what the live screen just showed,
+/// so the overlay appears seamlessly) through the normal present path.
+fn fade_in(state: &mut FreezeState, clock: &FadeClock) {
+    for m in 0..state.windows.len() {
+        compose_frame_for(state, m);
+    }
+    let use_alpha = state.windows.iter().all(|w| w.supports_alpha());
+    if use_alpha {
+        // Transparent BEFORE the first present: the initial frame must never
+        // flash at full opacity ahead of the fade.
+        for w in &mut state.windows {
+            let _ = w.set_alpha(0);
+        }
+        for m in 0..state.windows.len() {
+            present_or_defer(state, m, None);
+        }
+    }
+    run_fade(state, FadeDirection::In, use_alpha, clock);
+    if use_alpha {
+        for w in &mut state.windows {
+            let _ = w.set_alpha(255);
+        }
+    } else {
+        // The alpha-255 blend IS the composed frame: present it directly.
+        for m in 0..state.windows.len() {
+            present_or_defer(state, m, None);
+        }
+    }
+}
+
+/// Full-unfreeze fade-OUT on the taken state (the windows die right after):
+/// the mirror of [`fade_in`] down to the exact transparent/original endpoint.
+/// The blend path's full-frame presents supersede every repaint deferred so
+/// far, so the pending slots are dropped up front.
+fn fade_out(state: &mut FreezeState, clock: &FadeClock) {
+    let use_alpha = state.windows.iter().all(|w| w.supports_alpha());
+    if !use_alpha {
+        for pending in &mut state.pending_repaint {
+            *pending = None;
+        }
+    }
+    run_fade(state, FadeDirection::Out, use_alpha, clock);
+    if use_alpha {
+        for w in &mut state.windows {
+            let _ = w.set_alpha(0);
+        }
+    } else {
+        // The alpha-0 blend IS the original capture: present it directly.
+        for m in 0..state.windows.len() {
+            if state.windows[m].can_present() {
+                let _ = state.windows[m].present(&state.originals[m], None);
+            }
+        }
+    }
+}
+
+/// Shared step loop of both fades: sample the clock, apply the step's alpha
+/// to every monitor (`set_alpha` on constant-alpha surfaces, a full-frame
+/// blend + present otherwise), then wait to the next nominal boundary,
+/// draining deferred repaints. A busy blend surface simply skips its step —
+/// the next one carries a newer alpha, so the fade degrades and never stalls
+/// (see the [`crate::overlay::fade`] module docs).
+fn run_fade(
+    state: &mut FreezeState,
+    direction: FadeDirection,
+    use_alpha: bool,
+    clock: &FadeClock,
+) {
+    let start = clock.now();
+    while let Some(step) = fade_step(clock.now().saturating_sub(start), direction) {
+        {
+            let FreezeState {
+                originals,
+                frames,
+                fade_scratch,
+                windows,
+                ..
+            } = state;
+            for m in 0..windows.len() {
+                if use_alpha {
+                    let _ = windows[m].set_alpha(step.alpha);
+                } else if windows[m].can_present() {
+                    blend_frames(&originals[m], &frames[m], &mut fade_scratch[m], step.alpha);
+                    let _ = windows[m].present(&fade_scratch[m], None);
+                }
+            }
+        }
+        wait_draining(state, step.wait, clock);
+    }
+}
+
+/// Wait `wait` on the fade clock, draining deferred repaints in small slices
+/// so fade frames deferred by buffer-slot pacing still reach the screen
+/// during the hold (the fade-clock analog of [`spin_drain`]).
+fn wait_draining(state: &mut FreezeState, wait: Duration, clock: &FadeClock) {
+    let start = clock.now();
+    loop {
+        let remaining = wait.saturating_sub(clock.now().saturating_sub(start));
+        if remaining.is_zero() {
+            break;
+        }
+        drain_pending_repaints(state);
+        clock.sleep(remaining.min(Duration::from_millis(2)));
+    }
+}
+
 /// Compose monitor `m`'s frame: build the
 /// [`crate::overlay::composite::RenderState`] from the active layers and run
 /// the shared pipeline (zoom base → colored darken → spotlight hole → snip
@@ -890,7 +1045,9 @@ mod tests {
     //! `snip_copy_and_close` is only exercised while unfrozen (documented
     //! no-op, services untouched).
     use super::*;
+    use crate::overlay::fade::{FADE_STEP_MS, FADE_STEPS, fade_alpha};
     use crate::settings::model::AppSettings;
+    use std::cell::Cell;
 
     /// [`PlatformServices`] double for the unfrozen-path tests: never
     /// consulted (every call would be a bug), so both methods panic.
@@ -919,7 +1076,9 @@ mod tests {
         }
     }
 
-    /// Overlay surface recording every presented frame (shared with the test).
+    /// Overlay surface recording every presented frame (shared with the
+    /// test). No constant-alpha support ⇒ the controller exercises the
+    /// pixel-blend fade path with it.
     struct FakeSurface {
         presents: Rc<RefCell<Vec<DibBuffer>>>,
     }
@@ -927,6 +1086,29 @@ mod tests {
     impl OverlaySurface for FakeSurface {
         fn present(&mut self, frame: &DibBuffer, _dirty: Option<Rect>) -> Result<()> {
             self.presents.borrow_mut().push(frame.clone());
+            Ok(())
+        }
+    }
+
+    /// Constant-alpha surface (the Windows/macOS path): records the applied
+    /// alpha sequence alongside the presented frames.
+    struct AlphaSurface {
+        presents: Rc<RefCell<Vec<DibBuffer>>>,
+        alphas: Rc<RefCell<Vec<u8>>>,
+    }
+
+    impl OverlaySurface for AlphaSurface {
+        fn present(&mut self, frame: &DibBuffer, _dirty: Option<Rect>) -> Result<()> {
+            self.presents.borrow_mut().push(frame.clone());
+            Ok(())
+        }
+
+        fn supports_alpha(&self) -> bool {
+            true
+        }
+
+        fn set_alpha(&mut self, alpha: u8) -> Result<()> {
+            self.alphas.borrow_mut().push(alpha);
             Ok(())
         }
     }
@@ -952,8 +1134,48 @@ mod tests {
     struct FakeFreeze {
         controller: OverlayController,
         services: FakeServices,
+        captured: Vec<(MonitorInfo, DibBuffer)>,
+        alpha_surfaces: bool,
         presents: Vec<Rc<RefCell<Vec<DibBuffer>>>>,
+        alphas: Vec<Rc<RefCell<Vec<u8>>>>,
         copied: Rc<RefCell<Vec<DibBuffer>>>,
+    }
+
+    impl FakeFreeze {
+        /// Freeze again over the same fake monitors (recordings accumulate:
+        /// the new surfaces share the handles). A no-op while already frozen.
+        fn refreeze(&mut self) {
+            let alpha_surfaces = self.alpha_surfaces;
+            let factory_presents = self.presents.clone();
+            let factory_alphas = self.alphas.clone();
+            let factory = move |index: usize,
+                                _rect: Rect,
+                                _rects: Rc<Vec<Rect>>,
+                                _sink: OverlayEventSink|
+                  -> Result<Box<dyn OverlaySurface>> {
+                Ok(if alpha_surfaces {
+                    Box::new(AlphaSurface {
+                        presents: factory_presents[index].clone(),
+                        alphas: factory_alphas[index].clone(),
+                    })
+                } else {
+                    Box::new(FakeSurface {
+                        presents: factory_presents[index].clone(),
+                    })
+                })
+            };
+            let factory: &SurfaceFactory = &factory;
+            self.controller
+                .freeze(
+                    &FakeCapturer {
+                        captured: self.captured.clone(),
+                    },
+                    &fake_settings(),
+                    factory,
+                    &self.services,
+                )
+                .expect("refreeze with fakes");
+        }
     }
 
     fn monitor_info(rect: Rect) -> MonitorInfo {
@@ -974,10 +1196,22 @@ mod tests {
         s
     }
 
+    /// Manual fade clock: sleeps advance time instantly by the exact request,
+    /// so fades walk the full nominal step schedule in zero wall-clock time.
+    fn manual_fade_clock() -> FadeClock {
+        FadeClock::manual(Rc::new(Cell::new(Duration::ZERO)))
+    }
+
     /// M0 (origin) shows [`coord_pattern`], M1 (negative virtual x) its
-    /// inverse. `cursor` is the fixed virtual-screen position the services
-    /// double reports.
+    /// inverse. Blend-path surfaces, manual fade clock.
     fn freeze_fake(cursor: Point) -> FakeFreeze {
+        freeze_fake_ex(cursor, false, manual_fade_clock())
+    }
+
+    /// `cursor` is the fixed virtual-screen position the services double
+    /// reports; `alpha_surfaces` picks the constant-alpha surface fake (the
+    /// Windows/macOS fade path) over the blend-path one.
+    fn freeze_fake_ex(cursor: Point, alpha_surfaces: bool, clock: FadeClock) -> FakeFreeze {
         let captured: Vec<(MonitorInfo, DibBuffer)> = [
             (Rect::new(0, 0, 32, 32), make_buf(32, 32, coord_pattern)),
             (
@@ -994,37 +1228,26 @@ mod tests {
         let presents: Vec<Rc<RefCell<Vec<DibBuffer>>>> = (0..captured.len())
             .map(|_| Rc::new(RefCell::new(Vec::new())))
             .collect();
-        let factory_presents = presents.clone();
-        let factory = move |index: usize,
-                            _rect: Rect,
-                            _rects: Rc<Vec<Rect>>,
-                            _sink: OverlayEventSink|
-              -> Result<Box<dyn OverlaySurface>> {
-            Ok(Box::new(FakeSurface {
-                presents: factory_presents[index].clone(),
-            }))
-        };
-        let factory: &SurfaceFactory = &factory;
+        let alphas: Vec<Rc<RefCell<Vec<u8>>>> = (0..captured.len())
+            .map(|_| Rc::new(RefCell::new(Vec::new())))
+            .collect();
         let copied = Rc::new(RefCell::new(Vec::new()));
         let services = FakeServices {
             cursor,
             copied: copied.clone(),
         };
-        let mut controller = OverlayController::new();
-        controller
-            .freeze(
-                &FakeCapturer { captured },
-                &fake_settings(),
-                factory,
-                &services,
-            )
-            .expect("freeze with fakes");
-        FakeFreeze {
+        let mut controller = OverlayController::with_fade_clock(clock);
+        let mut session = FakeFreeze {
             controller,
             services,
+            captured,
+            alpha_surfaces,
             presents,
+            alphas,
             copied,
-        }
+        };
+        session.refreeze();
+        session
     }
 
     fn last_present(presents: &Rc<RefCell<Vec<DibBuffer>>>) -> DibBuffer {
@@ -1779,6 +2002,203 @@ mod tests {
             last_present(&f.presents[0]).pixels,
             pre_capture.pixels,
             "the pre-capture view is restored exactly"
+        );
+    }
+
+    // ---- freeze/unfreeze fade ---------------------------------------------
+    //
+    // The interruption state machine (src/overlay/fade.rs docs): fades are
+    // atomic on the UI thread, so every rapid-toggle case resolves by
+    // serialization — these tests pin the sequences and the exact endpoints.
+
+    /// Expected fade-step count: the schedule's nominal steps plus the exact
+    /// endpoint applied after the last step.
+    const FADE_PRESENTS: usize = FADE_STEPS as usize + 1;
+
+    #[test]
+    fn freeze_fades_in_from_the_original_capture() {
+        let f = freeze_fake(Point::new(16, 16));
+        let p = f.presents[0].borrow();
+        // Fade steps + endpoint + the 2 border-flash frames (on, off).
+        assert_eq!(p.len(), FADE_PRESENTS + 2);
+        let original = make_buf(32, 32, coord_pattern);
+        assert_eq!(
+            p[0].pixels, original.pixels,
+            "alpha 0 == the original capture (the live screen's pixels)"
+        );
+        // Each step blends original -> composed by the schedule's alpha.
+        let composed = &p[FADE_STEPS as usize];
+        for k in 1..FADE_STEPS {
+            let mut expect = DibBuffer::new(32, 32);
+            blend_frames(
+                &original,
+                composed,
+                &mut expect,
+                fade_alpha(k * FADE_STEP_MS, FadeDirection::In),
+            );
+            assert_eq!(p[k as usize].pixels, expect.pixels, "fade step {k}");
+        }
+        // The endpoint is the fully composed frame (dimmed, hole at the
+        // cursor), and the flash leaves it as the last present.
+        assert_ne!(composed.pixels, original.pixels);
+        assert_eq!(p[p.len() - 1].pixels, composed.pixels);
+    }
+
+    #[test]
+    fn freeze_fade_in_drives_constant_alpha_surfaces() {
+        let f = freeze_fake_ex(Point::new(16, 16), true, manual_fade_clock());
+        // Transparent BEFORE the first present, the schedule's alphas, then
+        // the exact opaque endpoint.
+        let mut expect = vec![0u8];
+        for k in 0..FADE_STEPS {
+            expect.push(fade_alpha(k * FADE_STEP_MS, FadeDirection::In));
+        }
+        expect.push(255);
+        assert_eq!(*f.alphas[0].borrow(), expect);
+        assert_eq!(
+            *f.alphas[1].borrow(),
+            expect,
+            "every monitor fades in lockstep"
+        );
+        // The alpha path never blends pixels: only the initial frame and the
+        // two flash frames are presented.
+        assert_eq!(f.presents[0].borrow().len(), 3);
+    }
+
+    #[test]
+    fn unfreeze_fades_out_to_the_original_capture() {
+        let mut f = freeze_fake(Point::new(16, 16));
+        let before = f.presents[0].borrow().len();
+        f.controller.unfreeze();
+        assert!(!f.controller.is_frozen());
+        let p = f.presents[0].borrow();
+        let fade = &p[before..];
+        assert_eq!(fade.len(), FADE_PRESENTS, "steps + exact endpoint");
+        let original = make_buf(32, 32, coord_pattern);
+        assert_eq!(
+            fade.last().unwrap().pixels,
+            original.pixels,
+            "the fade ends exactly on the original capture"
+        );
+        // Monotonic approach: no step ever moves away from the original.
+        let distance = |buf: &DibBuffer| -> u64 {
+            buf.pixels
+                .iter()
+                .zip(&original.pixels)
+                .map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs() as u64)
+                .sum()
+        };
+        for pair in fade.windows(2) {
+            assert!(
+                distance(&pair[1]) <= distance(&pair[0]),
+                "fade-out step moved away from the original"
+            );
+        }
+    }
+
+    #[test]
+    fn unfreeze_fade_out_ends_fully_transparent_on_alpha_surfaces() {
+        let mut f = freeze_fake_ex(Point::new(16, 16), true, manual_fade_clock());
+        f.alphas[0].borrow_mut().clear();
+        f.controller.unfreeze();
+        let mut expect: Vec<u8> = (0..FADE_STEPS)
+            .map(|k| fade_alpha(k * FADE_STEP_MS, FadeDirection::Out))
+            .collect();
+        expect.push(0); // exact transparent endpoint before teardown
+        assert_eq!(*f.alphas[0].borrow(), expect);
+        assert!(!f.controller.is_frozen());
+        // No pixel blending on the alpha path: no fade presents at all.
+        assert_eq!(f.presents[0].borrow().len(), 3);
+    }
+
+    #[test]
+    fn a_stalled_step_skips_ahead_instead_of_stalling() {
+        // Sleep advances the clock by 50 ms regardless of the request: the
+        // nominal 20 ms steps are missed, and the fade lands on the CURRENT
+        // alpha each time instead of queueing the missed ones.
+        let cell = Rc::new(Cell::new(Duration::ZERO));
+        let clock = FadeClock::custom(
+            {
+                let cell = cell.clone();
+                Rc::new(move || cell.get())
+            },
+            Rc::new(move |_d| cell.set(cell.get() + Duration::from_millis(50))),
+        );
+        let f = freeze_fake_ex(Point::new(16, 16), true, clock);
+        assert_eq!(
+            *f.alphas[0].borrow(),
+            vec![
+                0,
+                fade_alpha(0, FadeDirection::In),
+                fade_alpha(50, FadeDirection::In),
+                fade_alpha(100, FadeDirection::In),
+                fade_alpha(150, FadeDirection::In),
+                255,
+            ]
+        );
+    }
+
+    #[test]
+    fn esc_in_capture_exits_without_fading() {
+        let mut f = freeze_fake(Point::new(16, 16));
+        f.controller.set_mode(ModeKind::Snip, &f.services);
+        let before = f.presents[0].borrow().len();
+        // Esc in capture only exits capture: the exit repaint, no fade steps.
+        f.controller.unfreeze();
+        assert!(f.controller.is_frozen());
+        assert_eq!(
+            f.presents[0].borrow().len(),
+            before + 1,
+            "only the exit-capture repaint — no fade"
+        );
+        // The real unfreeze right after DOES fade (steps + endpoint).
+        f.controller.unfreeze();
+        assert!(!f.controller.is_frozen());
+        assert_eq!(
+            f.presents[0].borrow().len(),
+            before + 1 + FADE_PRESENTS,
+        );
+    }
+
+    #[test]
+    fn rapid_toggles_serialize_and_every_transition_lands_exact() {
+        let mut f = freeze_fake(Point::new(16, 16));
+        // Unfreeze right after the freeze (the "Esc during fade-in" case:
+        // serialized behind the atomic fade-in) — full fade-out, then gone.
+        f.controller.unfreeze();
+        assert!(!f.controller.is_frozen());
+        // Toggle straight back on (the "freeze during fade-out" case): a
+        // FRESH session fading in from its own original capture.
+        let before = f.presents[0].borrow().len();
+        f.refreeze();
+        assert!(f.controller.is_frozen());
+        assert_eq!(f.controller.active_mode(), ModeKind::Spotlight);
+        let p = f.presents[0].borrow();
+        assert_eq!(
+            p[before].pixels,
+            make_buf(32, 32, coord_pattern).pixels,
+            "the new session fades in from its original capture"
+        );
+        // And one more full cycle lands exactly on the original again.
+        drop(p);
+        f.controller.unfreeze();
+        assert!(!f.controller.is_frozen());
+        assert_eq!(
+            last_present(&f.presents[0]).pixels,
+            make_buf(32, 32, coord_pattern).pixels,
+        );
+    }
+
+    #[test]
+    fn freeze_while_frozen_does_not_reanimate() {
+        let mut f = freeze_fake(Point::new(16, 16));
+        let before = f.presents[0].borrow().len();
+        f.refreeze(); // documented no-op: already frozen
+        assert!(f.controller.is_frozen());
+        assert_eq!(
+            f.presents[0].borrow().len(),
+            before,
+            "no second fade-in while frozen"
         );
     }
 }

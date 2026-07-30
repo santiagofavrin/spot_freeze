@@ -31,6 +31,11 @@
 //! buffer's `premultipliedFirst` flag is exact: A = 255 everywhere, so
 //! premultiplied and non-premultiplied bytes are identical.
 //!
+//! Fades: the window-level `alphaValue` drives the freeze/unfreeze fade (a
+//! per-step attribute update — no pixel work); the fade's endpoint calls
+//! leave the window fully opaque (freeze) or fully transparent right before
+//! `close()` (unfreeze).
+//!
 //! Input: one local `NSEvent` monitor per surface (mouse moved/dragged,
 //! left button down/up, scroll wheel, key down), filtered to events whose
 //! window is this surface's window. Local monitors — instead of view
@@ -398,6 +403,19 @@ impl OverlaySurface for MacOverlaySurface {
             None => self.view.setNeedsDisplay(true),
         }
         self.view.displayIfNeeded();
+        Ok(())
+    }
+
+    /// `NSWindow.alphaValue` gives a true per-window constant alpha — the
+    /// freeze/unfreeze fade is a per-step attribute update, no pixel work.
+    fn supports_alpha(&self) -> bool {
+        true
+    }
+
+    /// Whole-window constant alpha; the presented pixels are untouched, so
+    /// the fade endpoint calls leave the store exactly as composed.
+    fn set_alpha(&mut self, alpha: u8) -> Result<()> {
+        self.window.setAlphaValue(alpha as f64 / 255.0);
         Ok(())
     }
 }

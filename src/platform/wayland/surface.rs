@@ -23,9 +23,10 @@
 //!   `commit` + connection flush.
 //! - **Double buffering**: a slot is writable only after the compositor's
 //!   `wl_buffer.release`. Releases arrive on a DEDICATED event queue per
-//!   surface (pumped non-blocking inside `present`/`can_present`): events for
-//!   it are read off the connection by the main loop's reads, so no reentrant
-//!   dispatch of the main queue ever happens. `present` NEVER blocks: with
+//!   surface (pumped non-blocking inside `present`/`can_present`, which also
+//!   read the connection themselves — required while the synchronous
+//!   freeze/unfreeze fade blocks the main loop, harmless otherwise; events
+//!   for the main queue stay buffered for it). `present` NEVER blocks: with
 //!   both slots busy it drops the frame — the controller defers through
 //!   [`OverlaySurface::can_present`] and repaints with the latest composed
 //!   frame once a slot frees (high-rate pointer input would otherwise build
@@ -240,11 +241,23 @@ impl LayerOverlaySurface {
         })
     }
 
-    /// Process any already-arrived buffer releases without blocking.
+    /// Process buffer releases without blocking, feeding the release queue
+    /// from the socket FIRST: during the synchronous freeze/unfreeze fade
+    /// the main loop is blocked inside the controller, so compositor
+    /// releases would never be read off the connection and every fade step
+    /// after the second would starve for a free slot (both attached). The
+    /// read is a non-blocking attempt mirroring the shell's
+    /// `read_and_dispatch` (`WouldBlock` = no new bytes; other errors defer
+    /// to the main loop's authoritative handling there). Events addressed to
+    /// the main queue stay buffered for it, exactly as with the capture
+    /// pump's socket reads.
     fn pump_releases(&mut self) {
-        // Events addressed to this queue's proxies have already been read off
-        // the connection (by the main loop's reads); dispatch_pending only
-        // runs their handlers, so it never blocks.
+        if let Some(guard) = self.release_queue.prepare_read() {
+            let _ = guard.read();
+        }
+        // Events addressed to this queue's proxies are now read off the
+        // connection; dispatch_pending only runs their handlers, so it never
+        // blocks.
         let _ = self.release_queue.dispatch_pending(&mut self.slot_state);
     }}
 

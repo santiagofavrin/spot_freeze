@@ -93,6 +93,13 @@ Freezing starts with the spotlight on. `Esc` unfreezes from spotlight mode
 pre-capture frozen view with its spotlight/zoom state restored (the capture
 re-freeze is dropped). `Ctrl+C` copies and closes from anywhere.
 
+Freezing and unfreezing play a quick fade (160 ms, never more than 180 ms)
+instead of an abrupt cut: the frozen view fades in over the live screen on
+freeze and back out when the freeze fully ends. On Wayland the unfreeze fade
+blends back to the freeze-time capture, so anything that changed on screen
+while frozen reappears with a small pop as the overlay closes. Exiting
+capture mode and copying with `Ctrl+C` stay instant — no transition there.
+
 ## Layers and capture
 
 Spotlight and zoom are **layers**; capture is the only real mode switch:
