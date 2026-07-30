@@ -99,8 +99,7 @@ impl AppState {
     /// Freeze/unfreeze toggle (the portal hotkey's only job).
     fn toggle_freeze(&mut self) {
         if self.controller.is_frozen() {
-            self.controller.unfreeze();
-            self.frozen_plan.borrow_mut().clear();
+            unfreeze_syncing_plan(&mut self.controller, &self.frozen_plan);
             return;
         }
         self.reload_settings();
@@ -174,6 +173,21 @@ impl AppState {
             }
         }
         self.settings = reloaded;
+    }
+}
+
+/// The unfreeze half of the freeze toggle: `unfreeze()` in capture mode only
+/// EXITS capture (the session stays frozen), so the frozen plan is cleared
+/// only when the session actually ended. Clearing it earlier would strand the
+/// still-frozen session: the key listener matches against this plan, so every
+/// frozen-mode key would go dead.
+fn unfreeze_syncing_plan(
+    controller: &mut OverlayController,
+    frozen_plan: &RefCell<Vec<FrozenRegistration>>,
+) {
+    controller.unfreeze();
+    if !controller.is_frozen() {
+        frozen_plan.borrow_mut().clear();
     }
 }
 
@@ -359,4 +373,110 @@ pub fn run() -> Result<()> {
     // and the connection; the lock releases when `_lock` closes.
     state.controller.unfreeze();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Headless-safe: in-memory capturer/surfaces/services — no Wayland
+    //! connection, no windows, no hotkeys, no clipboard.
+    use super::*;
+    use crate::capture::{Capturer, DibBuffer, MonitorInfo};
+    use crate::geometry::{Point, Rect};
+    use crate::overlay::events::OverlayEventSink;
+    use crate::overlay::modes::ModeKind;
+    use crate::platform::{OverlaySurface, PlatformServices, SurfaceFactory};
+
+    struct FakeCapturer {
+        captured: Vec<(MonitorInfo, DibBuffer)>,
+    }
+
+    impl Capturer for FakeCapturer {
+        fn capture_all(&self) -> Result<Vec<(MonitorInfo, DibBuffer)>> {
+            Ok(self.captured.clone())
+        }
+    }
+
+    struct FakeSurface;
+
+    impl OverlaySurface for FakeSurface {
+        fn present(&mut self, _frame: &DibBuffer, _dirty: Option<Rect>) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct FakeServices;
+
+    impl PlatformServices for FakeServices {
+        fn cursor_position_virtual(&self) -> Option<Point> {
+            Some(Point::new(4, 4))
+        }
+
+        fn copy_image_to_clipboard(&self, _frame: &DibBuffer) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn one_monitor() -> Vec<(MonitorInfo, DibBuffer)> {
+        let monitor = MonitorInfo {
+            rect: Rect::new(0, 0, 8, 8),
+            dpi_x: 96,
+            dpi_y: 96,
+            is_primary: true,
+            device_name: String::new(),
+        };
+        let frame = DibBuffer {
+            width: 8,
+            height: 8,
+            stride: 32,
+            pixels: vec![0xAB; 8 * 8 * 4],
+        };
+        vec![(monitor, frame)]
+    }
+
+    fn frozen_controller() -> OverlayController {
+        let factory = |_index: usize,
+                       _rect: Rect,
+                       _rects: Rc<Vec<Rect>>,
+                       _sink: OverlayEventSink|
+         -> Result<Box<dyn OverlaySurface>> { Ok(Box::new(FakeSurface)) };
+        let factory: &SurfaceFactory = &factory;
+        let mut controller = OverlayController::new();
+        controller
+            .freeze(
+                &FakeCapturer {
+                    captured: one_monitor(),
+                },
+                &AppSettings::default(),
+                factory,
+                &FakeServices,
+            )
+            .expect("freeze with fakes");
+        controller
+    }
+
+    #[test]
+    fn toggle_unfreeze_in_capture_keeps_the_plan_until_the_session_ends() {
+        let mut controller = frozen_controller();
+        let plan = RefCell::new(plan_frozen_registrations(
+            &AppSettings::default().hotkeys,
+        ));
+        assert!(!plan.borrow().is_empty());
+
+        controller.set_mode(ModeKind::Snip, &FakeServices);
+        assert!(controller.is_frozen(), "capture entry keeps the session");
+
+        // First toggle while in capture: only exits capture — the session
+        // stays frozen, so the plan must stay live for its keys.
+        unfreeze_syncing_plan(&mut controller, &plan);
+        assert!(controller.is_frozen(), "unfreeze in capture only exits capture");
+        assert!(
+            !plan.borrow().is_empty(),
+            "the plan must survive while the session is frozen"
+        );
+
+        // Second toggle: the session really ends and the plan dies with it.
+        unfreeze_syncing_plan(&mut controller, &plan);
+        assert!(!controller.is_frozen());
+        assert!(plan.borrow().is_empty(), "the plan dies with the session");
+    }
 }
