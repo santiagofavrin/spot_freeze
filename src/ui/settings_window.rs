@@ -91,7 +91,8 @@ pub struct SettingsCallbacks {
 ///   — the full gestures (freeze toggle, mode keys, zoom hold, snip copy,
 ///   cancel, reset zoom) as gesture rows and the two modifier-only chords
 ///   (spotlight radius, zoom) as checkbox rows — plus the numeric
-///   radius/zoom/dim fields.
+///   radius/zoom/dim fields, the overlay color row, and the auto-start
+///   checkbox.
 ///
 /// Non-blocking: creates the window and returns immediately; the caller's
 /// message loop drives it. Must be called on the UI thread.
@@ -131,6 +132,7 @@ pub fn open(
         numeric_edits: [HWND::default(); NUMERIC_FIELD_COUNT],
         color_swatch: HWND::default(),
         color_hex_edit: HWND::default(),
+        auto_start_check: HWND::default(),
         hint_label: HWND::default(),
         save_button: HWND::default(),
         capture_row: None,
@@ -341,6 +343,8 @@ struct SettingsDraft {
     numerics: NumericDraft,
     /// Raw `"#RRGGBB"` text of the overlay color hex field, as typed.
     color_hex: String,
+    /// The auto-start checkbox. A plain boolean: nothing to validate.
+    auto_start: bool,
 }
 
 /// Parsed + range-checked numeric values, ready to write into `AppSettings`.
@@ -628,6 +632,7 @@ const ID_ZOOM_CHECK_BASE: i32 = 340; // + modifier index
 const ID_NUMERIC_BASE: i32 = 400; // + numeric field index
 const ID_COLOR_HEX: i32 = 450;
 const ID_COLOR_SWATCH: i32 = 451;
+const ID_AUTO_START_CHECK: i32 = 460;
 const ID_SAVE: i32 = 500;
 const ID_CANCEL: i32 = 501;
 const ID_EXIT: i32 = 502;
@@ -647,7 +652,8 @@ const CHECK_PITCH: i32 = 106;
 const SWATCH_W: i32 = 64;
 const HEX_EDIT_W: i32 = 90;
 const CLIENT_W: i32 = 600;
-const CLIENT_H: i32 = 686;
+// Bottom edge of the button row (712) + button height (26) + MARGIN slack.
+const CLIENT_H: i32 = 750;
 
 /// Fixed-size, dialog-style: caption + system menu (close button), no sizing
 /// border, no minimize/maximize.
@@ -671,6 +677,7 @@ struct SettingsWindowState {
     numeric_edits: [HWND; NUMERIC_FIELD_COUNT],
     color_swatch: HWND,
     color_hex_edit: HWND,
+    auto_start_check: HWND,
     hint_label: HWND,
     save_button: HWND,
     /// Row currently in modal key-capture state ("press keys…"), if any.
@@ -1051,7 +1058,7 @@ unsafe fn build_ui(state: &mut SettingsWindowState) -> Result<()> {
     y += GAP;
     create_child(
         WC_STATICW,
-        "Tip: Shift+S/Z/C while frozen adds a mode without resetting the current one.",
+        "Tip: S toggles the spotlight, F toggles zoom hold, C enters capture, Esc backs out.",
         label_style,
         px(dpi, MARGIN),
         px(dpi, y),
@@ -1157,6 +1164,37 @@ unsafe fn build_ui(state: &mut SettingsWindowState) -> Result<()> {
         )?;
         y += ROW_PITCH;
     }
+
+    // --- Section: startup -----------------------------------------------------
+    y += GAP;
+    create_child(
+        WC_STATICW,
+        "Startup",
+        label_style,
+        px(dpi, MARGIN),
+        px(dpi, y),
+        px(dpi, CLIENT_W - 2 * MARGIN),
+        px(dpi, ROW_H),
+        0,
+        parent,
+        hinst,
+        font,
+    )?;
+    y += ROW_PITCH;
+    state.auto_start_check = create_child(
+        WC_BUTTONW,
+        "Launch SpotFreeze at login (auto-start)",
+        checkbox_style,
+        px(dpi, MARGIN),
+        px(dpi, y),
+        px(dpi, CLIENT_W - 2 * MARGIN),
+        px(dpi, ROW_H),
+        ID_AUTO_START_CHECK,
+        parent,
+        hinst,
+        font,
+    )?;
+    y += ROW_PITCH;
 
     // --- Validation hint (red) ---------------------------------------------
     y += GAP;
@@ -1321,6 +1359,7 @@ fn seed_controls(state: &SettingsWindowState) {
     }
     set_text(state.color_hex_edit, &state.settings.overlay.color.to_hex());
     repaint_swatch(state);
+    set_checkbox(state.auto_start_check, state.settings.auto_start);
 }
 
 /// Tick a modifier-checkbox row to match a [`Modifiers`] set.
@@ -1385,6 +1424,7 @@ fn collect_draft(state: &SettingsWindowState) -> SettingsDraft {
             dim_opacity: read_text(state.numeric_edits[4]),
         },
         color_hex: read_text(state.color_hex_edit),
+        auto_start: checkbox_checked(state.auto_start_check),
     }
 }
 
@@ -1415,14 +1455,15 @@ fn refresh_validation(state: &SettingsWindowState) -> bool {
 }
 
 /// Write a validated draft back into the working settings copy.
-fn apply_valid_draft(state: &mut SettingsWindowState, draft: &SettingsDraft, parsed: ParsedDraft) {
-    state.settings.hotkeys = draft.hotkeys.clone();
-    state.settings.spotlight.default_radius = parsed.numerics.spotlight_radius;
-    state.settings.zoom.step_factor = parsed.numerics.zoom_step;
-    state.settings.zoom.min = parsed.numerics.zoom_min;
-    state.settings.zoom.max = parsed.numerics.zoom_max;
-    state.settings.overlay.dim_opacity = parsed.numerics.dim_opacity;
-    state.settings.overlay.color = parsed.overlay_color;
+fn apply_valid_draft(settings: &mut AppSettings, draft: &SettingsDraft, parsed: ParsedDraft) {
+    settings.hotkeys = draft.hotkeys.clone();
+    settings.spotlight.default_radius = parsed.numerics.spotlight_radius;
+    settings.zoom.step_factor = parsed.numerics.zoom_step;
+    settings.zoom.min = parsed.numerics.zoom_min;
+    settings.zoom.max = parsed.numerics.zoom_max;
+    settings.overlay.dim_opacity = parsed.numerics.dim_opacity;
+    settings.overlay.color = parsed.overlay_color;
+    settings.auto_start = draft.auto_start;
 }
 
 // ---------------------------------------------------------------------------
@@ -1610,6 +1651,10 @@ unsafe fn on_command(state: *mut SettingsWindowState, wparam: WPARAM) {
                 end_capture_restore(state);
                 refresh_validation(state);
             }
+            ID_AUTO_START_CHECK => {
+                end_capture_restore(state);
+                refresh_validation(state);
+            }
             ID_COLOR_SWATCH => {
                 // ChooseColorW is modal and pumps its own messages on this
                 // thread: the LL hook MUST be disarmed first, or it would
@@ -1646,7 +1691,7 @@ fn try_save(state: &mut SettingsWindowState) {
     let draft = collect_draft(state);
     match validate_draft(&draft) {
         Ok(parsed) => {
-            apply_valid_draft(state, &draft, parsed);
+            apply_valid_draft(&mut state.settings, &draft, parsed);
             refresh_validation(state);
             (state.callbacks.on_saved)(&state.settings);
             let hwnd = state.hwnd;
@@ -1986,6 +2031,7 @@ mod tests {
             },
             numerics: default_numerics(),
             color_hex: "#000000".to_string(),
+            auto_start: false,
         }
     }
 
@@ -2124,6 +2170,36 @@ mod tests {
             let err = validate_draft(&draft).unwrap_err();
             assert!(err.contains("Overlay color"), "unexpected error for {bad:?}: {err}");
         }
+    }
+
+    // --- auto_start checkbox (plain bool passthrough) ------------------------
+
+    #[test]
+    fn auto_start_does_not_affect_validation() {
+        let mut draft = default_like_draft();
+        assert!(validate_draft(&draft).is_ok());
+        draft.auto_start = true;
+        assert!(validate_draft(&draft).is_ok());
+    }
+
+    #[test]
+    fn apply_valid_draft_transfers_auto_start_both_ways() {
+        let checked = SettingsDraft {
+            auto_start: true,
+            ..default_like_draft()
+        };
+        let parsed = validate_draft(&checked).expect("draft validates");
+        let mut settings = AppSettings::default();
+        assert!(!settings.auto_start);
+
+        apply_valid_draft(&mut settings, &checked, parsed);
+        assert!(settings.auto_start, "ticked checkbox reaches the settings copy");
+        // Spot-check that the validated fields still transfer alongside.
+        assert_eq!(settings.spotlight.default_radius, 150);
+        assert_eq!(settings.overlay.color, Rgb::BLACK);
+
+        apply_valid_draft(&mut settings, &default_like_draft(), parsed);
+        assert!(!settings.auto_start, "unticked writes false too (toggle off)");
     }
 
     // --- capture decision state machine (pure, no hook installed) ----------

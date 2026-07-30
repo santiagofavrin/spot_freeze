@@ -33,6 +33,7 @@ use crate::hotkeys::frozen::{
 use crate::hotkeys::gesture::{HotkeyGesture, Modifiers};
 use crate::overlay::controller::OverlayController;
 use crate::overlay::events::{OverlayEvent, OverlayEventSink};
+use crate::platform::macos::autostart;
 use crate::platform::macos::capture::MacCapturer;
 use crate::platform::macos::clipboard::MacServices;
 use crate::platform::macos::hotkeys::{CarbonHotkey, CarbonHotkeyManager};
@@ -53,8 +54,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 /// The bundle identifier used for the single-instance check (matches the
-/// packaged `SpotFreeze.app`).
-const BUNDLE_ID: &str = "com.spotfreeze.app";
+/// packaged `SpotFreeze.app`); also the LaunchAgent label ([`crate::autostart`]).
+pub(crate) const BUNDLE_ID: &str = "com.spotfreeze.app";
 
 /// Whole application state, shared with the Carbon/tray/overlay callbacks
 /// behind a `RefCell`. See the module docs for the borrow discipline.
@@ -164,7 +165,9 @@ fn drain_alerts() {
 /// 2. **Activation policy `.accessory`**: no Dock icon, no menu bar (the app
 ///    lives in the status bar; the bundle also sets `LSUIElement`).
 /// 3. **Settings**: load via [`store::load`] (creates `spotfreeze.jsonc` with
-///    defaults on first run; malformed file → defaults at startup).
+///    defaults on first run; malformed file → defaults at startup), then
+///    reconcile the LaunchAgent login item with the loaded setting so a
+///    hand-edited JSONC takes effect on this launch.
 /// 4. **Carbon hotkey** for `freeze_toggle` and the **status item**; failures
 ///    are reported but never fatal — the other path must always work.
 /// 5. **Run loop**: `NSApp run` on the main thread; all callbacks dispatch
@@ -180,6 +183,12 @@ pub fn run() -> Result<()> {
     let settings_path = store::default_settings_path().context("locating spotfreeze.jsonc")?;
     store::migrate_legacy_settings(&settings_path);
     let settings = store::load(&settings_path).unwrap_or_default();
+    // Auto-start: reconcile the LaunchAgent plist with the setting (covers
+    // hand-edited JSONC and an exe that moved since the plist was written).
+    // Reported but never fatal — the tray and hotkey must always come up.
+    if let Err(e) = autostart::apply_auto_start(settings.auto_start) {
+        queue_alert(format!("Could not update the login item:\n{e:#}"));
+    }
     let state = Rc::new(RefCell::new(AppState {
         settings,
         settings_path,

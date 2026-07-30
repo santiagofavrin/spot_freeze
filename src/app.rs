@@ -74,7 +74,9 @@ struct AppState {
 /// 2. **DPI**: `SetProcessDpiAwarenessContext(PerMonitorV2)` BEFORE any window
 ///    is created (all overlay pixels are physical).
 /// 3. **Settings**: load via [`crate::settings::store::load`] (creates
-///    `spotfreeze.jsonc` with defaults on first run; malformed file → defaults).
+///    `spotfreeze.jsonc` with defaults on first run; malformed file → defaults),
+///    then reconcile the auto-start registration with the loaded setting so a
+///    hand-edited JSONC takes effect on this launch.
 /// 4. **Hidden message window**: owns the `WM_HOTKEY` registrations
 ///    ([`crate::hotkeys::manager::HotkeyManager`]) and the tray icon
 ///    ([`crate::tray::TrayIcon`]).
@@ -111,6 +113,17 @@ pub fn run() -> Result<()> {
     let settings_path = store::default_settings_path().context("locating spotfreeze.jsonc")?;
     store::migrate_legacy_settings(&settings_path);
     let settings = store::load(&settings_path).unwrap_or_default();
+
+    // 3b. Auto-start: reconcile the Run-key registration with the setting
+    //     (covers hand-edited JSONC and an exe that moved since the entry was
+    //     written). Failure is reported but never fatal — the tray and hotkey
+    //     must always come up.
+    if let Err(e) = crate::platform::windows::apply_auto_start(settings.auto_start) {
+        show_error(
+            None,
+            &format!("Could not update the auto-start registration:\n{e:#}"),
+        );
+    }
 
     // 4. State + hidden message window.
     let mut state = Box::new(AppState {
@@ -544,6 +557,17 @@ fn apply_saved_settings(state: &mut AppState, hwnd: HWND, new_settings: AppSetti
     if state.controller.is_frozen() && old.hotkeys != state.settings.hotkeys {
         unregister_frozen_hotkeys(state);
         register_frozen_hotkeys(state, hwnd);
+    }
+
+    // Auto-start toggled via the settings-window checkbox: apply it to the
+    // registry now (hand-edited JSONC is covered by startup reconciliation).
+    if old.auto_start != state.settings.auto_start
+        && let Err(e) = crate::platform::windows::apply_auto_start(state.settings.auto_start)
+    {
+        show_error(
+            Some(hwnd),
+            &format!("Could not update the auto-start registration:\n{e:#}"),
+        );
     }
 }
 

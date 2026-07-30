@@ -194,6 +194,8 @@ open the settings window. From there you can:
 - **Customize the overlay color** — pick a color with the color picker or type
   a `#RRGGBB` hex value. The veil outside spotlight/selection areas is drawn
   in this color at the configured opacity.
+- **Toggle auto-start** — launch SpotFreeze at login (registered in the
+  current-user Run registry key; no admin rights needed).
 - Exit via right-click → *Exit* (a Yes/No confirmation prevents accidents).
 
 On **Linux and macOS** there is no settings window: choose *Edit settings*
@@ -201,6 +203,12 @@ On **Linux and macOS** there is no settings window: choose *Edit settings*
 default editor and save — the same options (hotkeys, spotlight radius, veil
 color/opacity, zoom limits) are keys in the file. Exiting from the tray needs
 no confirmation on Linux; macOS keeps the Yes/No dialog.
+
+`auto_start` (Windows/macOS only, default `false`) launches SpotFreeze at
+login: on Windows via the current-user Run registry key, on macOS via a
+`~/Library/LaunchAgents/com.spotfreeze.app.plist` LaunchAgent (works for the
+bare binary and the packaged `.app` alike). Hand-edited JSONC is reconciled
+with the registry/plist on the next launch.
 
 The settings file lives in the per-OS config location:
 
@@ -235,6 +243,8 @@ Example `spotfreeze.jsonc` (excerpt):
     "dim_opacity": 160,     // 0 = invisible veil, 255 = solid
     "color": "#000000",     // veil color as #RRGGBB (default: black)
   },
+  // Launch at login — Windows/macOS only (default: false).
+  "auto_start": false,
 }
 ```
 

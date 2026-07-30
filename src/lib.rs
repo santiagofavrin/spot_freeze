@@ -21,7 +21,7 @@
 //!   overlay pipeline and the per-OS shells. Overlay surfaces report input as
 //!   [`overlay::events::OverlayEvent`]s (monitor-local coordinates; key events
 //!   carry Win32 VKs translated via [`hotkeys::keymap`]).
-//! - **Pure modules** (`geometry`, `settings`, `hotkeys::gesture`,
+//! - **Pure modules** (`geometry`, `settings`, `autostart`, `hotkeys::gesture`,
 //!   `hotkeys::frozen`, `hotkeys::keymap`, `overlay::composite`,
 //!   `overlay::events`, `overlay::modes`, `overlay::controller`, `capture::png`,
 //!   and the `capture::{DibBuffer, MonitorInfo, Capturer}` types) never expose
@@ -34,6 +34,7 @@
 
 #[cfg(windows)]
 pub mod app;
+pub mod autostart;
 pub mod capture;
 pub mod cli;
 pub mod geometry;

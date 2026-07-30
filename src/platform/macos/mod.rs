@@ -7,6 +7,8 @@
 //!
 //! Module map (each file documents its own contracts and API choices):
 //! - [`app`]: wiring, mirroring the Windows `app` module.
+//! - [`autostart`]: LaunchAgent login item (filesystem shell over
+//!   [`crate::autostart`]).
 //! - [`capture`]: [`crate::capture::Capturer`] via ScreenCaptureKit.
 //! - [`surface`]: [`crate::platform::OverlaySurface`] via NSWindow/NSView.
 //! - [`hotkeys`]: global freeze hotkey via Carbon `RegisterEventHotKey`.
@@ -15,6 +17,7 @@
 //! - `coords`: pure Cocoa-points ↔ virtual-physical-pixels conversions.
 
 pub mod app;
+pub mod autostart;
 pub mod capture;
 pub mod clipboard;
 pub(crate) mod coords;
