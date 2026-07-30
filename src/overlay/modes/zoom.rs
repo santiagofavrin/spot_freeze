@@ -71,6 +71,15 @@ impl ZoomMode {
         self.zoom
     }
 
+    /// [`ZoomMode::new`] starting at `zoom` instead of 1.0: the zoom-hold
+    /// layer re-activates at the last-used factor (clamped into the
+    /// normalized [min, max] range).
+    pub fn with_zoom(zoom: f32, step_factor: f32, min: f32, max: f32) -> Self {
+        let mut mode = Self::new(step_factor, min, max);
+        mode.zoom = zoom.clamp(mode.min, mode.max);
+        mode
+    }
+
     /// Focus of the magnified view (monitor-local px) — the cursor position.
     pub fn cursor(&self) -> Point {
         self.cursor
@@ -164,6 +173,21 @@ mod tests {
     }
 
     // ---- wheel zoom -------------------------------------------------------
+
+    #[test]
+    fn with_zoom_starts_at_the_given_factor_clamped_to_range() {
+        let m = ZoomMode::with_zoom(4.0, 1.25, 1.0, 16.0);
+        assert_eq!(m.zoom(), 4.0);
+        // Out-of-range factors clamp into [min, max].
+        let m = ZoomMode::with_zoom(100.0, 1.25, 1.0, 16.0);
+        assert_eq!(m.zoom(), 16.0);
+        let m = ZoomMode::with_zoom(0.5, 1.25, 1.0, 16.0);
+        assert_eq!(m.zoom(), 1.0);
+        // The layer still wheels from the restored factor.
+        let mut m = ZoomMode::with_zoom(2.0, 1.25, 1.0, 16.0);
+        m.on_wheel(0, Point::new(0, 0), 120);
+        assert_zoom_near(&m, 2.5);
+    }
 
     #[test]
     fn wheel_multiplies_and_divides_by_step_factor() {

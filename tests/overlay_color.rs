@@ -37,6 +37,7 @@ const NO_LAYERS: RenderState = RenderState {
     zoom: None,
     spotlight: None,
     snip: None,
+    capture: false,
 };
 
 fn assert_uniform(buf: &DibBuffer, want: [u8; 4], ctx: &str) {
@@ -155,6 +156,7 @@ fn compose_frame_spotlight_only_reveals_original_colored_dim_outside() {
         zoom: None,
         spotlight: Some((center, radius)),
         snip: None,
+        capture: false,
     };
     let mut out = DibBuffer::new(32, 32);
     compose_frame(

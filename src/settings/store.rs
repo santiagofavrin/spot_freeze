@@ -40,6 +40,7 @@ const KEY_COMMENTS: &[(&str, &str)] = &[
     ("step_factor", "zoom multiplier per wheel notch (must be > 1.0)"),
     ("dim_opacity", "0 = invisible veil, 255 = fully opaque"),
     ("color", "veil color as #RRGGBB hex"),
+    ("auto_start", "launch at login (Windows/macOS only)"),
 ];
 
 /// `spotfreeze.jsonc` in the platform's conventional per-user config location:
@@ -425,6 +426,7 @@ mod tests {
         for hotkey_key in [
             "mode_spotlight",
             "mode_snip",
+            "zoom_hold",
             "snip_copy",
             "cancel",
             "reset_zoom",
@@ -463,12 +465,16 @@ mod tests {
             template.contains("\"freeze_toggle\": \"Win+F\""),
             "new freeze hotkey default: {template}"
         );
-        for (key, value) in [("mode_spotlight", "S"), ("mode_snip", "C")] {
+        for (key, value) in [("mode_spotlight", "S"), ("mode_snip", "C"), ("zoom_hold", "F")] {
             assert!(
                 template.contains(&format!("\"{key}\": \"{value}\"")),
                 "{key} default in template"
             );
         }
+        assert!(
+            template.contains("\"auto_start\": false"),
+            "auto_start appears with its default: {template}"
+        );
     }
 
     // ---------- round-trip ----------
@@ -600,6 +606,11 @@ mod tests {
             crate::hotkeys::gesture::Modifiers::SHIFT
         );
         assert_eq!(loaded.overlay.color, crate::settings::model::Rgb::BLACK);
+        assert_eq!(
+            loaded.hotkeys.zoom_hold,
+            crate::hotkeys::gesture::HotkeyGesture::parse("F").unwrap()
+        );
+        assert!(!loaded.auto_start);
     }
 
     #[test]

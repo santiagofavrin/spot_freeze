@@ -57,6 +57,7 @@ fn zoom_plus_spotlight_hole_reveals_zoomed_base_dimmed_zoomed_outside() {
         zoom: Some((2.0, focus)),
         spotlight: Some((center, radius)),
         snip: None,
+        capture: false,
     };
 
     let zoomed = zoomed_base(&original, 2.0, focus);
@@ -111,6 +112,7 @@ fn zoom_only_dims_the_zoomed_base_everywhere() {
         zoom: Some((2.0, focus)),
         spotlight: None,
         snip: None,
+        capture: false,
     };
     let zoomed = zoomed_base(&original, 2.0, focus);
     let mut out = DibBuffer::new(W, H);
@@ -136,6 +138,7 @@ fn snip_selection_on_zoomed_base_shows_the_zoomed_pixels() {
         zoom: Some((2.0, focus)),
         spotlight: None,
         snip: Some((a, b)),
+        capture: false,
     };
 
     let zoomed = zoomed_base(&original, 2.0, focus);
@@ -202,6 +205,7 @@ fn zoom_spotlight_snip_all_layers_compose_in_spec_order() {
         zoom: Some((2.0, focus)),
         spotlight: Some((center, radius)),
         snip: Some((Point::new(4, 4), Point::new(12, 10))),
+        capture: false,
     };
     let zoomed = zoomed_base(&original, 2.0, focus);
     let mut out = DibBuffer::new(W, H);

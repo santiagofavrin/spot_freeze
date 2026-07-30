@@ -65,6 +65,12 @@ fn old_schema_full_file_loads_with_new_key_defaults() {
         Modifiers::SHIFT,
         "missing zoom_modifier => Shift default"
     );
+    assert_eq!(
+        loaded.hotkeys.zoom_hold,
+        HotkeyGesture::new(Modifiers::NONE, 'F' as u32),
+        "missing zoom_hold => F default"
+    );
+    assert!(!loaded.auto_start, "missing auto_start => false default");
 
     // OLD values are preserved exactly as written (user's bindings survive).
     assert_eq!(loaded.overlay.dim_opacity, 160);
@@ -180,4 +186,28 @@ fn new_schema_round_trip_preserves_color_and_zoom_modifier() {
         settings,
         "new keys survive the save/load round-trip"
     );
+}
+
+#[test]
+fn zoom_hold_and_auto_start_are_honored_when_present() {
+    let (dir, _guard) = TempDirGuard::create("compat_newest_keys");
+    let path = dir.join("settings.json");
+    std::fs::write(
+        &path,
+        r#"{ "hotkeys": { "zoom_hold": "Ctrl+G" }, "auto_start": true }"#,
+    )
+    .expect("write file");
+
+    let loaded = store::load(&path).expect("new keys load");
+    assert_eq!(
+        loaded.hotkeys.zoom_hold,
+        HotkeyGesture::new(Modifiers::CTRL, 'G' as u32)
+    );
+    assert!(loaded.auto_start);
+
+    store::save(&path, &loaded).expect("save");
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(on_disk.contains("\"zoom_hold\": \"Ctrl+G\""), "{on_disk}");
+    assert!(on_disk.contains("\"auto_start\": true"), "{on_disk}");
+    assert_eq!(store::load(&path).expect("reload"), loaded);
 }

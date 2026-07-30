@@ -20,6 +20,8 @@ pub struct AppSettings {
     pub spotlight: SpotlightSettings,
     pub zoom: ZoomSettings,
     pub overlay: OverlaySettings,
+    /// Launch the app at login (Windows/macOS only). Default: false.
+    pub auto_start: bool,
 }
 
 /// 8-bit RGB color, serialized as an uppercase `"#RRGGBB"` hex string.
@@ -114,27 +116,31 @@ impl std::error::Error for ParseRgbError {}
 pub struct HotkeySettings {
     /// GLOBAL hotkey: toggle screen freeze. Default: `Win+F`.
     pub freeze_toggle: HotkeyGesture,
-    /// While frozen: switch to Spotlight mode (`Shift`+this key ADDS Spotlight
-    /// as a layer instead of switching). Default: `S`.
+    /// While frozen: toggle the spotlight layer on/off. Default: `S`.
     pub mode_spotlight: HotkeyGesture,
-    /// While frozen: switch to Snip mode (`Shift`+this key ADDS Snip as a
-    /// layer instead of switching). Default: `C`.
+    /// While frozen: switch to Capture mode (re-freezes the current view with
+    /// the active spotlight/zoom effects baked in). Default: `C`.
     pub mode_snip: HotkeyGesture,
+    /// While frozen: toggle the zoom-hold layer at the last-used zoom level.
+    /// Default: `F`.
+    pub zoom_hold: HotkeyGesture,
     /// Modifier HELD while scrolling the mouse wheel to resize the spotlight
     /// circle. This is a modifier-only binding (e.g. bare `Ctrl`), not a full
     /// gesture. Default: `Ctrl`.
     pub spotlight_radius_modifier: Modifiers,
-    /// Modifier HELD while scrolling the mouse wheel to zoom from ANY active
-    /// mode combination. This is a modifier-only binding (e.g. bare `Shift`),
-    /// not a full gesture. Default: `Shift`.
+    /// Modifier HELD while scrolling the mouse wheel to zoom from ANY state,
+    /// implicitly activating the zoom-hold layer when it is inactive. This is
+    /// a modifier-only binding (e.g. bare `Shift`), not a full gesture.
+    /// Default: `Shift`.
     pub zoom_modifier: Modifiers,
-    /// Snip mode: copy the selection (or the focused monitor's full frame when
+    /// Capture mode: copy the selection (or the focused monitor's full frame when
     /// no selection exists) to the clipboard, then close the overlay.
     /// Default: `Ctrl+C`.
     pub snip_copy: HotkeyGesture,
-    /// Unfreeze / cancel. Default: `Esc`.
+    /// Unfreeze (in capture mode: exit capture back to the pre-capture frozen
+    /// view instead). Default: `Esc`.
     pub cancel: HotkeyGesture,
-    /// Zoom mode: reset zoom to 1.0. Default: `0`.
+    /// Zoom-hold layer: reset zoom to 1.0. Default: `0`.
     pub reset_zoom: HotkeyGesture,
 }
 
@@ -144,6 +150,7 @@ impl Default for HotkeySettings {
             freeze_toggle: HotkeyGesture::parse("Win+F").unwrap(),
             mode_spotlight: HotkeyGesture::parse("S").unwrap(),
             mode_snip: HotkeyGesture::parse("C").unwrap(),
+            zoom_hold: HotkeyGesture::parse("F").unwrap(),
             spotlight_radius_modifier: Modifiers::CTRL,
             zoom_modifier: Modifiers::SHIFT,
             snip_copy: HotkeyGesture::parse("Ctrl+C").unwrap(),
@@ -228,6 +235,7 @@ mod tests {
         assert_eq!(d.freeze_toggle, gesture("Win+F"));
         assert_eq!(d.mode_spotlight, gesture("S"));
         assert_eq!(d.mode_snip, gesture("C"));
+        assert_eq!(d.zoom_hold, gesture("F"));
         assert_eq!(d.spotlight_radius_modifier, Modifiers::CTRL);
         assert_eq!(d.zoom_modifier, Modifiers::SHIFT);
         assert_eq!(d.snip_copy, gesture("Ctrl+C"));
@@ -261,6 +269,7 @@ mod tests {
         assert_eq!(d.zoom.step_factor, 1.25);
         assert_eq!(d.zoom.min, 1.0);
         assert_eq!(d.zoom.max, 16.0);
+        assert!(!d.auto_start);
     }
 
     // -- Rgb: traits, hex format, serde round-trip -------------------------------
@@ -398,7 +407,9 @@ mod tests {
         assert_eq!(loaded.overlay.dim_opacity, 200);
         // … and the new keys fall back to their defaults.
         assert_eq!(loaded.hotkeys.zoom_modifier, Modifiers::SHIFT);
+        assert_eq!(loaded.hotkeys.zoom_hold, gesture("F"));
         assert_eq!(loaded.overlay.color, Rgb::BLACK);
+        assert!(!loaded.auto_start);
     }
 
     #[test]

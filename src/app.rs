@@ -80,14 +80,15 @@ struct AppState {
 ///    ([`crate::tray::TrayIcon`]).
 /// 5. **Global hotkeys** (re-registered after every settings save):
 ///    * `freeze_toggle` (always active) → freeze/unfreeze;
-///    * while frozen only: each of the three mode bindings TWICE — the PLAIN
-///      gesture → `OverlayController::set_mode` (full switch: resets all mode
-///      state, activates only that mode) and its derived Shift+variant →
-///      `OverlayController::add_mode` (additive layer, existing layers
-///      untouched) — plus `cancel` → unfreeze, `snip_copy` →
+///    * while frozen only: `mode_spotlight` → `OverlayController::toggle_mode`
+///      (spotlight on/off), `mode_snip` → `OverlayController::set_mode`
+///      (enter capture mode, re-basing the freeze), `zoom_hold` →
+///      `OverlayController::toggle_mode` (zoom layer at the last-used
+///      factor), plus `cancel` → unfreeze (in capture mode: exit capture
+///      back to the pre-capture view), `snip_copy` →
 ///      `OverlayController::snip_copy_and_close`, `reset_zoom` →
-///      `OverlayController::reset_view`: nine registrations in the common
-///      case (see [`plan_frozen_registrations`]).
+///      `OverlayController::reset_view`: six registrations (see
+///      [`plan_frozen_registrations`]).
 /// 6. **Message loop**: standard `GetMessage`/`DispatchMessage`, routing
 ///    `WM_HOTKEY`, tray callbacks, and overlay events to the controller.
 /// 7. **Exit** (tray menu AND settings window Exit button): ALWAYS confirm via
@@ -350,12 +351,11 @@ fn rebind_freeze_hotkey(state: &mut AppState, hwnd: HWND) -> bool {
     }
 }
 
-/// Register the frozen-mode hotkeys planned from the CURRENT settings: six
-/// mode gestures (plain = full switch, Shift+ = additive layer) plus
-/// `reset_zoom`, `snip_copy`, `cancel` — nine registrations in the common
-/// case, fewer when the conflict guard skips a derived Shift+variant.
-/// Individual failures (e.g. a combo owned by another app, or a duplicate in
-/// a hand-edited settings file) are collected into one message box; whatever
+/// Register the frozen-mode hotkeys planned from the CURRENT settings:
+/// spotlight toggle, capture-mode switch, zoom-hold toggle, plus
+/// `reset_zoom`, `snip_copy`, `cancel` — six registrations. Individual
+/// failures (e.g. a combo owned by another app, or a duplicate in a
+/// hand-edited settings file) are collected into one message box; whatever
 /// registered stays active.
 fn register_frozen_hotkeys(state: &mut AppState, hwnd: HWND) {
     let plan = plan_frozen_registrations(&state.settings.hotkeys);

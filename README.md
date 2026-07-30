@@ -3,9 +3,9 @@
 A tiny, fast utility for Windows 11, Linux (Wayland — targeting Hyprland and
 other wlroots compositors), and macOS 14+ (Apple Silicon) that lives in the
 system tray and **freezes your screen** on a global hotkey — then lets you
-spotlight a region, zoom in, or snip part of the frozen frame to the clipboard.
-Modes are **composable**: stack a spotlight on top of a zoom, or draw a snip
-over both.
+spotlight a region, zoom in as a persistent layer, or enter **capture mode**
+to snip part of the frozen frame to the clipboard — with the spotlight and
+zoom effects baked in.
 
 SpotFreeze is built for speed: a single native Rust binary per platform (raw OS
 APIs, no GUI framework, no runtime), a few MB on disk, and near-zero idle
@@ -18,15 +18,17 @@ re-composited from reusable buffers — never a full repaint from scratch.
   box, including full support for `Win`+key combos). All monitors are captured
   at once; each monitor gets its own darkened overlay, so multi-monitor setups
   are fully covered.
-- **Spotlight mode** — a bright circle follows your cursor over the dimmed
-  frozen screen. Hold `Ctrl` and scroll the mouse wheel to resize it.
-- **Zoom mode** — magnify the frozen frame around the cursor with the mouse
-  wheel (1.0×–16.0×, ×1.25 per notch by default). Zoom is also reachable from
-  *any* mode: hold `Shift` and scroll.
-- **Snip mode** — drag a rectangle on the frozen screen and copy it to the
-  clipboard (see *Copying screenshots* below).
-- **Composable modes** — layer spotlight, zoom, and snip on top of each other
-  instead of being locked into one at a time (see *Mixing modes* below).
+- **Spotlight toggle** — a bright circle follows your cursor over the dimmed
+  frozen screen; `S` turns it on and off (off = frozen but clear, no dim).
+  Hold `Ctrl` and scroll the mouse wheel to resize it.
+- **Zoom hold** — `F` toggles a persistent zoom layer at the last-used level
+  (1.0×–16.0×, ×1.25 per notch by default): magnify around the cursor with
+  the mouse wheel, on top of spotlight on or off. Zoom is also reachable from
+  anywhere: hold `Shift` and scroll.
+- **Capture mode** — `C` re-freezes the screen with the effects active at
+  that moment (spotlight and/or zoom) baked in, then drag a rectangle and
+  copy the *effected* pixels to the clipboard (see *Copying screenshots*
+  below). A persistent accent frame border marks capture mode.
 - **Border flash feedback** — every mode change flashes the screen border so
   you always know which mode you just entered.
 - **Customizable overlay** — set the dim-veil color and opacity.
@@ -72,50 +74,53 @@ screen is frozen.
 
 | Action | Default | Scope |
 | --- | --- | --- |
-| Toggle screen freeze | `Win+F` | Global — works from any app |
+| Toggle screen freeze | `Win+F` | Global — works from any app (in capture mode it backs out of capture first, like `Esc`) |
 | Spotlight toggle | `S` | While frozen — off = screen stays frozen but CLEAR (no dim), on = spotlight back (1 border flash) |
-| Snip mode | `C` | While frozen |
-| Add a mode as a layer (no reset) | `Shift` + mode key (`Shift+S`/`Shift+C`) | While frozen |
-| Zoom in / out (from any mode) | `Shift` + mouse wheel | While frozen — adds the zoom layer on the spot if it isn't active yet (no border flash) |
-| Zoom in / out (zoom is primary mode) | Mouse wheel | While frozen, after zoom was added |
+| Capture mode | `C` | While frozen — re-freezes with the current effects baked in (3 border flashes + a persistent accent frame) |
+| Zoom hold toggle | `F` | While frozen — applies the last-used zoom level as a layer over spotlight on/off (2 border flashes); toggle off to drop it |
+| Zoom in / out (from anywhere) | `Shift` + mouse wheel | While frozen — adds the zoom layer on the spot if it isn't active yet (no border flash) |
+| Zoom in / out (zoom hold active) | Mouse wheel | While frozen, whenever the zoom layer is on |
 | Resize spotlight circle | `Ctrl` + mouse wheel | While spotlight is active |
 | Reset zoom to 1.0× | `0` | While zoom is active |
 | Copy screenshot to clipboard | `Ctrl+C` | While frozen (see below) |
-| Unfreeze / cancel | `Esc` | While frozen |
+| Unfreeze / exit capture | `Esc` | While frozen — see below |
 
 Other defaults: spotlight radius `150` px, dim-veil opacity `160` (0–255),
 dim-veil color black (`#000000`), zoom step `1.25` (min `1.0`, max `16.0`).
 
-Freezing starts in Spotlight mode. `Esc` unfreezes and `Ctrl+C` copies and
-closes — from **any** mode combination. Zoom has no key: it is always one
-`Shift`+wheel notch away.
+Freezing starts with the spotlight on. `Esc` unfreezes from spotlight mode
+(on or off); in capture mode it exits capture instead — back to the
+pre-capture frozen view with its spotlight/zoom state restored (the capture
+re-freeze is dropped). `Ctrl+C` copies and closes from anywhere.
 
-## Mixing modes
+## Layers and capture
 
-Modes are **composable layers**, not exclusive states. How you press a mode key
-decides whether the other layers survive:
+Spotlight and zoom are **layers**; capture is the only real mode switch:
 
 - **`S` (Spotlight) — toggle.** Turns the spotlight layer on and off without
-  touching the others. With every layer off, the screen stays frozen (all
+  touching the zoom layer. With every layer off, the screen stays frozen (all
   input still captured) but the overlay is completely clear — no dim at all.
-- **`C` (Snip) — full switch.** Resets *all* mode state (zoom back to 1.0×,
-  snip selection cleared, spotlight radius back to the default) and activates
-  only Snip.
-- **`Shift` + mode key — add a layer.** Activates that mode *on top of* the
-  current combination without touching any existing layer. Example: while
-  zoomed in, press `Shift+S` to add a spotlight circle over the magnified view;
-  while snipping, press `Shift+S` to get the spotlight back without losing the
-  selection.
+- **`F` (Zoom hold) — toggle.** Adds the zoom layer at the last-used zoom
+  level, on top of spotlight on or off; press again to drop it. Zooming
+  changes the level for next time (`0` resets it to 1.0×).
+- **`C` (Capture) — re-freeze.** The view exactly as it is now — spotlight
+  and/or zoom baked in — becomes the new frozen frame, and a drag-selection
+  snips the *effected* pixels from it. `Esc` discards the re-frozen frame and
+  returns to the pre-capture view (spotlight on/off and zoom restored);
+  pressing `C` again while in capture just clears the selection.
 
-The wheel follows the layers, not the "current mode": `Ctrl`+wheel resizes the
-spotlight whenever a spotlight is active, `Shift`+wheel zooms from any layer
-combination (implicitly adding the zoom layer — without a border flash — when
-it isn't active yet), and a plain wheel zooms when Zoom is the primary mode.
+The wheel follows the layers: `Ctrl`+wheel resizes the spotlight whenever it
+is active, `Shift`+wheel zooms from anywhere (implicitly adding the zoom
+layer — without a border flash — when it isn't active yet), and a plain
+wheel zooms whenever the zoom layer is on.
 
-**Border flash feedback:** every mode activation flashes the screen border a
-number of times that identifies the mode — **1 flash** for Spotlight (`S`),
-**3** for Snip (`C`); deactivating a layer does not flash. Freezing the screen
-starts in Spotlight mode, so you also see a single flash right at freeze time.
+**Border flash feedback:** every activation flashes the screen border a
+number of times that identifies it — **1 flash** for Spotlight (`S`), **2**
+for Zoom hold (`F`), **3** for Capture (`C`); deactivating a layer does not
+flash. Freezing the screen starts with the spotlight on, so you also see a
+single flash right at freeze time. While capture mode is active, a thin
+accent-colored frame border stays on screen (separate from these one-off
+flashes).
 
 ## Install
 

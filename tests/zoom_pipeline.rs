@@ -3,11 +3,12 @@
 //! `zoom_resample` driven through `ZoomSettings`-style clamp math exactly the
 //! way the controller applies it.
 //!
-//! REWORK NOTE (composable modes update): `ZoomMode` is now a pure LAYER —
-//! the `ModeStack` routing matrix decides WHICH wheel events reach it (zoom
-//! modifier whenever active, plain wheel when zoom is primary), so the
-//! layer's `on_wheel` takes no `modifiers` argument and applies every wheel
-//! it receives. Rendering moved out of the layer: the controller reads
+//! REWORK NOTE (mode-redesign update): `ZoomMode` is now a pure LAYER (the
+//! "zoom hold", toggled by the `zoom_hold` binding) — the `ModeStack` routing
+//! matrix decides WHICH wheel events reach it (zoom modifier from any state,
+//! plain wheel whenever the layer is active), so the layer's `on_wheel` takes
+//! no `modifiers` argument and applies every wheel it receives. Rendering
+//! moved out of the layer: the controller reads
 //! [`ModeStack::render_state`] and hands the `RenderState` to
 //! `composite::compose_frame` (pixel-exact compose coverage lives in
 //! `composition_pipeline.rs`; the render_state contract is pinned here).
@@ -235,7 +236,7 @@ fn render_state_carries_zoom_only_on_the_cursor_monitor() {
     stack.set_mode(ModeKind::Zoom); // full switch: zoom is the only layer
     let cursor = Point::new(16, 16);
     let _ = stack.on_mouse_move(0, cursor);
-    // Plain wheel reaches zoom because zoom is primary (routing matrix).
+    // Plain wheel reaches zoom because the layer is active (routing matrix).
     let _ = stack.on_wheel(0, cursor, NOTCH, Modifiers::NONE);
     let zoom = stack.zoom().expect("zoom layer active").zoom();
     assert!((zoom - 1.25).abs() < 1e-6);
@@ -253,10 +254,10 @@ fn render_state_carries_zoom_only_on_the_cursor_monitor() {
 
 #[test]
 fn render_state_zoom_modifier_wheel_zooms_when_layer_active() {
-    // Shift+wheel (the default zoom_modifier) reaches the zoom layer whenever
-    // it is active — even when zoom is NOT the primary mode.
+    // Shift+wheel (the default zoom_modifier) reaches the zoom layer from any
+    // state — here right after an additive activation.
     let mut stack = ModeStack::new(default_params()); // starts: spotlight only
-    stack.add_mode(ModeKind::Zoom); // layer added, primary becomes Zoom
+    stack.add_mode(ModeKind::Zoom); // layer added at the last-used factor (1.0)
     let _ = stack.on_mouse_move(0, Point::new(8, 8));
     let _ = stack.on_wheel(0, Point::new(8, 8), NOTCH, Modifiers::SHIFT);
     let zoom = stack.zoom().expect("zoom layer").zoom();

@@ -7,13 +7,22 @@
 //! Implementation notes (contract clarifications — public API kept):
 //! - **Default mode**: `freeze` enters Spotlight (product spec default) and
 //!   flashes the border ONCE ([`OverlayController::flash_count`]).
-//! - **Composable modes**: layers are activated by
-//!   [`set_mode`](OverlayController::set_mode)
-//!   (plain key: FULL switch — every layer reset, only that kind active) or
-//!   [`add_mode`](OverlayController::add_mode) (Shift+key: additive — existing layers
-//!   untouched). After EVERY activation (and the initial freeze) the screen
-//!   border flashes `flash_count(kind)` times (S=1, Z=2, C=3) — synchronous
-//!   and brief by design (see `flash_border`).
+//! - **Mode model**: Spotlight is a TOGGLE (`S`: layer on/off — with every
+//!   layer off the screen stays frozen but UNVEILED); the zoom hold (`F` or
+//!   the zoom-modifier wheel chord) is an effect LAYER re-activating at the
+//!   last-used factor; Capture (`C`) RE-BASES the freeze (see below). After
+//!   every key-driven activation the border flashes `flash_count(kind)` times
+//!   (S=1, F=2, C=3) — synchronous and brief by design (see `flash_border`);
+//!   deactivating a layer does not flash.
+//! - **Capture re-freeze**: entering capture mode composes every monitor's
+//!   CURRENT view (zoom base → veil → spotlight hole) and swaps it in as the
+//!   new ORIGINAL, stashing the pre-capture originals ([`rebase_freeze`]).
+//!   The snip selection and the clipboard copy then operate on the EFFECTED
+//!   pixels (WYSIWYG), and the frame gains the persistent accent capture
+//!   indicator ([`crate::overlay::composite::compose_frame`] step 5) with no
+//!   further dimming (the base already carries the effects). Esc in capture
+//!   mode exits back to the pre-capture view with the stashed spotlight/zoom
+//!   state restored ([`exit_capture`]); Esc outside capture mode unfreezes.
 //! - **Rendering**: every repaint composes the full frame via
 //!   [`crate::overlay::composite::compose_frame`] with a
 //!   [`crate::overlay::composite::RenderState`] built from the active layers
@@ -30,8 +39,9 @@
 //!   something.
 //! - **Per-monitor selections**: snip drags are MONITOR-LOCAL and clamped at
 //!   monitor edges by the layer; a selection never spans monitors. The copy
-//!   path crops from that monitor's COMPOSED BASE — the zoomed view when the
-//!   zoom layer is active on it, else the original capture (WYSIWYG).
+//!   path crops from that monitor's current base — in capture mode the
+//!   re-frozen (effected) frame, otherwise the zoomed view when the zoom
+//!   layer is active on it, else the original capture (WYSIWYG).
 //! - **Keys**: modes never see key events — Esc / Ctrl+C / mode switches /
 //!   reset-view are handled by the platform shell (global hotkeys on Windows,
 //!   overlay key events matched against the frozen plan elsewhere), so the
@@ -40,8 +50,8 @@
 use crate::capture::{Capturer, DibBuffer, MonitorInfo};
 use crate::geometry::{Point, Rect};
 use crate::overlay::composite::{
-    ZoomFilter, compose_frame, crop_normalized, draw_border, monitor_index_at, virtual_to_local,
-    zoom_resample,
+    RenderState, ZoomFilter, compose_frame, crop_normalized, draw_border, monitor_index_at,
+    virtual_to_local, zoom_resample,
 };
 use crate::overlay::events::{OverlayEvent, OverlayEventSink};
 use crate::overlay::modes::{ModeEffect, ModeKind, ModeParams, ModeStack, SnipSelection};
@@ -123,11 +133,15 @@ struct FreezeState {
     /// Drained by [`OverlayController::process_pending_repaints`], always
     /// presenting the freshest composed frame.
     pending_repaint: Vec<Option<PendingRepaint>>,
-    /// Composable mode layers + primary mode; layers are rebuilt from the
-    /// freeze-time [`ModeParams`] on every activation.
+    /// Mode state (spotlight/zoom-hold/snip layers + the capture stash);
+    /// layers are rebuilt from the freeze-time [`ModeParams`] on activation.
     modes: ModeStack,
     /// Freeze-time settings snapshot (dim opacity + veil color + mode params).
     settings: AppSettings,
+    /// Pre-capture per-monitor ORIGINALS, stashed while capture mode's
+    /// re-frozen (effects-baked) base occupies `originals`; `None` outside
+    /// capture mode.
+    capture: Option<Vec<DibBuffer>>,
 }
 
 /// Owns the frozen captures, one [`OverlaySurface`] per monitor, and the
@@ -232,6 +246,7 @@ impl OverlayController {
             pending_repaint: vec![None; monitor_count],
             modes: ModeStack::new(mode_params(&settings)),
             settings,
+            capture: None,
         };
 
         // Spotlight is the default mode (product spec). Seed the live cursor
@@ -248,8 +263,22 @@ impl OverlayController {
         Ok(())
     }
 
-    /// Destroy all overlay windows and drop the captures. No-op when not frozen.
+    /// Esc / cancel contract: in CAPTURE mode this only EXITS capture — the
+    /// pre-capture originals and the stashed spotlight/zoom state are
+    /// restored (the re-frozen base is dropped) and the session stays frozen;
+    /// anywhere else it destroys all overlay windows and drops the captures.
+    /// No-op when not frozen.
     pub fn unfreeze(&mut self) {
+        {
+            let mut slot = self.inner.borrow_mut();
+            if let Some(state) = slot.as_mut()
+                && state.capture.is_some()
+            {
+                exit_capture(state);
+                self.active = ModeKind::Spotlight;
+                return;
+            }
+        }
         // Take first, drop AFTER releasing the borrow: window teardown never
         // runs while the cell is mutably borrowed.
         let taken = self.inner.borrow_mut().take();
@@ -260,17 +289,26 @@ impl OverlayController {
         self.active
     }
 
-    /// PLAIN mode key: FULL switch — reset ALL layers to fresh state (zoom
-    /// back to 1.0, snip selection cleared, spotlight radius back to default,
-    /// cursor re-seeded) and make `kind` the only active layer; full repaint
-    /// and border flash follow. Always resets, even when `kind` is already
-    /// the only active layer (spec: a plain press is a full switch).
+    /// PLAIN mode key. Capture (`ModeKind::Snip`) ENTERS capture mode: the
+    /// freeze is RE-BASED on the currently composited view (the spotlight
+    /// and/or zoom effects active at that moment baked into the new base —
+    /// [`rebase_freeze`]) and a fresh snip layer opens over it; re-pressing
+    /// while already in capture only resets the selection (no second
+    /// re-base). Every other kind is a FULL switch — reset ALL layers to
+    /// fresh state (zoom back to 1.0, snip selection cleared, spotlight
+    /// radius back to default, cursor re-seeded) and make `kind` the only
+    /// active layer. Full repaint and border flash follow either way.
     /// No-op when not frozen.
     pub fn set_mode(&mut self, kind: ModeKind, services: &dyn PlatformServices) {
         let mut slot = self.inner.borrow_mut();
         let Some(state) = slot.as_mut() else {
             return;
         };
+        // The re-base composes the CURRENT layers, before the stack stashes
+        // them for capture mode.
+        if kind == ModeKind::Snip && !state.modes.in_capture() {
+            rebase_freeze(state);
+        }
         // Layer parameters come from the freeze-time snapshot; live settings
         // edits therefore apply on the NEXT freeze, per the freeze contract.
         state.modes.set_mode(kind);
@@ -302,10 +340,12 @@ impl OverlayController {
         flash_border(state, Self::flash_count(kind));
     }
 
-    /// Spotlight's TOGGLE key: remove the layer when active (with no layers
-    /// left the screen stays frozen but the overlay is UNVEILED), add it fresh
-    /// otherwise. Toggling ON re-seeds the cursor, full-repaints, and flashes
-    /// once; toggling off only full-repaints (no flash). No-op when not frozen.
+    /// TOGGLE key (spotlight's `S`, zoom hold's `F`): remove the layer when
+    /// active (with no layers left the screen stays frozen but the overlay is
+    /// UNVEILED), add it otherwise — the spotlight fresh, the zoom hold at
+    /// the last-used factor. Toggling ON re-seeds the cursor, full-repaints,
+    /// and flashes `flash_count(kind)` times; toggling off only full-repaints
+    /// (no flash). No-op when not frozen.
     pub fn toggle_mode(&mut self, kind: ModeKind, services: &dyn PlatformServices) {
         let mut slot = self.inner.borrow_mut();
         let Some(state) = slot.as_mut() else {
@@ -374,13 +414,14 @@ impl OverlayController {
         drain_pending_repaints(state);
     }
 
-    /// Ctrl+C contract: when a snip selection exists, crop it from the
-    /// monitor's COMPOSED BASE (the zoomed view when the zoom layer is active
-    /// on that monitor — WYSIWYG with the presented frame — else the ORIGINAL
-    /// capture) and copy it to the clipboard; otherwise copy the FULL original
-    /// frame of the monitor currently under the cursor ("focused screen").
-    /// Works from ANY mode combination. Then unfreeze. `Ok(())` no-op when
-    /// not frozen.
+    /// Ctrl+C contract: when a snip selection exists, crop it from that
+    /// monitor's current base — in capture mode the re-frozen EFFECTED frame
+    /// (spotlight/zoom baked in), otherwise the zoomed view when the zoom
+    /// layer is active on that monitor, else the ORIGINAL capture — WYSIWYG
+    /// with the presented frame — and copy it to the clipboard; otherwise
+    /// copy the FULL current base of the monitor currently under the cursor
+    /// ("focused screen"). Works from ANY mode combination. Then unfreeze.
+    /// `Ok(())` no-op when not frozen.
     ///
     /// The selection is monitor-local (drags clamp at that monitor's edges);
     /// the crop normalizes any drag direction via [`crop_normalized`].
@@ -405,7 +446,7 @@ impl OverlayController {
                     None => services.copy_image_to_clipboard(&state.originals[monitor]),
                 }
             }
-            // Full original frame: passed by reference, no buffer copy.
+            // Full current base: passed by reference, no buffer copy.
             Some(CopyPlan::FullMonitor { monitor }) => {
                 services.copy_image_to_clipboard(&state.originals[monitor])
             }
@@ -562,9 +603,11 @@ fn spin_drain(state: &mut FreezeState, ms: u64) {
 /// Compose monitor `m`'s frame: build the
 /// [`crate::overlay::composite::RenderState`] from the active layers and run
 /// the shared pipeline (zoom base → colored darken → spotlight hole → snip
-/// selection) into the persistent frame buffer. With NO active layer the veil
-/// is dropped entirely (dim opacity 0): the screen stays frozen but shows the
-/// original capture.
+/// selection → capture indicator) into the persistent frame buffer. With NO
+/// active layer the veil is dropped entirely (dim opacity 0): the screen
+/// stays frozen but shows the original capture. In CAPTURE mode the veil is
+/// also dropped: the re-frozen base already carries the effects, so dimming
+/// again would double-darken and break WYSIWYG with the copy.
 fn compose_frame_for(state: &mut FreezeState, m: usize) {
     // Split borrows across disjoint fields: modes (read) builds the render
     // state, originals[m] (read) + frames[m] (write) are the pixel buffers,
@@ -578,7 +621,7 @@ fn compose_frame_for(state: &mut FreezeState, m: usize) {
     } = state;
     let render_state = modes.render_state(m);
     let viewport = Rect::new(0, 0, originals[m].width, originals[m].height);
-    let dim_opacity = if modes.any_active() {
+    let dim_opacity = if !modes.in_capture() && modes.any_active() {
         settings.overlay.dim_opacity
     } else {
         0
@@ -591,6 +634,61 @@ fn compose_frame_for(state: &mut FreezeState, m: usize) {
         dim_opacity,
         settings.overlay.color,
     );
+}
+
+/// Capture-mode entry: RE-BASE the freeze on the currently composited view.
+/// Each monitor's frame is composed from the CURRENT layers (zoom base →
+/// veil → spotlight hole — a snip layer cannot be stashed, and the capture
+/// indicator is excluded by construction) and swapped in as the new ORIGINAL;
+/// the pre-capture originals move into `state.capture` for
+/// [`exit_capture`]. One-off allocation per monitor on a key press — never
+/// on a repaint path.
+fn rebase_freeze(state: &mut FreezeState) {
+    let FreezeState {
+        originals,
+        modes,
+        settings,
+        capture,
+        ..
+    } = state;
+    let dim_opacity = if modes.any_active() {
+        settings.overlay.dim_opacity
+    } else {
+        0
+    };
+    let mut pre = Vec::with_capacity(originals.len());
+    for m in 0..originals.len() {
+        let render_state = RenderState {
+            snip: None,
+            capture: false,
+            ..modes.render_state(m)
+        };
+        let viewport = Rect::new(0, 0, originals[m].width, originals[m].height);
+        let mut base = DibBuffer::new(originals[m].width, originals[m].height);
+        compose_frame(
+            &originals[m],
+            &mut base,
+            viewport,
+            &render_state,
+            dim_opacity,
+            settings.overlay.color,
+        );
+        pre.push(std::mem::replace(&mut originals[m], base));
+    }
+    *capture = Some(pre);
+}
+
+/// Esc from capture mode: drop the re-frozen base (the pre-capture originals
+/// return), restore the stashed spotlight/zoom layers, and full-repaint every
+/// monitor back to the pre-capture view.
+fn exit_capture(state: &mut FreezeState) {
+    if let Some(pre) = state.capture.take() {
+        state.originals = pre;
+    }
+    state.modes.exit_capture();
+    for m in 0..state.windows.len() {
+        render_and_present(state, m, None);
+    }
 }
 
 /// Synchronous border flash on EVERY monitor: compose the frame, draw a
@@ -660,10 +758,12 @@ fn sanitize_zoom_params(step: f32, min: f32, max: f32) -> (f32, f32, f32) {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum CopyPlan {
     /// Crop the snip selection (monitor-local endpoints, any drag direction)
-    /// from that monitor's COMPOSED BASE (zoomed view when zoom is active
-    /// there, else the original frame).
+    /// from that monitor's current base (the re-frozen effected frame in
+    /// capture mode, the zoomed view when zoom is active there, else the
+    /// original frame).
     Snip { monitor: usize, a: Point, b: Point },
-    /// Copy the focused monitor's full ORIGINAL frame.
+    /// Copy the focused monitor's full current base (effected in capture
+    /// mode, ORIGINAL otherwise).
     FullMonitor { monitor: usize },
 }
 
@@ -773,6 +873,144 @@ mod tests {
 
         fn copy_image_to_clipboard(&self, _frame: &DibBuffer) -> Result<()> {
             panic!("services must not be consulted while unfrozen")
+        }
+    }
+
+    // ---- frozen-session fakes (headless: in-memory capturer/surfaces) -------
+
+    /// In-memory capturer: hands out clones of the configured captures.
+    struct FakeCapturer {
+        captured: Vec<(MonitorInfo, DibBuffer)>,
+    }
+
+    impl Capturer for FakeCapturer {
+        fn capture_all(&self) -> Result<Vec<(MonitorInfo, DibBuffer)>> {
+            Ok(self.captured.clone())
+        }
+    }
+
+    /// Overlay surface recording every presented frame (shared with the test).
+    struct FakeSurface {
+        presents: Rc<RefCell<Vec<DibBuffer>>>,
+    }
+
+    impl OverlaySurface for FakeSurface {
+        fn present(&mut self, frame: &DibBuffer, _dirty: Option<Rect>) -> Result<()> {
+            self.presents.borrow_mut().push(frame.clone());
+            Ok(())
+        }
+    }
+
+    /// Services double: fixed cursor position, clipboard writes recorded.
+    struct FakeServices {
+        cursor: Point,
+        copied: Rc<RefCell<Vec<DibBuffer>>>,
+    }
+
+    impl PlatformServices for FakeServices {
+        fn cursor_position_virtual(&self) -> Option<Point> {
+            Some(self.cursor)
+        }
+
+        fn copy_image_to_clipboard(&self, frame: &DibBuffer) -> Result<()> {
+            self.copied.borrow_mut().push(frame.clone());
+            Ok(())
+        }
+    }
+
+    /// A frozen session over fake monitors plus the recording handles.
+    struct FakeFreeze {
+        controller: OverlayController,
+        services: FakeServices,
+        presents: Vec<Rc<RefCell<Vec<DibBuffer>>>>,
+        copied: Rc<RefCell<Vec<DibBuffer>>>,
+    }
+
+    fn monitor_info(rect: Rect) -> MonitorInfo {
+        MonitorInfo {
+            rect,
+            dpi_x: 96,
+            dpi_y: 96,
+            is_primary: rect.x == 0 && rect.y == 0,
+            device_name: String::new(),
+        }
+    }
+
+    /// Default settings with a spotlight radius small enough to leave dimmed
+    /// pixels on the 32x32 fake monitors.
+    fn fake_settings() -> AppSettings {
+        let mut s = AppSettings::default();
+        s.spotlight.default_radius = 6;
+        s
+    }
+
+    /// M0 (origin) shows [`coord_pattern`], M1 (negative virtual x) its
+    /// inverse. `cursor` is the fixed virtual-screen position the services
+    /// double reports.
+    fn freeze_fake(cursor: Point) -> FakeFreeze {
+        let captured: Vec<(MonitorInfo, DibBuffer)> = [
+            (Rect::new(0, 0, 32, 32), make_buf(32, 32, coord_pattern)),
+            (
+                Rect::new(-32, 0, 32, 32),
+                make_buf(32, 32, |x, y| {
+                    let [b, g, r, a] = coord_pattern(x, y);
+                    [255 - b, 255 - g, 255 - r, a]
+                }),
+            ),
+        ]
+        .into_iter()
+        .map(|(rect, buf)| (monitor_info(rect), buf))
+        .collect();
+        let presents: Vec<Rc<RefCell<Vec<DibBuffer>>>> = (0..captured.len())
+            .map(|_| Rc::new(RefCell::new(Vec::new())))
+            .collect();
+        let factory_presents = presents.clone();
+        let factory = move |index: usize,
+                            _rect: Rect,
+                            _rects: Rc<Vec<Rect>>,
+                            _sink: OverlayEventSink|
+              -> Result<Box<dyn OverlaySurface>> {
+            Ok(Box::new(FakeSurface {
+                presents: factory_presents[index].clone(),
+            }))
+        };
+        let factory: &SurfaceFactory = &factory;
+        let copied = Rc::new(RefCell::new(Vec::new()));
+        let services = FakeServices {
+            cursor,
+            copied: copied.clone(),
+        };
+        let mut controller = OverlayController::new();
+        controller
+            .freeze(
+                &FakeCapturer { captured },
+                &fake_settings(),
+                factory,
+                &services,
+            )
+            .expect("freeze with fakes");
+        FakeFreeze {
+            controller,
+            services,
+            presents,
+            copied,
+        }
+    }
+
+    fn last_present(presents: &Rc<RefCell<Vec<DibBuffer>>>) -> DibBuffer {
+        presents
+            .borrow()
+            .last()
+            .expect("at least one present")
+            .clone()
+    }
+
+    /// Every pixel at least `inset` px away from the frame edge must match.
+    fn assert_interior_eq(a: &DibBuffer, b: &DibBuffer, inset: u32) {
+        for y in inset..a.height - inset {
+            for x in inset..a.width - inset {
+                assert_eq!(px(a, x, y), px(b, x, y), "interior pixel ({x},{y})");
+            }
         }
     }
 
@@ -1209,5 +1447,233 @@ mod tests {
         let (_, min, max) = sanitize_zoom_params(1.25, 3.0, f32::NAN);
         assert!(max > min);
         assert_eq!(max, 6.0);
+    }
+
+    // ---- frozen sessions: Esc routing, capture re-freeze, effected copies ----
+
+    #[test]
+    fn esc_in_spotlight_mode_fully_unfreezes() {
+        let mut f = freeze_fake(Point::new(16, 16));
+        f.controller.unfreeze();
+        assert!(!f.controller.is_frozen());
+    }
+
+    #[test]
+    fn esc_in_spotlight_off_fully_unfreezes() {
+        let mut f = freeze_fake(Point::new(16, 16));
+        f.controller.toggle_mode(ModeKind::Spotlight, &f.services); // spotlight off
+        assert!(f.controller.is_frozen());
+        f.controller.unfreeze();
+        assert!(!f.controller.is_frozen());
+    }
+
+    #[test]
+    fn esc_in_capture_exits_capture_and_restores_the_pre_capture_view() {
+        let mut f = freeze_fake(Point::new(16, 16));
+        let pre_capture = last_present(&f.presents[0]); // dimmed, hole at (16,16)
+
+        f.controller.set_mode(ModeKind::Snip, &f.services);
+        assert!(
+            f.controller.is_frozen(),
+            "capture entry keeps the session frozen"
+        );
+        let capture_frame = last_present(&f.presents[0]);
+        assert_interior_eq(&capture_frame, &pre_capture, 2);
+        assert_ne!(
+            px(&capture_frame, 0, 0),
+            px(&pre_capture, 0, 0),
+            "the capture indicator repaints the frame edge"
+        );
+        assert_eq!(
+            px(&capture_frame, 0, 0),
+            px(&capture_frame, 31, 31),
+            "one uniform indicator ring around the frame"
+        );
+
+        f.controller.unfreeze(); // Esc: exit capture, stay frozen
+        assert!(
+            f.controller.is_frozen(),
+            "Esc in capture must NOT unfreeze"
+        );
+        assert_eq!(f.controller.active_mode(), ModeKind::Spotlight);
+        assert_eq!(
+            last_present(&f.presents[0]).pixels,
+            pre_capture.pixels,
+            "the pre-capture view is restored exactly"
+        );
+
+        f.controller.unfreeze(); // second Esc: unfreeze for real
+        assert!(!f.controller.is_frozen());
+    }
+
+    #[test]
+    fn capture_copy_crops_the_effected_pixels_not_the_original() {
+        let mut f = freeze_fake(Point::new(2, 2)); // hole parked in the corner
+        let pre_capture = last_present(&f.presents[0]);
+
+        f.controller.set_mode(ModeKind::Snip, &f.services);
+        // Drag a selection in the dimmed area, away from the spotlight hole.
+        for event in [
+            OverlayEvent::LeftButtonDown {
+                at: Point::new(10, 10),
+            },
+            OverlayEvent::MouseMove {
+                at: Point::new(26, 26),
+            },
+            OverlayEvent::LeftButtonUp {
+                at: Point::new(26, 26),
+            },
+        ] {
+            f.controller.handle_overlay_event(0, event);
+        }
+        f.controller
+            .snip_copy_and_close(&f.services)
+            .expect("copy");
+        assert!(!f.controller.is_frozen(), "Ctrl+C closes the session");
+
+        let copied = f.copied.borrow();
+        let crop = copied.last().expect("one clipboard write");
+        assert_eq!((crop.width, crop.height), (16, 16));
+        let expected = crop_normalized(&pre_capture, Point::new(10, 10), Point::new(26, 26))
+            .expect("non-empty selection");
+        assert_eq!(
+            crop.pixels, expected.pixels,
+            "the crop comes from the re-frozen (effected) base"
+        );
+        let raw = crop_normalized(
+            &make_buf(32, 32, coord_pattern),
+            Point::new(10, 10),
+            Point::new(26, 26),
+        )
+        .unwrap();
+        assert_ne!(
+            crop.pixels, raw.pixels,
+            "effected (dimmed) pixels, NOT the undarkened original"
+        );
+    }
+
+    #[test]
+    fn capture_copy_crops_the_right_monitors_effected_base() {
+        let mut f = freeze_fake(Point::new(-16, 16)); // cursor on M1 (negative x)
+        let pre1 = last_present(&f.presents[1]);
+
+        f.controller.set_mode(ModeKind::Snip, &f.services);
+        // Drag on monitor 1 (selection endpoints are monitor-local).
+        for event in [
+            OverlayEvent::LeftButtonDown {
+                at: Point::new(10, 10),
+            },
+            OverlayEvent::MouseMove {
+                at: Point::new(20, 20),
+            },
+            OverlayEvent::LeftButtonUp {
+                at: Point::new(20, 20),
+            },
+        ] {
+            f.controller.handle_overlay_event(1, event);
+        }
+        f.controller
+            .snip_copy_and_close(&f.services)
+            .expect("copy");
+
+        let copied = f.copied.borrow();
+        let crop = copied.last().expect("one clipboard write");
+        let expected = crop_normalized(&pre1, Point::new(10, 10), Point::new(20, 20)).unwrap();
+        assert_eq!(
+            crop.pixels, expected.pixels,
+            "the crop comes from monitor 1's effected base"
+        );
+        let pre0 = last_present(&f.presents[0]);
+        let other = crop_normalized(&pre0, Point::new(10, 10), Point::new(20, 20)).unwrap();
+        assert_ne!(
+            crop.pixels, other.pixels,
+            "monitor mapping: not monitor 0's pixels"
+        );
+    }
+
+    #[test]
+    fn capture_rebases_with_zoom_baked_in_full_monitor_copy_is_effected() {
+        let mut f = freeze_fake(Point::new(16, 16));
+        // Zoom hold via the wheel chord (implicit activation), one notch in.
+        f.controller.handle_overlay_event(
+            0,
+            OverlayEvent::MouseWheel {
+                at: Point::new(16, 16),
+                delta: 120,
+                modifiers: crate::hotkeys::gesture::Modifiers::SHIFT,
+            },
+        );
+        let pre_capture = last_present(&f.presents[0]); // zoomed + dimmed + hole
+
+        f.controller.set_mode(ModeKind::Snip, &f.services);
+        // No selection: the full-monitor copy is the re-frozen effected view.
+        f.controller
+            .snip_copy_and_close(&f.services)
+            .expect("copy");
+
+        let copied = f.copied.borrow();
+        let frame = copied.last().expect("one clipboard write");
+        assert_eq!(
+            frame.pixels, pre_capture.pixels,
+            "full copy == the re-frozen (zoom + spotlight baked in) view"
+        );
+        assert_ne!(
+            frame.pixels,
+            make_buf(32, 32, coord_pattern).pixels,
+            "NOT the plain original"
+        );
+    }
+
+    #[test]
+    fn pressing_capture_again_clears_the_selection_without_rebasing() {
+        let mut f = freeze_fake(Point::new(16, 16));
+        let pre_capture = last_present(&f.presents[0]);
+
+        f.controller.set_mode(ModeKind::Snip, &f.services);
+        for event in [
+            OverlayEvent::LeftButtonDown {
+                at: Point::new(8, 8),
+            },
+            OverlayEvent::MouseMove {
+                at: Point::new(20, 20),
+            },
+            OverlayEvent::LeftButtonUp {
+                at: Point::new(20, 20),
+            },
+        ] {
+            f.controller.handle_overlay_event(0, event);
+        }
+        f.controller.set_mode(ModeKind::Snip, &f.services); // again: reset, no re-bake
+        // Selection cleared: the copy falls back to the full-monitor base.
+        f.controller
+            .snip_copy_and_close(&f.services)
+            .expect("copy");
+
+        let copied = f.copied.borrow();
+        let frame = copied.last().expect("one clipboard write");
+        assert_eq!(
+            frame.pixels, pre_capture.pixels,
+            "base untouched by the second press (no indicator/selection baked in)"
+        );
+    }
+
+    #[test]
+    fn esc_in_capture_restores_spotlight_off_state() {
+        let mut f = freeze_fake(Point::new(16, 16));
+        f.controller.toggle_mode(ModeKind::Spotlight, &f.services); // off: unveiled
+        let unveiled = last_present(&f.presents[0]);
+        assert_eq!(unveiled.pixels, make_buf(32, 32, coord_pattern).pixels);
+
+        f.controller.set_mode(ModeKind::Snip, &f.services);
+        f.controller.unfreeze(); // exit capture
+        assert!(f.controller.is_frozen());
+        assert_eq!(
+            last_present(&f.presents[0]).pixels,
+            unveiled.pixels,
+            "spotlight stays off after Esc from capture"
+        );
+        // And it toggles back on normally.
+        f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
+        assert_ne!(last_present(&f.presents[0]).pixels, unveiled.pixels);
     }
 }

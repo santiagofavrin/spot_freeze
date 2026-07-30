@@ -8,7 +8,7 @@
 //! The render pipeline for one monitor's frame is [`compose_frame`], fed with
 //! a [`RenderState`] built by the mode stack (composable layers):
 //! **zoom base → colored darken → spotlight hole (reveals the ZOOMED base) →
-//! snip selection (interior + border ring)**.
+//! snip selection (interior + border ring) → capture-mode indicator frame**.
 
 use crate::capture::DibBuffer;
 use crate::geometry::{Point, Rect};
@@ -265,6 +265,10 @@ pub struct RenderState {
     /// `(a, b)` drag endpoints of the snip selection (monitor-local, ANY drag
     /// direction — normalized internally) when present on this monitor.
     pub snip: Option<(Point, Point)>,
+    /// `true` while capture mode is active: a thin accent-colored frame
+    /// border is drawn around the whole frame (the persistent capture-mode
+    /// indicator, distinct from the one-off mode-change border flashes).
+    pub capture: bool,
 }
 
 /// Compose one monitor's frame into `out`, COMPLETELY overwriting it, in the
@@ -286,6 +290,10 @@ pub struct RenderState {
 ///    darkened veil and the restored base on any content, needs no settings
 ///    color, and matches the layer's dirty-region contract
 ///    ([`crate::overlay::modes::snip`]).
+/// 5. **Capture-mode indicator**: when `state.capture` is set, a thin
+///    accent-colored frame border is drawn around the whole frame — the
+///    PERSISTENT capture-mode affordance, painted LAST so no other stage
+///    overwrites it.
 ///
 /// `viewport.x`/`viewport.y` are ignored (mirroring [`zoom_resample`]);
 /// `out` may differ in size from `original` — every stage operates on the
@@ -328,6 +336,13 @@ pub fn compose_frame(
             restore_rect(out, base, rect);
             invert_border_ring(out, rect);
         }
+    }
+
+    // 5. Capture-mode indicator: a persistent accent frame border (distinct
+    //    from the controller's one-off white mode-change flashes), painted
+    //    over everything.
+    if state.capture {
+        draw_border(out, CAPTURE_INDICATOR_COLOR, CAPTURE_INDICATOR_THICKNESS);
     }
 }
 
@@ -430,6 +445,18 @@ fn invert_border_ring(buf: &mut DibBuffer, rc: Rect) {
         }
     }
 }
+
+/// Capture-mode indicator frame color: accent amber, readable over both the
+/// darkened veil and the undarkened base and distinct from the white
+/// mode-change flash.
+const CAPTURE_INDICATOR_COLOR: Rgb = Rgb {
+    r: 0xFF,
+    g: 0xA5,
+    b: 0x00,
+};
+/// Capture-mode indicator frame thickness in physical pixels (thin — the
+/// one-off mode-change flash is 6 px).
+const CAPTURE_INDICATOR_THICKNESS: u32 = 2;
 
 /// Draw a solid border ring `thickness` px wide around the frame edge in
 /// `color` (B/G/R channels; alpha untouched) — the mode-change flash frame
@@ -1005,6 +1032,7 @@ mod tests {
             zoom: None,
             spotlight: Some((Point::new(8, 8), 2)),
             snip: None,
+            capture: false,
         };
         let mut out = DibBuffer::new(16, 16);
         compose_frame(&original, &mut out, Rect::new(0, 0, 16, 16), &state, 160, VEIL);
@@ -1029,6 +1057,7 @@ mod tests {
             zoom: Some((2.0, focus)),
             spotlight: Some((Point::new(8, 8), 3)),
             snip: None,
+            capture: false,
         };
         let zoomed = zoom_resample(
             &original,
@@ -1055,6 +1084,7 @@ mod tests {
             zoom: None,
             spotlight: None,
             snip: Some((a, b)),
+            capture: false,
         };
         let mut out = DibBuffer::new(20, 20);
         compose_frame(&original, &mut out, Rect::new(0, 0, 20, 20), &state, 160, BLACK);
@@ -1088,6 +1118,7 @@ mod tests {
             zoom: None,
             spotlight: None,
             snip: Some((b, a)),
+            capture: false,
         };
         let mut out2 = DibBuffer::new(20, 20);
         compose_frame(&original, &mut out2, Rect::new(0, 0, 20, 20), &state2, 160, BLACK);
@@ -1101,6 +1132,7 @@ mod tests {
             zoom: None,
             spotlight: None,
             snip: Some((Point::new(4, 4), Point::new(4, 4))),
+            capture: false,
         };
         let mut out = DibBuffer::new(8, 8);
         compose_frame(&original, &mut out, Rect::new(0, 0, 8, 8), &state, 160, BLACK);
@@ -1155,5 +1187,85 @@ mod tests {
                 assert_eq!(px(&buf, x, y), [3, 2, 1, 255]);
             }
         }
+    }
+
+    // ---- capture-mode indicator ----------------------------------------------
+
+    #[test]
+    fn capture_indicator_constants_are_the_spec_values() {
+        // Pinned so an accidental edit of the capture affordance fails loudly.
+        assert_eq!(
+            CAPTURE_INDICATOR_COLOR,
+            Rgb {
+                r: 0xFF,
+                g: 0xA5,
+                b: 0x00
+            }
+        );
+        assert_eq!(CAPTURE_INDICATOR_THICKNESS, 2);
+    }
+
+    #[test]
+    fn compose_capture_indicator_paints_a_thin_accent_frame_ring() {
+        let original = make_buf(12, 10, pattern);
+        let state = RenderState {
+            capture: true,
+            ..RenderState::default()
+        };
+        let mut out = DibBuffer::new(12, 10);
+        compose_frame(&original, &mut out, Rect::new(0, 0, 12, 10), &state, 160, BLACK);
+        let accent = [
+            CAPTURE_INDICATOR_COLOR.b,
+            CAPTURE_INDICATOR_COLOR.g,
+            CAPTURE_INDICATOR_COLOR.r,
+        ];
+        for y in 0..10u32 {
+            for x in 0..12u32 {
+                let in_ring = x < 2 || x >= 10 || y < 2 || y >= 8;
+                let got = px(&out, x, y);
+                if in_ring {
+                    assert_eq!(got, [accent[0], accent[1], accent[2], 255], "ring ({x},{y})");
+                } else {
+                    assert_eq!(
+                        got,
+                        dimmed(pattern(x, y), 160, BLACK),
+                        "interior ({x},{y}) untouched"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compose_capture_indicator_is_absent_without_the_flag_and_painted_last() {
+        let original = make_buf(10, 10, pattern);
+        // No flag: the frame edge is the plain dimmed frame.
+        let plain = RenderState::default();
+        let mut out = DibBuffer::new(10, 10);
+        compose_frame(&original, &mut out, Rect::new(0, 0, 10, 10), &plain, 160, BLACK);
+        assert_eq!(px(&out, 0, 0), dimmed(pattern(0, 0), 160, BLACK));
+
+        // The indicator overwrites every earlier stage at the frame edge —
+        // here a snip selection reaching the corner, whose inverted ring would
+        // otherwise own those pixels.
+        let state = RenderState {
+            snip: Some((Point::new(0, 0), Point::new(5, 5))),
+            capture: true,
+            ..RenderState::default()
+        };
+        let mut out = DibBuffer::new(10, 10);
+        compose_frame(&original, &mut out, Rect::new(0, 0, 10, 10), &state, 160, BLACK);
+        let accent = [
+            CAPTURE_INDICATOR_COLOR.b,
+            CAPTURE_INDICATOR_COLOR.g,
+            CAPTURE_INDICATOR_COLOR.r,
+            255,
+        ];
+        assert_eq!(px(&out, 0, 0), accent, "indicator over the snip ring");
+        assert_eq!(px(&out, 1, 0), accent);
+        assert_eq!(px(&out, 0, 1), accent);
+        assert_eq!(px(&out, 9, 9), accent);
+        // Just inside the 2 px ring the snip interior is untouched.
+        assert_eq!(px(&out, 2, 2), pattern(2, 2));
     }
 }

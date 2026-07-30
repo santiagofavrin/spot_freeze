@@ -193,6 +193,7 @@ fn compose_frame_snip_only_shows_original_inside_dimmed_outside() {
         zoom: None,
         spotlight: None,
         snip: Some((sel.a, sel.b)),
+        capture: false,
     };
     let mut out = DibBuffer::new(40, 30);
     compose_frame(&original, &mut out, Rect::new(0, 0, 40, 30), &state, 160, BLACK);
@@ -237,6 +238,7 @@ fn compose_frame_snip_only_shows_original_inside_dimmed_outside() {
         zoom: None,
         spotlight: None,
         snip: None,
+        capture: false,
     };
     let mut out2 = DibBuffer::new(40, 30);
     compose_frame(&original, &mut out2, Rect::new(0, 0, 40, 30), &plain, 160, BLACK);

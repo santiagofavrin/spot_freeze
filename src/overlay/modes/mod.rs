@@ -1,33 +1,36 @@
-//! Overlay modes (Spotlight / Zoom / Snip) as COMPOSABLE LAYERS plus the
-//! [`ModeStack`] that combines them. Every layer is a pure state machine —
+//! Overlay modes (Spotlight on/off, Capture, and the zoom-hold LAYER) plus
+//! the [`ModeStack`] that combines them. Every layer is a pure state machine —
 //! pixel compositing lives in [`crate::overlay::composite::compose_frame`];
 //! a layer only tracks state (cursor, radius, zoom factor, selection) and
 //! reports dirty regions. No `windows` types anywhere in this module tree.
 //!
-//! # Composability contract (product spec)
+//! # Mode model (product spec)
 //!
-//! - **Toggle key (Spotlight's `S`) → [`ModeStack::toggle_mode`]**: the layer
-//!   is added when inactive, REMOVED when active. Toggling the last layer off
+//! - **Spotlight toggle (`S`) → [`ModeStack::toggle_mode`]**: the layer is
+//!   added when inactive, REMOVED when active. Toggling the last layer off
 //!   leaves the screen frozen but UNVEILED ([`ModeStack::any_active`] is
-//!   false — the controller dims nothing).
-//! - **Plain mode key (Snip's `C`) → [`ModeStack::set_mode`]**: FULL SWITCH —
-//!   every layer is reset to fresh state (zoom 1.0, snip selection cleared,
-//!   spotlight radius back to default, cursor re-seeded by the controller)
-//!   and `kind` becomes the ONLY active layer.
-//! - **Shift+mode key → [`ModeStack::add_mode`]**: ADDITIVE — `kind`'s layer is
-//!   activated (fresh state) WITHOUT touching the existing layers; a no-op
-//!   when that layer is already active.
-//! - **Primary mode**: the last-activated layer (`None` when nothing is
-//!   active). Only used by wheel routing: the plain (unmodified) wheel drives
-//!   zoom when zoom is primary.
+//!   false — the controller dims nothing). Spotlight is the default mode:
+//!   freeze starts with the layer on.
+//! - **Capture (`C`) → [`ModeStack::set_mode`]`(ModeKind::Snip)` →
+//!   [`ModeStack::enter_capture`]**: the controller RE-BASES the freeze on the
+//!   currently composited view (the spotlight/zoom effects active at that
+//!   moment baked in); the stack STASHES the spotlight/zoom layers and
+//!   activates a fresh snip layer for the drag-selection. Esc →
+//!   [`ModeStack::exit_capture`]: the stashed layers come back exactly as
+//!   they were (spotlight on/off state, zoom factor/focus) and the snip layer
+//!   is dropped; the controller restores the pre-capture base.
+//! - **Zoom hold (`F` toggle, or the zoom-modifier wheel chord from anywhere)
+//!   → an effect LAYER, not a mode**: re-activation restores the LAST-USED
+//!   zoom factor ([`ModeStack::last_zoom`], synced whenever the layer is
+//!   toggled off); `0` ([`ModeStack::reset_view`]) returns the layer to 1.0.
 //! - **Wheel routing matrix** ([`ModeStack::on_wheel`]):
 //!   * spotlight is offered EVERY wheel event while active; the layer itself
 //!     enforces its radius-modifier gate (default Ctrl) and keeps the
 //!     sub-notch accumulator;
 //!   * the configured zoom-modifier chord (default Shift+wheel) zooms from ANY
-//!     layer combination — IMPLICITLY ACTIVATING the zoom layer (additive, no
-//!     border flash) when it isn't active yet — and the PLAIN wheel zooms when
-//!     zoom is the primary mode;
+//!     state — IMPLICITLY ACTIVATING the zoom-hold layer at the last-used
+//!     factor (additive, no border flash) when it isn't active yet;
+//!   * the PLAIN wheel (no modifiers) zooms whenever the zoom layer is active;
 //!   * both may respond to the same event (their effects merge).
 //! - **Mouse move** feeds every active cursor-tracking layer (spotlight hole
 //!   follows, zoom focus recenters, an in-progress snip drag extends).
@@ -121,9 +124,10 @@ pub struct ModeParams {
     pub zoom_modifier: Modifiers,
 }
 
-/// The composable mode state of one freeze session: up to three active layers
-/// (one per [`ModeKind`]) plus the PRIMARY (last-activated) kind — `None`
-/// when every layer is toggled off (the screen stays frozen, unveiled).
+/// The mode state of one freeze session: the spotlight layer, the zoom-hold
+/// layer, the snip (capture) layer, the zoom factor the hold layer
+/// re-activates with, and — while capture mode is active — the stashed
+/// spotlight/zoom layers it was entered from.
 ///
 /// Fresh layers are built from [`ModeParams`] on activation, so "reset ALL
 /// mode state" is simply "drop every layer and rebuild the requested one".
@@ -132,12 +136,24 @@ pub struct ModeStack {
     spotlight: Option<SpotlightMode>,
     zoom: Option<ZoomMode>,
     snip: Option<SnipMode>,
-    primary: Option<ModeKind>,
+    /// Factor the zoom-hold layer re-activates with; synced from the layer
+    /// every time it is toggled off (the "last-used zoom level").
+    last_zoom: f32,
+    /// Spotlight/zoom layers stashed while capture mode re-bases the freeze;
+    /// `None` outside capture mode.
+    saved: Option<SavedLayers>,
+}
+
+/// Layers set aside by [`ModeStack::enter_capture`] and restored untouched by
+/// [`ModeStack::exit_capture`].
+struct SavedLayers {
+    spotlight: Option<SpotlightMode>,
+    zoom: Option<ZoomMode>,
 }
 
 impl ModeStack {
     /// Freeze-time initial state: Spotlight is the only active layer (product
-    /// spec) and the primary mode.
+    /// spec) and the zoom hold starts at 1.0.
     pub fn new(params: ModeParams) -> Self {
         Self {
             spotlight: Some(SpotlightMode::new(
@@ -146,15 +162,10 @@ impl ModeStack {
             )),
             zoom: None,
             snip: None,
-            primary: Some(ModeKind::Spotlight),
+            last_zoom: 1.0,
+            saved: None,
             params,
         }
-    }
-
-    /// The primary (last-activated) mode, `None` when no layer is active.
-    /// Drives the plain-wheel zoom rule.
-    pub fn primary(&self) -> Option<ModeKind> {
-        self.primary
     }
 
     /// `true` while `kind`'s layer is active.
@@ -185,19 +196,27 @@ impl ModeStack {
         self.snip.as_ref()
     }
 
-    /// PLAIN mode key: full switch — reset ALL layers to fresh state and make
-    /// `kind` the only active one (radius back to default, zoom back to 1.0,
-    /// snip selection cleared). Always resets, even when `kind` is already the
-    /// only active layer (spec: a plain press is a full switch).
+    /// PLAIN mode key. Capture (`ModeKind::Snip`) ENTERS capture mode (see
+    /// [`ModeStack::enter_capture`]); every other kind is a FULL SWITCH —
+    /// reset ALL mode state (zoom hold back to 1.0, snip selection cleared,
+    /// spotlight radius back to default, any capture stash dropped) and make
+    /// `kind` the only active layer.
     pub fn set_mode(&mut self, kind: ModeKind) {
+        if kind == ModeKind::Snip {
+            self.enter_capture();
+            return;
+        }
         self.spotlight = None;
         self.zoom = None;
         self.snip = None;
+        self.last_zoom = 1.0;
+        self.saved = None;
         self.activate(kind);
     }
 
-    /// SHIFT+mode key: add `kind`'s layer (fresh state) WITHOUT touching the
-    /// existing layers. No-op when the layer is already active.
+    /// ADD `kind`'s layer WITHOUT touching the existing ones (the zoom-hold
+    /// layer comes back at the last-used factor). No-op when the layer is
+    /// already active.
     pub fn add_mode(&mut self, kind: ModeKind) {
         if self.is_active(kind) {
             return;
@@ -205,30 +224,30 @@ impl ModeStack {
         self.activate(kind);
     }
 
-    /// TOGGLE key (Spotlight's `S`): remove `kind`'s layer when active, add it
-    /// (fresh state) when not. Toggling the last layer off leaves the screen
-    /// frozen but unveiled; toggling back on re-activates with fresh state
-    /// (spotlight radius back to default).
+    /// TOGGLE key (spotlight's `S`, zoom hold's `F`): remove `kind`'s layer
+    /// when active, add it when not. Removing the zoom-hold layer banks its
+    /// factor as the last-used level; re-activating restores it. Toggling the
+    /// last spotlight layer off leaves the screen frozen but unveiled;
+    /// toggling it back on re-activates with fresh state (radius back to
+    /// default).
     pub fn toggle_mode(&mut self, kind: ModeKind) {
         if self.is_active(kind) {
             match kind {
                 ModeKind::Spotlight => self.spotlight = None,
-                ModeKind::Zoom => self.zoom = None,
+                ModeKind::Zoom => {
+                    if let Some(zoom) = self.zoom.take() {
+                        self.last_zoom = zoom.zoom();
+                    }
+                }
                 ModeKind::Snip => self.snip = None,
-            }
-            if self.primary == Some(kind) {
-                // Fall back to any remaining layer (arbitrary but stable
-                // order); None when nothing is left.
-                self.primary = [ModeKind::Zoom, ModeKind::Snip, ModeKind::Spotlight]
-                    .into_iter()
-                    .find(|&k| self.is_active(k));
             }
             return;
         }
         self.activate(kind);
     }
 
-    /// Activate `kind`'s layer with fresh state and make it primary.
+    /// Activate `kind`'s layer: fresh state for spotlight/snip, the last-used
+    /// factor for the zoom hold.
     fn activate(&mut self, kind: ModeKind) {
         match kind {
             ModeKind::Spotlight => {
@@ -238,7 +257,8 @@ impl ModeStack {
                 ));
             }
             ModeKind::Zoom => {
-                self.zoom = Some(ZoomMode::new(
+                self.zoom = Some(ZoomMode::with_zoom(
+                    self.last_zoom,
                     self.params.zoom_step,
                     self.params.zoom_min,
                     self.params.zoom_max,
@@ -248,7 +268,37 @@ impl ModeStack {
                 self.snip = Some(SnipMode::new());
             }
         }
-        self.primary = Some(kind);
+    }
+
+    /// Enter capture mode: stash the spotlight/zoom layers (the controller
+    /// bakes them into the re-frozen base) and activate a FRESH snip layer —
+    /// any in-progress selection is cleared. Re-entering while already in
+    /// capture only resets the snip layer; the stash is kept.
+    pub fn enter_capture(&mut self) {
+        if self.saved.is_none() {
+            self.saved = Some(SavedLayers {
+                spotlight: self.spotlight.take(),
+                zoom: self.zoom.take(),
+            });
+        }
+        self.snip = Some(SnipMode::new());
+    }
+
+    /// Esc from capture mode: restore the stashed spotlight/zoom layers
+    /// exactly as they were (spotlight on/off state, zoom factor/focus) and
+    /// drop the snip layer (the selection goes with it).
+    pub fn exit_capture(&mut self) {
+        if let Some(saved) = self.saved.take() {
+            self.spotlight = saved.spotlight;
+            self.zoom = saved.zoom;
+        }
+        self.snip = None;
+    }
+
+    /// `true` while capture mode is active (the freeze is re-based and the
+    /// pre-capture layers are stashed).
+    pub fn in_capture(&self) -> bool {
+        self.saved.is_some()
     }
 
     /// Seed the live cursor into every active cursor-tracking layer after
@@ -286,10 +336,11 @@ impl ModeStack {
     /// - spotlight is offered every wheel event while active — the layer
     ///   enforces the radius-modifier gate itself (and only banks sub-notch
     ///   deltas while the modifier is held);
-    /// - the configured zoom-modifier chord (default Shift+wheel) reaches zoom
-    ///   from ANY layer combination — IMPLICITLY ACTIVATING the zoom layer
-    ///   first when it isn't active yet — and the PLAIN wheel (no modifiers)
-    ///   reaches zoom when zoom is the primary mode.
+    /// - the configured zoom-modifier chord (default Shift+wheel) reaches the
+    ///   zoom-hold layer from ANY state — IMPLICITLY ACTIVATING it at the
+    ///   last-used factor when it isn't active yet;
+    /// - the PLAIN wheel (no modifiers) reaches the zoom layer whenever it is
+    ///   active.
     ///
     /// Both layers may answer the same event (e.g. Ctrl+Shift with default
     /// bindings); their repaint effects merge.
@@ -305,18 +356,18 @@ impl ModeStack {
             effect.absorb(spot.on_wheel(monitor, at, delta, modifiers));
         }
         let zoom_chord = modifiers.contains(self.params.zoom_modifier);
-        // Implicit activation (D3): the zoom-modifier chord adds the zoom
+        // Implicit activation: the zoom-modifier chord adds the zoom-hold
         // layer when it isn't active yet — product spec: the chord zooms
         // straight out of the pristine spotlight-only state. This is ADDITIVE
-        // (fresh zoom state, existing layers untouched — same as Shift+Z) and
-        // deliberately does NOT flash the border: the flash lives in the
-        // controller's key-driven set_mode/add_mode path, and flashing on
-        // every scroll would be wrong. No cursor seeding needed here —
-        // ZoomMode::on_wheel makes the wheel position the new focus itself.
+        // (existing layers untouched) and deliberately does NOT flash the
+        // border: the flash lives in the controller's key-driven toggle path,
+        // and flashing on every scroll would be wrong. No cursor seeding
+        // needed here — ZoomMode::on_wheel makes the wheel position the new
+        // focus itself.
         if zoom_chord && self.zoom.is_none() {
             self.add_mode(ModeKind::Zoom);
         }
-        let plain_zoom = modifiers.is_empty() && self.primary == Some(ModeKind::Zoom);
+        let plain_zoom = modifiers.is_empty() && self.zoom.is_some();
         if let Some(zoom) = self.zoom.as_mut()
             && (zoom_chord || plain_zoom)
         {
@@ -367,7 +418,8 @@ impl ModeStack {
 
     /// The per-monitor [`RenderState`] for `compose_frame`: each active layer
     /// contributes only on the monitor its state lives on (spotlight/zoom
-    /// follow the cursor monitor, snip its drag monitor).
+    /// follow the cursor monitor, snip its drag monitor); `capture` flags
+    /// capture mode for the indicator frame border.
     pub fn render_state(&self, monitor: usize) -> RenderState {
         let spotlight = self
             .spotlight
@@ -389,6 +441,7 @@ impl ModeStack {
             zoom,
             spotlight,
             snip,
+            capture: self.in_capture(),
         }
     }
 }
@@ -462,15 +515,15 @@ mod tests {
     // ---- construction / activation ----------------------------------------
 
     #[test]
-    fn new_starts_spotlight_only_and_primary() {
+    fn new_starts_spotlight_only_not_in_capture() {
         let stack = ModeStack::new(params());
-        assert_eq!(stack.primary(), Some(ModeKind::Spotlight));
         assert!(stack.is_active(ModeKind::Spotlight));
         assert!(!stack.is_active(ModeKind::Zoom));
         assert!(!stack.is_active(ModeKind::Snip));
         assert!(stack.spotlight().is_some());
         assert!(stack.zoom().is_none());
         assert!(stack.snip().is_none());
+        assert!(!stack.in_capture());
         assert_eq!(stack.spotlight().unwrap().radius(), 100);
     }
 
@@ -490,7 +543,6 @@ mod tests {
         assert_eq!(stack.spotlight().unwrap().radius(), 110);
 
         stack.set_mode(ModeKind::Zoom);
-        assert_eq!(stack.primary(), Some(ModeKind::Zoom));
         assert!(!stack.is_active(ModeKind::Spotlight), "spotlight dropped");
         assert!(!stack.is_active(ModeKind::Snip), "snip dropped");
         assert!(stack.is_active(ModeKind::Zoom));
@@ -504,7 +556,6 @@ mod tests {
         // Switching BACK to spotlight yields a fresh default radius again.
         stack.set_mode(ModeKind::Spotlight);
         assert_eq!(stack.spotlight().unwrap().radius(), 100);
-        assert_eq!(stack.primary(), Some(ModeKind::Spotlight));
         assert!(stack.zoom().is_none());
     }
 
@@ -518,34 +569,31 @@ mod tests {
     }
 
     #[test]
-    fn add_mode_preserves_existing_layers_and_makes_kind_primary() {
+    fn add_mode_preserves_existing_layers() {
         let mut stack = ModeStack::new(params());
         stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110
 
         stack.add_mode(ModeKind::Zoom);
-        assert_eq!(stack.primary(), Some(ModeKind::Zoom));
         assert_eq!(
             stack.spotlight().unwrap().radius(),
             110,
             "additive activation does NOT reset the spotlight"
         );
-        assert_eq!(stack.zoom().unwrap().zoom(), 1.0, "new layer starts fresh");
+        assert_eq!(stack.zoom().unwrap().zoom(), 1.0, "zoom hold starts at 1.0");
 
         stack.add_mode(ModeKind::Snip);
         assert!(stack.is_active(ModeKind::Spotlight));
         assert!(stack.is_active(ModeKind::Zoom));
         assert!(stack.is_active(ModeKind::Snip));
-        assert_eq!(stack.primary(), Some(ModeKind::Snip));
     }
 
     #[test]
     fn add_mode_already_active_is_a_noop() {
         let mut stack = ModeStack::new(params());
-        stack.add_mode(ModeKind::Zoom); // primary Zoom
+        stack.add_mode(ModeKind::Zoom);
         stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT); // zoom 1.25
         stack.add_mode(ModeKind::Zoom); // no-op: layer already active
         assert_zoom_near(&stack, 1.25);
-        assert_eq!(stack.primary(), Some(ModeKind::Zoom), "primary untouched");
         // Same for the freeze-default spotlight layer.
         stack.add_mode(ModeKind::Spotlight);
         assert_eq!(stack.spotlight().unwrap().radius(), 100);
@@ -554,38 +602,55 @@ mod tests {
     // ---- toggle_mode ---------------------------------------------------------
 
     #[test]
-    fn toggle_off_removes_the_layer_and_clears_primary_when_none_left() {
+    fn toggle_off_removes_the_layer_and_leaves_nothing_active() {
         let mut stack = ModeStack::new(params());
         assert!(stack.any_active());
         stack.toggle_mode(ModeKind::Spotlight);
         assert!(!stack.is_active(ModeKind::Spotlight));
         assert!(!stack.any_active(), "no layers left: frozen but unveiled");
-        assert_eq!(stack.primary(), None);
     }
 
     #[test]
-    fn toggle_on_reactivates_with_fresh_state_and_primary() {
+    fn toggle_on_reactivates_spotlight_with_fresh_state() {
         let mut stack = ModeStack::new(params());
         stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110
         stack.toggle_mode(ModeKind::Spotlight);
         stack.toggle_mode(ModeKind::Spotlight);
         assert!(stack.is_active(ModeKind::Spotlight));
         assert_eq!(stack.spotlight().unwrap().radius(), 100, "fresh default state");
-        assert_eq!(stack.primary(), Some(ModeKind::Spotlight));
     }
 
     #[test]
-    fn toggle_off_primary_falls_back_to_a_remaining_layer() {
+    fn zoom_hold_toggle_banks_and_restores_the_last_used_factor() {
         let mut stack = ModeStack::new(params());
-        stack.add_mode(ModeKind::Zoom); // primary Zoom
-        stack.toggle_mode(ModeKind::Zoom);
+        stack.add_mode(ModeKind::Zoom); // hold on at 1.0
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT); // zoom 1.25
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT); // zoom 1.5625
+
+        stack.toggle_mode(ModeKind::Zoom); // hold off: factor banked
         assert!(!stack.is_active(ModeKind::Zoom));
-        assert_eq!(stack.primary(), Some(ModeKind::Spotlight));
-        // Zoom state is rebuilt fresh on re-activation.
-        stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT); // zoom 1.25 again
+        assert!(stack.is_active(ModeKind::Spotlight), "spotlight untouched");
+
+        stack.toggle_mode(ModeKind::Zoom); // hold on: last-used factor back
+        assert_zoom_near(&stack, 1.5625);
+        // Toggling off at 1.0 (after `0`) banks 1.0 again.
+        stack.reset_view();
         stack.toggle_mode(ModeKind::Zoom);
-        stack.add_mode(ModeKind::Zoom);
-        assert_eq!(stack.zoom().unwrap().zoom(), 1.0, "fresh zoom state");
+        stack.toggle_mode(ModeKind::Zoom);
+        assert_eq!(stack.zoom().unwrap().zoom(), 1.0);
+    }
+
+    #[test]
+    fn implicit_wheel_activation_applies_the_last_used_factor() {
+        let mut stack = ModeStack::new(params());
+        stack.on_wheel(0, pt(10, 10), 240, Modifiers::SHIFT); // activates at 1.0, zooms 1.5625
+        stack.toggle_mode(ModeKind::Zoom); // bank 1.5625
+        assert!(!stack.is_active(ModeKind::Zoom));
+
+        // The chord implicitly re-activates at the banked factor, then wheels.
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT);
+        assert!(stack.is_active(ModeKind::Zoom));
+        assert_zoom_near(&stack, 1.953125); // 1.5625 * 1.25
     }
 
     #[test]
@@ -593,7 +658,7 @@ mod tests {
         let mut stack = ModeStack::new(params());
         stack.toggle_mode(ModeKind::Spotlight);
         let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE);
-        assert_eq!(e, ModeEffect::none(), "no zoom layer and no primary");
+        assert_eq!(e, ModeEffect::none(), "no zoom layer active");
         assert!(!stack.is_active(ModeKind::Zoom));
     }
 
@@ -631,11 +696,11 @@ mod tests {
 
     #[test]
     fn wheel_spotlight_only_shift_wheel_implicitly_activates_zoom() {
-        // D3 semantics: pristine spotlight-only + the zoom-modifier chord
-        // (default Shift+wheel) ADDITIVELY activates the zoom layer and zooms
-        // in the same event — no explicit Shift+Z needed first. (No border
-        // flash is involved at this level: flashing lives in the controller's
-        // key-driven activation path.)
+        // Pristine spotlight-only + the zoom-modifier chord (default
+        // Shift+wheel) ADDITIVELY activates the zoom-hold layer (at the
+        // last-used factor, 1.0 here) and zooms in the same event — no `F`
+        // press needed first. (No border flash is involved at this level:
+        // flashing lives in the controller's key-driven activation path.)
         let mut stack = ModeStack::new(params());
         stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110 first
         assert!(!stack.is_active(ModeKind::Zoom), "pristine: no zoom layer");
@@ -652,11 +717,6 @@ mod tests {
             110,
             "additive: spotlight preserved (Shift is not the radius modifier)"
         );
-        assert_eq!(
-            stack.primary(),
-            Some(ModeKind::Zoom),
-            "implicit activation makes zoom the primary mode"
-        );
         // The wheel event's position becomes the fresh layer's focus.
         let zoom = stack.zoom().unwrap();
         assert_eq!((zoom.cursor_monitor(), zoom.cursor()), (0, pt(10, 10)));
@@ -664,8 +724,8 @@ mod tests {
 
     #[test]
     fn wheel_implicit_zoom_activation_then_plain_wheel_zooms() {
-        // Follow-up of the D3 rule: after the implicit activation zoom is
-        // PRIMARY, so the plain wheel now zooms (same as after Shift+Z).
+        // Follow-up of the implicit-activation rule: once the zoom layer is
+        // active, the plain wheel zooms.
         let mut stack = ModeStack::new(params());
         stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT); // activates + 1.25
         let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE);
@@ -679,37 +739,30 @@ mod tests {
     }
 
     #[test]
-    fn wheel_zoom_primary_plain_wheel_zooms() {
+    fn wheel_zoom_active_plain_wheel_and_chord_both_zoom() {
         let mut stack = ModeStack::new(params());
-        stack.add_mode(ModeKind::Zoom); // primary becomes Zoom
+        stack.add_mode(ModeKind::Zoom); // zoom hold active
         let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE);
-        assert!(!e.repaint.is_empty());
+        assert!(
+            !e.repaint.is_empty(),
+            "plain wheel reaches the active zoom layer"
+        );
         assert_zoom_near(&stack, 1.25);
+        // ...and the zoom chord reaches it too, from the same state.
+        let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT);
+        assert!(!e.repaint.is_empty(), "zoom chord always reaches zoom");
+        assert_zoom_near(&stack, 1.5625);
         assert_eq!(
             stack.spotlight().unwrap().radius(),
             100,
-            "spotlight untouched by the plain wheel"
+            "spotlight untouched by both wheels"
         );
-    }
-
-    #[test]
-    fn wheel_zoom_modifier_zooms_whenever_zoom_is_active() {
-        let mut stack = ModeStack::new(params());
-        stack.add_mode(ModeKind::Zoom);
-        stack.primary = Some(ModeKind::Spotlight); // zoom active but NOT primary
-        let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT);
-        assert!(!e.repaint.is_empty(), "zoom modifier always reaches zoom");
-        assert_zoom_near(&stack, 1.25);
-        // ...while the PLAIN wheel does nothing when zoom is not primary.
-        let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE);
-        assert_eq!(e, ModeEffect::none());
-        assert_zoom_near(&stack, 1.25);
     }
 
     #[test]
     fn wheel_ctrl_with_zoom_active_only_resizes_spotlight() {
         let mut stack = ModeStack::new(params());
-        stack.add_mode(ModeKind::Zoom); // both active, primary Zoom
+        stack.add_mode(ModeKind::Zoom); // both layers active
         let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL);
         assert_eq!(stack.spotlight().unwrap().radius(), 110);
         assert_eq!(stack.zoom().unwrap().zoom(), 1.0, "Ctrl is not the zoom modifier");
@@ -732,7 +785,7 @@ mod tests {
     #[test]
     fn wheel_zoom_only_switch_ctrl_does_nothing() {
         let mut stack = ModeStack::new(params());
-        stack.set_mode(ModeKind::Zoom); // zoom only, primary
+        stack.set_mode(ModeKind::Zoom); // zoom only
         let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL);
         assert_eq!(e, ModeEffect::none(), "no spotlight layer to resize");
         assert_eq!(stack.zoom().unwrap().zoom(), 1.0);
@@ -816,6 +869,87 @@ mod tests {
         assert!(stack.spotlight().is_some());
     }
 
+    // ---- capture mode ---------------------------------------------------------
+
+    #[test]
+    fn set_mode_snip_enters_capture_stashing_spotlight_and_zoom() {
+        let mut stack = ModeStack::new(params());
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT); // zoom hold on, 1.25
+
+        stack.set_mode(ModeKind::Snip);
+        assert!(stack.in_capture());
+        assert!(!stack.is_active(ModeKind::Spotlight), "stashed, not active");
+        assert!(!stack.is_active(ModeKind::Zoom), "stashed, not active");
+        assert!(stack.is_active(ModeKind::Snip), "fresh snip layer active");
+        let rs = stack.render_state(0);
+        assert!(rs.capture, "capture indicator flag set");
+        assert_eq!(rs.zoom, None);
+        assert_eq!(rs.spotlight, None);
+    }
+
+    #[test]
+    fn exit_capture_restores_the_stashed_layers_exactly() {
+        let mut stack = ModeStack::new(params());
+        stack.seed_cursor(0, pt(30, 40));
+        stack.on_wheel(0, pt(30, 40), 120, Modifiers::CTRL); // radius 110
+        stack.on_wheel(0, pt(30, 40), 120, Modifiers::SHIFT); // zoom 1.25 at (30,40)
+        stack.set_mode(ModeKind::Snip);
+        stack.on_left_button_down(0, pt(2, 2));
+        stack.on_mouse_move(0, pt(8, 8));
+        stack.on_left_button_up(0, pt(8, 8));
+        assert!(stack.snip_selection().is_some());
+
+        stack.exit_capture();
+        assert!(!stack.in_capture());
+        assert!(!stack.is_active(ModeKind::Snip));
+        assert_eq!(
+            stack.snip_selection(),
+            None,
+            "selection dropped with the snip layer"
+        );
+        let spot = stack.spotlight().expect("spotlight restored");
+        assert_eq!(spot.radius(), 110, "spotlight state survives the round-trip");
+        assert_eq!((spot.cursor_monitor(), spot.cursor()), (0, pt(30, 40)));
+        let zoom = stack.zoom().expect("zoom restored");
+        assert!((zoom.zoom() - 1.25).abs() < 1e-6, "zoom factor restored");
+        assert_eq!(
+            (zoom.cursor_monitor(), zoom.cursor()),
+            (0, pt(30, 40)),
+            "zoom focus restored"
+        );
+        assert!(!stack.render_state(0).capture);
+    }
+
+    #[test]
+    fn exit_capture_restores_spotlight_off_state() {
+        let mut stack = ModeStack::new(params());
+        stack.toggle_mode(ModeKind::Spotlight); // spotlight OFF
+        stack.set_mode(ModeKind::Snip);
+        stack.exit_capture();
+        assert!(!stack.is_active(ModeKind::Spotlight), "stays off");
+        assert!(!stack.any_active(), "back to frozen-but-unveiled");
+    }
+
+    #[test]
+    fn reentering_capture_clears_the_selection_but_keeps_the_stash() {
+        let mut stack = ModeStack::new(params());
+        stack.set_mode(ModeKind::Snip);
+        stack.on_left_button_down(0, pt(2, 2));
+        stack.on_mouse_move(0, pt(9, 9));
+        stack.on_left_button_up(0, pt(9, 9));
+        assert!(stack.snip_selection().is_some());
+
+        stack.set_mode(ModeKind::Snip); // plain press again: reset, no re-stash
+        assert!(stack.in_capture());
+        assert_eq!(stack.snip_selection(), None, "selection cleared");
+        stack.exit_capture();
+        assert!(
+            stack.is_active(ModeKind::Spotlight),
+            "the original stash is restored, not a double-stash"
+        );
+    }
+
     // ---- render_state / zoom_on ----------------------------------------------
 
     #[test]
@@ -826,6 +960,7 @@ mod tests {
         assert_eq!(rs.spotlight, Some((pt(30, 40), 100)));
         assert_eq!(rs.zoom, None);
         assert_eq!(rs.snip, None);
+        assert!(!rs.capture);
         let rs1 = stack.render_state(1);
         assert_eq!(rs1.spotlight, None, "cursor is on monitor 0");
     }

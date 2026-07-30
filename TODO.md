@@ -1,0 +1,7 @@
+- feat: add a hold toggle for the zoom level, F makes sense
+- fix: capture mode should re-freze the screen with whatever effects it has on at the moment (spotlight and/or zoom) so the user can screenshot something that's spotlighted and/or zoomed
+- critical bug: the settings window in Windows doesn't register modifier keys for any of the rebind input fields.
+- cool screen animation when freeze toggled and when hitting escape
+- feat: escape key should quit out of the current mode (our modes now should be only spotlight on, spotlight off, and capture), it should only quit spotfreeze when it's pressed during spotlight mode, either on or off. When pressed during capture mode, it should switch the mode back to spotlight (with the last value set) and unfreeze the capture overlay
+- feat: capture should have some visual indicator that we're in capture mode
+- critical bug: it is still unusable in Linux due to the impossibly slowness of everything. In spotlight mode if I move the cursor, it takes ages for the spotlight to catch up with it, the longer the distance between the cursor and the spotlight, the more that it takes. It seems to speed up when it's super super close to the cursor.
