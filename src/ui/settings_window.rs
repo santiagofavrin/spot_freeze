@@ -133,6 +133,7 @@ pub fn open(
         save_button: HWND::default(),
         capture_row: None,
         capture_hook: None,
+        capture_modifiers: HeldModifiers::default(),
     });
     let state_ptr = Box::into_raw(state);
 
@@ -389,7 +390,7 @@ fn decide_capture(key_down: bool, vk: u32, modifiers: Modifiers) -> CaptureDecis
 }
 
 /// Assemble a [`Modifiers`] set from four physically-held flags. Pure; the
-/// Win32 layer ([`current_modifiers`]) only supplies the booleans.
+/// Win32 layer ([`HeldModifiers`]) only supplies the booleans.
 fn modifiers_from_key_state(ctrl: bool, alt: bool, shift: bool, win: bool) -> Modifiers {
     let mut modifiers = Modifiers::NONE;
     if ctrl {
@@ -405,6 +406,55 @@ fn modifiers_from_key_state(ctrl: bool, alt: bool, shift: bool, win: bool) -> Mo
         modifiers = modifiers | Modifiers::WIN;
     }
     modifiers
+}
+
+/// Physically-held modifier keys, one flag per side so releasing the left
+/// side of a pair does not clear the still-held right side. The capture hook
+/// maintains this from its own key events (seeded by
+/// [`held_modifiers_snapshot`] when a capture arms); per MSDN the async key
+/// state is updated only AFTER a `WH_KEYBOARD_LL` callback returns, so
+/// `GetAsyncKeyState` cannot observe modifier presses from inside the hook.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct HeldModifiers {
+    lctrl: bool,
+    rctrl: bool,
+    lalt: bool,
+    ralt: bool,
+    lshift: bool,
+    rshift: bool,
+    lwin: bool,
+    rwin: bool,
+}
+
+impl HeldModifiers {
+    /// Record one key event: `key_down == true` presses, `false` releases.
+    /// Non-modifier vks are ignored; the generic `VK_SHIFT`/`VK_CONTROL`/
+    /// `VK_MENU` codes (synthetic input) fold into the left side so their
+    /// down/up pairs stay balanced.
+    fn apply(&mut self, key_down: bool, vk: u32) {
+        let side = match vk as u16 {
+            v if v == VK_LSHIFT.0 || v == VK_SHIFT.0 => &mut self.lshift,
+            v if v == VK_RSHIFT.0 => &mut self.rshift,
+            v if v == VK_LCONTROL.0 || v == VK_CONTROL.0 => &mut self.lctrl,
+            v if v == VK_RCONTROL.0 => &mut self.rctrl,
+            v if v == VK_LMENU.0 || v == VK_MENU.0 => &mut self.lalt,
+            v if v == VK_RMENU.0 => &mut self.ralt,
+            v if v == VK_LWIN.0 => &mut self.lwin,
+            v if v == VK_RWIN.0 => &mut self.rwin,
+            _ => return,
+        };
+        *side = key_down;
+    }
+
+    /// The held set as [`Modifiers`]; either side of a pair sets the flag.
+    fn modifiers(self) -> Modifiers {
+        modifiers_from_key_state(
+            self.lctrl || self.rctrl,
+            self.lalt || self.ralt,
+            self.lshift || self.rshift,
+            self.lwin || self.rwin,
+        )
+    }
 }
 
 /// Returns the indices of the first exact duplicate pair, if any.
@@ -622,6 +672,9 @@ struct SettingsWindowState {
     /// `Some`. RAII: dropping this guard uninstalls the hook, so no exit path
     /// (capture, cancel, close, destroy) can leak a system-wide hook.
     capture_hook: Option<CaptureKeyboardHook>,
+    /// Modifier keys currently held, maintained by the capture hook from its
+    /// own key events; re-seeded every time a capture arms.
+    capture_modifiers: HeldModifiers,
 }
 
 fn hwnd_from_raw(raw: isize) -> HWND {
@@ -1438,10 +1491,12 @@ unsafe extern "system" fn capture_keyboard_proc(
         }
 
         let key_down = wparam.0 as u32 == WM_KEYDOWN || wparam.0 as u32 == WM_SYSKEYDOWN;
-        let decision = decide_capture(key_down, kbd.vkCode, current_modifiers());
         // SAFETY: `state` is valid for the window's lifetime (freed only in
         // WM_NCDESTROY); we are on the UI thread.
         unsafe {
+            (*state).capture_modifiers.apply(key_down, kbd.vkCode);
+            let decision =
+                decide_capture(key_down, kbd.vkCode, (*state).capture_modifiers.modifiers());
             match decision {
                 CaptureDecision::KeepCapturing => {}
                 CaptureDecision::Cancel => end_capture_restore(&mut *state),
@@ -1471,6 +1526,7 @@ fn begin_capture(state: &mut SettingsWindowState, row: usize) {
             return;
         }
     };
+    state.capture_modifiers = held_modifiers_snapshot();
     state.capture_hook = Some(hook);
     state.capture_row = Some(row);
     set_text(state.gesture_edits[row], "press keys\u{2026}"); // "press keys…"
@@ -1622,30 +1678,24 @@ fn is_modifier_vk(vk: u32) -> bool {
     .contains(&(vk as u16))
 }
 
-/// Snapshot the physically-held modifiers via GetAsyncKeyState. Called from
-/// the LL hook callback, which runs on this (the installing) thread; Win is
-/// sampled through the VK_LWIN/VK_RWIN pair.
-///
-/// Why not GetKeyState: per MSDN, GetKeyState "retrieves the status of the
-/// specified virtual key" from the calling thread's MESSAGE QUEUE, which can
-/// lag reality for keys this very LL hook swallowed — the hook eats the event
-/// before it is posted to any queue, so a physically held Win/Ctrl key could
-/// read as UP and a chord like `Win+F` would bind as a plain `F`.
-/// GetAsyncKeyState instead reports "whether a key is up or down AT THE TIME
-/// the function is called" — the physical state right now, which is exactly
-/// what a chord capture needs. Its documented caveat (the result can be stale
-/// for the key currently being processed) does not apply here: only MODIFIERS
-/// are sampled — the captured key itself arrives separately as the hook's
-/// `KBDLLHOOKSTRUCT::vkCode`, never through this function.
-fn current_modifiers() -> Modifiers {
+/// Snapshot the physically-held modifiers via GetAsyncKeyState, seeding the
+/// capture's [`HeldModifiers`] when a capture arms. Called on the UI thread
+/// OUTSIDE the hook callback, where the async key state is accurate (per
+/// MSDN it cannot be sampled from inside a `WH_KEYBOARD_LL` callback); it
+/// covers modifiers already held before the hook was installed.
+fn held_modifiers_snapshot() -> HeldModifiers {
     // SAFETY: GetAsyncKeyState is safe to call for any VK on any thread.
     unsafe {
-        modifiers_from_key_state(
-            GetAsyncKeyState(VK_CONTROL.0 as i32) < 0,
-            GetAsyncKeyState(VK_MENU.0 as i32) < 0,
-            GetAsyncKeyState(VK_SHIFT.0 as i32) < 0,
-            GetAsyncKeyState(VK_LWIN.0 as i32) < 0 || GetAsyncKeyState(VK_RWIN.0 as i32) < 0,
-        )
+        HeldModifiers {
+            lctrl: GetAsyncKeyState(VK_LCONTROL.0 as i32) < 0,
+            rctrl: GetAsyncKeyState(VK_RCONTROL.0 as i32) < 0,
+            lalt: GetAsyncKeyState(VK_LMENU.0 as i32) < 0,
+            ralt: GetAsyncKeyState(VK_RMENU.0 as i32) < 0,
+            lshift: GetAsyncKeyState(VK_LSHIFT.0 as i32) < 0,
+            rshift: GetAsyncKeyState(VK_RSHIFT.0 as i32) < 0,
+            lwin: GetAsyncKeyState(VK_LWIN.0 as i32) < 0,
+            rwin: GetAsyncKeyState(VK_RWIN.0 as i32) < 0,
+        }
     }
 }
 
@@ -2128,6 +2178,104 @@ mod tests {
         assert_eq!(
             modifiers_from_key_state(true, false, false, true),
             Modifiers::CTRL | Modifiers::WIN
+        );
+    }
+
+    // --- HeldModifiers (the capture hook's own key-state tracking) ----------
+
+    #[test]
+    fn held_modifiers_press_and_release_each_modifier() {
+        for (down_vk, up_vk, expected) in [
+            (VK_LSHIFT.0, VK_RSHIFT.0, Modifiers::SHIFT),
+            (VK_LCONTROL.0, VK_RCONTROL.0, Modifiers::CTRL),
+            (VK_LMENU.0, VK_RMENU.0, Modifiers::ALT),
+            (VK_LWIN.0, VK_RWIN.0, Modifiers::WIN),
+        ] {
+            for vk in [down_vk, up_vk] {
+                let mut held = HeldModifiers::default();
+                assert_eq!(held.modifiers(), Modifiers::NONE);
+                held.apply(true, vk as u32);
+                assert_eq!(held.modifiers(), expected, "press of vk {vk:#04X}");
+                held.apply(false, vk as u32);
+                assert_eq!(held.modifiers(), Modifiers::NONE, "release of vk {vk:#04X}");
+            }
+        }
+    }
+
+    #[test]
+    fn held_modifiers_track_left_and_right_independently() {
+        // Both sides down, one side up: the family flag must stay set.
+        let mut held = HeldModifiers::default();
+        held.apply(true, VK_LCONTROL.0 as u32);
+        held.apply(true, VK_RCONTROL.0 as u32);
+        held.apply(false, VK_LCONTROL.0 as u32);
+        assert_eq!(held.modifiers(), Modifiers::CTRL);
+        held.apply(false, VK_RCONTROL.0 as u32);
+        assert_eq!(held.modifiers(), Modifiers::NONE);
+    }
+
+    #[test]
+    fn held_modifiers_accept_generic_vks_balanced() {
+        // Synthetic input may use the side-less codes; down/up pairs stay
+        // balanced by folding them into the left side.
+        for (vk, expected) in [
+            (VK_SHIFT.0, Modifiers::SHIFT),
+            (VK_CONTROL.0, Modifiers::CTRL),
+            (VK_MENU.0, Modifiers::ALT),
+        ] {
+            let mut held = HeldModifiers::default();
+            held.apply(true, vk as u32);
+            assert_eq!(held.modifiers(), expected, "press of vk {vk:#04X}");
+            held.apply(false, vk as u32);
+            assert_eq!(held.modifiers(), Modifiers::NONE, "release of vk {vk:#04X}");
+        }
+    }
+
+    #[test]
+    fn held_modifiers_ignore_non_modifier_vks() {
+        let mut held = HeldModifiers::default();
+        held.apply(true, 0x46); // 'F'
+        held.apply(true, 0x1B); // Esc
+        held.apply(false, 0x46);
+        assert_eq!(held.modifiers(), Modifiers::NONE);
+    }
+
+    #[test]
+    fn tracked_modifiers_build_chords_for_decide_capture() {
+        // The hook's event order: modifiers down, then the key. The tracker
+        // snapshot at key-down time is the chord's modifier set.
+        let mut held = HeldModifiers::default();
+        held.apply(true, VK_LCONTROL.0 as u32);
+        held.apply(true, VK_LWIN.0 as u32);
+        assert_eq!(
+            decide_capture(true, 0x46, held.modifiers()),
+            CaptureDecision::Bind(gesture(Modifiers::CTRL | Modifiers::WIN, 0x46))
+        );
+        // Releasing a modifier before the key drops it from the chord.
+        held.apply(false, VK_LWIN.0 as u32);
+        assert_eq!(
+            decide_capture(true, 0x46, held.modifiers()),
+            CaptureDecision::Bind(gesture(Modifiers::CTRL, 0x46))
+        );
+        // Modifier key events themselves still never bind.
+        assert_eq!(
+            decide_capture(true, VK_LSHIFT.0 as u32, held.modifiers()),
+            CaptureDecision::KeepCapturing
+        );
+    }
+
+    #[test]
+    fn esc_cancels_only_when_no_modifier_is_tracked() {
+        let mut held = HeldModifiers::default();
+        held.apply(true, VK_RSHIFT.0 as u32);
+        assert_eq!(
+            decide_capture(true, 0x1B, held.modifiers()),
+            CaptureDecision::Bind(gesture(Modifiers::SHIFT, 0x1B))
+        );
+        held.apply(false, VK_RSHIFT.0 as u32);
+        assert_eq!(
+            decide_capture(true, 0x1B, held.modifiers()),
+            CaptureDecision::Cancel
         );
     }
 
