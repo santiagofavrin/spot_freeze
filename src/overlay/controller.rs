@@ -140,7 +140,9 @@ struct FreezeState {
     settings: AppSettings,
     /// Pre-capture per-monitor ORIGINALS, stashed while capture mode's
     /// re-frozen (effects-baked) base occupies `originals`; `None` outside
-    /// capture mode.
+    /// capture mode. Invariant: `capture.is_some() == modes.in_capture()` —
+    /// every capture transition (set_mode/add_mode/toggle_mode/unfreeze)
+    /// moves this stash and the mode stack's layer stash together.
     capture: Option<Vec<DibBuffer>>,
 }
 
@@ -156,7 +158,8 @@ pub struct OverlayController {
     /// `Some` while frozen. `None` ⇒ not frozen (all state derived from this,
     /// so a sink-triggered exit can never desync a separate `frozen` flag).
     inner: Rc<RefCell<Option<FreezeState>>>,
-    /// Primary (last-activated) mode kind; reset to Spotlight on every freeze.
+    /// Last-activated mode kind: set by key-driven layer activations and
+    /// reset to Spotlight on every freeze and on Esc from capture mode.
     /// Meaningless while unfrozen (returns the last used kind).
     active: ModeKind,
 }
@@ -297,8 +300,10 @@ impl OverlayController {
     /// re-base). Every other kind is a FULL switch — reset ALL layers to
     /// fresh state (zoom back to 1.0, snip selection cleared, spotlight
     /// radius back to default, cursor re-seeded) and make `kind` the only
-    /// active layer. Full repaint and border flash follow either way.
-    /// No-op when not frozen.
+    /// active layer; switching directly OUT of capture mode this way drops
+    /// the re-frozen base with the mode stack's layer stash, restoring the
+    /// pre-capture originals. Full repaint and border flash follow either
+    /// way. No-op when not frozen.
     pub fn set_mode(&mut self, kind: ModeKind, services: &dyn PlatformServices) {
         let mut slot = self.inner.borrow_mut();
         let Some(state) = slot.as_mut() else {
@@ -306,8 +311,15 @@ impl OverlayController {
         };
         // The re-base composes the CURRENT layers, before the stack stashes
         // them for capture mode.
-        if kind == ModeKind::Snip && !state.modes.in_capture() {
-            rebase_freeze(state);
+        if kind == ModeKind::Snip {
+            if !state.modes.in_capture() {
+                rebase_freeze(state);
+            }
+        } else if let Some(pre) = state.capture.take() {
+            // A full switch OUT of capture mode: the stack drops its layer
+            // stash below, so the pre-capture originals go back with it —
+            // the two capture stashes always move together.
+            state.originals = pre;
         }
         // Layer parameters come from the freeze-time snapshot; live settings
         // edits therefore apply on the NEXT freeze, per the freeze contract.
@@ -320,9 +332,11 @@ impl OverlayController {
         flash_border(state, Self::flash_count(kind));
     }
 
-    /// SHIFT+mode key: ADD `kind`'s layer (fresh state) WITHOUT resetting the
-    /// existing layers, make it the primary mode, full repaint + border
-    /// flash. No-op when the layer is already active or when not frozen.
+    /// ADD `kind`'s layer WITHOUT resetting the existing ones — the zoom-hold
+    /// layer resumes at the last-used factor. `Snip` is capture mode, not an
+    /// additive layer: entering it RE-BASES the freeze exactly like
+    /// [`set_mode`](Self::set_mode). Full repaint + border flash. No-op when
+    /// the layer is already active or when not frozen.
     pub fn add_mode(&mut self, kind: ModeKind, services: &dyn PlatformServices) {
         let mut slot = self.inner.borrow_mut();
         let Some(state) = slot.as_mut() else {
@@ -330,6 +344,11 @@ impl OverlayController {
         };
         if state.modes.is_active(kind) {
             return; // adding an active layer is a no-op: no reset, no flash
+        }
+        // Capture entry re-bases here too: the pixel stash must move in
+        // lockstep with the layer stash the stack is about to take.
+        if kind == ModeKind::Snip {
+            rebase_freeze(state);
         }
         state.modes.add_mode(kind);
         seed_cursor(state, services);
@@ -343,15 +362,26 @@ impl OverlayController {
     /// TOGGLE key (spotlight's `S`, zoom hold's `F`): remove the layer when
     /// active (with no layers left the screen stays frozen but the overlay is
     /// UNVEILED), add it otherwise — the spotlight fresh, the zoom hold at
-    /// the last-used factor. Toggling ON re-seeds the cursor, full-repaints,
-    /// and flashes `flash_count(kind)` times; toggling off only full-repaints
-    /// (no flash). No-op when not frozen.
+    /// the last-used factor. `Snip` toggles capture mode: ON re-bases the
+    /// freeze like [`set_mode`](Self::set_mode), OFF exits capture, restoring
+    /// the pre-capture originals and the stashed layers. Toggling ON re-seeds
+    /// the cursor, full-repaints, and flashes `flash_count(kind)` times;
+    /// toggling off only full-repaints (no flash). No-op when not frozen.
     pub fn toggle_mode(&mut self, kind: ModeKind, services: &dyn PlatformServices) {
         let mut slot = self.inner.borrow_mut();
         let Some(state) = slot.as_mut() else {
             return;
         };
         let activating = !state.modes.is_active(kind);
+        // `Snip` toggles capture mode: ON re-bases the freeze, OFF drops the
+        // re-frozen base — the pixel stash moves with the stack's layer stash.
+        if kind == ModeKind::Snip {
+            if activating {
+                rebase_freeze(state);
+            } else if let Some(pre) = state.capture.take() {
+                state.originals = pre;
+            }
+        }
         state.modes.toggle_mode(kind);
         if activating {
             seed_cursor(state, services);
@@ -371,13 +401,13 @@ impl OverlayController {
     /// [`crate::overlay::modes::ModeEffect`]: for each requested repaint,
     /// re-compose the frame and `present` it.
     ///
-    /// The cancel (Esc), copy (Ctrl+C), mode-switch (plain/Shift), and
-    /// reset-zoom gestures are NOT handled here — the platform shell catches
-    /// them (as global hotkeys on Windows, as overlay key events elsewhere)
-    /// and calls [`unfreeze`](Self::unfreeze),
+    /// The cancel (Esc), copy (Ctrl+C), mode-switch/toggle, and reset-zoom
+    /// gestures are NOT handled here — the platform shell catches them (as
+    /// global hotkeys on Windows, as overlay key events elsewhere) and calls
+    /// [`unfreeze`](Self::unfreeze),
     /// [`snip_copy_and_close`](Self::snip_copy_and_close),
-    /// [`set_mode`](Self::set_mode) / [`add_mode`](Self::add_mode), or
-    /// [`reset_view`](Self::reset_view).
+    /// [`set_mode`](Self::set_mode) / [`add_mode`](Self::add_mode) /
+    /// [`toggle_mode`](Self::toggle_mode), or [`reset_view`](Self::reset_view).
     pub fn handle_overlay_event(&mut self, monitor: usize, event: OverlayEvent) {
         dispatch_event(&self.inner, monitor, event);
     }
@@ -1675,5 +1705,80 @@ mod tests {
         // And it toggles back on normally.
         f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
         assert_ne!(last_present(&f.presents[0]).pixels, unveiled.pixels);
+    }
+
+    #[test]
+    fn set_mode_spotlight_out_of_capture_restores_the_pre_capture_view() {
+        let mut f = freeze_fake(Point::new(16, 16));
+        let pre_capture = last_present(&f.presents[0]); // dimmed, hole at (16,16)
+
+        f.controller.set_mode(ModeKind::Snip, &f.services);
+        f.controller.set_mode(ModeKind::Spotlight, &f.services);
+        assert!(f.controller.is_frozen());
+        assert_eq!(f.controller.active_mode(), ModeKind::Spotlight);
+        assert_eq!(
+            last_present(&f.presents[0]).pixels,
+            pre_capture.pixels,
+            "the re-frozen base is dropped, not composed under a fresh layer"
+        );
+
+        // The pixel stash left with the mode switch: Esc now unfreezes for
+        // real instead of exiting a capture the stack already forgot.
+        f.controller.unfreeze();
+        assert!(!f.controller.is_frozen());
+    }
+
+    #[test]
+    fn add_mode_snip_enters_capture_with_rebase_and_indicator() {
+        let mut f = freeze_fake(Point::new(16, 16));
+        let pre_capture = last_present(&f.presents[0]);
+
+        f.controller.add_mode(ModeKind::Snip, &f.services);
+        assert!(f.controller.is_frozen());
+        let capture_frame = last_present(&f.presents[0]);
+        assert_interior_eq(&capture_frame, &pre_capture, 2);
+        assert_ne!(
+            px(&capture_frame, 0, 0),
+            px(&pre_capture, 0, 0),
+            "the capture indicator marks the re-based session"
+        );
+
+        // Esc exits capture (the session stays frozen); a second Esc
+        // unfreezes for real.
+        f.controller.unfreeze();
+        assert!(f.controller.is_frozen());
+        assert_eq!(
+            last_present(&f.presents[0]).pixels,
+            pre_capture.pixels,
+            "the pre-capture view is restored exactly"
+        );
+        f.controller.unfreeze();
+        assert!(!f.controller.is_frozen());
+    }
+
+    #[test]
+    fn toggle_mode_snip_enters_and_exits_capture() {
+        let mut f = freeze_fake(Point::new(16, 16));
+        let pre_capture = last_present(&f.presents[0]);
+
+        f.controller.toggle_mode(ModeKind::Snip, &f.services);
+        assert!(f.controller.is_frozen());
+        let capture_frame = last_present(&f.presents[0]);
+        assert_ne!(
+            px(&capture_frame, 0, 0),
+            px(&pre_capture, 0, 0),
+            "toggling on enters capture (indicator ring)"
+        );
+
+        f.controller.toggle_mode(ModeKind::Snip, &f.services);
+        assert!(
+            f.controller.is_frozen(),
+            "toggling off exits capture, the session stays frozen"
+        );
+        assert_eq!(
+            last_present(&f.presents[0]).pixels,
+            pre_capture.pixels,
+            "the pre-capture view is restored exactly"
+        );
     }
 }

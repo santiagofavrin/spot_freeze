@@ -140,7 +140,10 @@ pub struct ModeStack {
     /// every time it is toggled off (the "last-used zoom level").
     last_zoom: f32,
     /// Spotlight/zoom layers stashed while capture mode re-bases the freeze;
-    /// `None` outside capture mode.
+    /// `None` outside capture mode. Invariant: `saved.is_some() ==
+    /// snip.is_some()` — the snip layer exists only inside capture mode and
+    /// every transition moves both together; the controller pairs this stash
+    /// with its own pre-capture pixel stash (`FreezeState::capture`).
     saved: Option<SavedLayers>,
 }
 
@@ -215,8 +218,10 @@ impl ModeStack {
     }
 
     /// ADD `kind`'s layer WITHOUT touching the existing ones (the zoom-hold
-    /// layer comes back at the last-used factor). No-op when the layer is
-    /// already active.
+    /// layer comes back at the last-used factor). `Snip` is capture mode, not
+    /// an additive layer: it enters capture, stashing the existing layers
+    /// (see [`ModeStack::enter_capture`]). No-op when the layer is already
+    /// active.
     pub fn add_mode(&mut self, kind: ModeKind) {
         if self.is_active(kind) {
             return;
@@ -229,7 +234,9 @@ impl ModeStack {
     /// factor as the last-used level; re-activating restores it. Toggling the
     /// last spotlight layer off leaves the screen frozen but unveiled;
     /// toggling it back on re-activates with fresh state (radius back to
-    /// default).
+    /// default). `Snip` toggles capture mode: ON enters via
+    /// [`ModeStack::enter_capture`], OFF exits via [`ModeStack::exit_capture`]
+    /// (the stashed layers come back).
     pub fn toggle_mode(&mut self, kind: ModeKind) {
         if self.is_active(kind) {
             match kind {
@@ -239,15 +246,16 @@ impl ModeStack {
                         self.last_zoom = zoom.zoom();
                     }
                 }
-                ModeKind::Snip => self.snip = None,
+                ModeKind::Snip => self.exit_capture(),
             }
             return;
         }
         self.activate(kind);
     }
 
-    /// Activate `kind`'s layer: fresh state for spotlight/snip, the last-used
-    /// factor for the zoom hold.
+    /// Activate `kind`'s layer: fresh state for spotlight, the last-used
+    /// factor for the zoom hold, capture entry for the snip layer (the only
+    /// way a snip layer may come into existence — see the `saved` invariant).
     fn activate(&mut self, kind: ModeKind) {
         match kind {
             ModeKind::Spotlight => {
@@ -264,9 +272,7 @@ impl ModeStack {
                     self.params.zoom_max,
                 ));
             }
-            ModeKind::Snip => {
-                self.snip = Some(SnipMode::new());
-            }
+            ModeKind::Snip => self.enter_capture(),
         }
     }
 
@@ -534,17 +540,17 @@ mod tests {
         stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110
         stack.add_mode(ModeKind::Zoom);
         stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT); // zoom 1.25
-        stack.add_mode(ModeKind::Snip);
+        stack.set_mode(ModeKind::Snip); // capture: spotlight/zoom stashed
         stack.on_left_button_down(0, pt(2, 2));
         stack.on_mouse_move(0, pt(8, 8));
         stack.on_left_button_up(0, pt(8, 8));
         assert!(stack.snip_selection().is_some());
-        assert_zoom_near(&stack, 1.25);
-        assert_eq!(stack.spotlight().unwrap().radius(), 110);
+        assert!(stack.in_capture());
 
         stack.set_mode(ModeKind::Zoom);
         assert!(!stack.is_active(ModeKind::Spotlight), "spotlight dropped");
         assert!(!stack.is_active(ModeKind::Snip), "snip dropped");
+        assert!(!stack.in_capture(), "capture stash dropped");
         assert!(stack.is_active(ModeKind::Zoom));
         assert_eq!(
             stack.zoom().unwrap().zoom(),
@@ -581,10 +587,13 @@ mod tests {
         );
         assert_eq!(stack.zoom().unwrap().zoom(), 1.0, "zoom hold starts at 1.0");
 
+        // Snip is capture mode, not an additive layer: the existing layers
+        // are STASHED (exit_capture restores them), not combined with snip.
         stack.add_mode(ModeKind::Snip);
-        assert!(stack.is_active(ModeKind::Spotlight));
-        assert!(stack.is_active(ModeKind::Zoom));
         assert!(stack.is_active(ModeKind::Snip));
+        assert!(stack.in_capture());
+        assert!(!stack.is_active(ModeKind::Spotlight), "stashed for capture");
+        assert!(!stack.is_active(ModeKind::Zoom), "stashed for capture");
     }
 
     #[test]
@@ -950,6 +959,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn add_mode_snip_enters_capture_and_exit_restores_the_stash() {
+        let mut stack = ModeStack::new(params());
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT); // zoom hold on, 1.25
+
+        stack.add_mode(ModeKind::Snip);
+        assert!(stack.in_capture(), "add_mode(Snip) enters capture mode");
+        assert!(stack.is_active(ModeKind::Snip));
+        assert!(!stack.is_active(ModeKind::Spotlight), "stashed");
+        assert!(!stack.is_active(ModeKind::Zoom), "stashed");
+
+        stack.exit_capture();
+        assert!(!stack.in_capture());
+        assert!(!stack.is_active(ModeKind::Snip));
+        assert_eq!(stack.spotlight().unwrap().radius(), 110, "stash restored");
+        assert_zoom_near(&stack, 1.25);
+    }
+
+    #[test]
+    fn toggle_mode_snip_toggles_capture_in_and_out() {
+        let mut stack = ModeStack::new(params());
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110
+
+        stack.toggle_mode(ModeKind::Snip); // ON: enter capture
+        assert!(stack.in_capture());
+        assert!(stack.is_active(ModeKind::Snip));
+        assert!(!stack.is_active(ModeKind::Spotlight), "stashed");
+
+        stack.toggle_mode(ModeKind::Snip); // OFF: exit capture
+        assert!(!stack.in_capture());
+        assert!(!stack.is_active(ModeKind::Snip));
+        assert_eq!(stack.spotlight().unwrap().radius(), 110, "stash restored");
+    }
+
+    #[test]
+    fn set_mode_out_of_capture_drops_the_stash() {
+        let mut stack = ModeStack::new(params());
+        stack.set_mode(ModeKind::Snip);
+        assert!(stack.in_capture());
+
+        stack.set_mode(ModeKind::Spotlight);
+        assert!(!stack.in_capture(), "a full switch drops the capture stash");
+        assert!(!stack.is_active(ModeKind::Snip));
+        assert!(stack.is_active(ModeKind::Spotlight));
+    }
+
     // ---- render_state / zoom_on ----------------------------------------------
 
     #[test]
@@ -972,22 +1028,20 @@ mod tests {
         stack.add_mode(ModeKind::Zoom); // cursor seeded again below
         stack.seed_cursor(0, pt(30, 40));
         stack.on_wheel(0, pt(30, 40), 120, Modifiers::SHIFT); // zoom 1.25
-        stack.add_mode(ModeKind::Snip);
-        stack.on_left_button_down(0, pt(2, 2));
         stack.on_mouse_move(0, pt(9, 9));
-        stack.on_left_button_up(0, pt(9, 9));
 
         let rs = stack.render_state(0);
-        assert_eq!(rs.spotlight, Some((pt(9, 9), 100)), "cursor followed the drag");
+        assert_eq!(rs.spotlight, Some((pt(9, 9), 100)), "cursor followed the move");
         let (z, focus) = rs.zoom.expect("zoom on monitor 0");
         assert!((z - 1.25).abs() < 1e-6);
         assert_eq!(focus, pt(9, 9));
-        assert_eq!(rs.snip, Some((pt(2, 2), pt(9, 9))));
+        assert_eq!(rs.snip, None);
+        assert!(!rs.capture);
 
         let rs1 = stack.render_state(1);
         assert_eq!(rs1.spotlight, None);
         assert_eq!(rs1.zoom, None);
-        assert_eq!(rs1.snip, None, "selection lives on monitor 0");
+        assert_eq!(rs1.snip, None);
     }
 
     #[test]
