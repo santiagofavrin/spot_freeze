@@ -40,8 +40,9 @@ main() {
   local contents_dir="${app_dir}/Contents"
 
   rm -rf "${app_dir}"
-  mkdir -p "${contents_dir}/MacOS"
+  mkdir -p "${contents_dir}/MacOS" "${contents_dir}/Resources"
   install -m 0755 "${binary_path}" "${contents_dir}/MacOS/${BUNDLE_EXECUTABLE}"
+  install -m 0644 "${script_dir}/AppIcon.icns" "${contents_dir}/Resources/AppIcon.icns"
   sed "s/@VERSION@/${version}/g" "${script_dir}/Info.plist" > "${contents_dir}/Info.plist"
 
   codesign --force --sign - "${app_dir}"
