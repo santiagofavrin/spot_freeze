@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.7.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.6.0...v1.7.0) (2026-07-31)
+
+
+### Features
+
+* new app icon (ico, icns, embed) ([3e04945](https://github.com/santiagofavrin/spotfreeze/commit/3e0494527857248790814e806bf3c3ab8a8b9a93))
+* redesign settings window (Apple style) ([8efb1ba](https://github.com/santiagofavrin/spotfreeze/commit/8efb1ba389a7fa9ce6da0b047f733ab9da7b5bc8))
+* seamless overlay, snip veil, mode legend ([e3b38b9](https://github.com/santiagofavrin/spotfreeze/commit/e3b38b94eab0eb0eee5d295db24dc60060507c84))
+* tray menus and new tray icon motif ([3f7fc32](https://github.com/santiagofavrin/spotfreeze/commit/3f7fc324af086e86eea664f5d6bedee56d088bcd))
+
 ## [1.6.0](https://github.com/santiagofavrin/spot_freeze/compare/v1.5.0...v1.6.0) (2026-07-30)
 
 
