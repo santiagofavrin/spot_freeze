@@ -40,6 +40,8 @@ const KEY_COMMENTS: &[(&str, &str)] = &[
     ("step_factor", "zoom multiplier per wheel notch (must be > 1.0)"),
     ("dim_opacity", "0 = invisible veil, 255 = fully opaque"),
     ("color", "veil color as #RRGGBB hex"),
+    ("snip_dim_opacity", "capture-mode veil: 0 = invisible, 255 = fully opaque"),
+    ("snip_color", "capture-mode veil color as #RRGGBB hex"),
     ("auto_start", "launch at login (Windows/macOS only)"),
 ];
 

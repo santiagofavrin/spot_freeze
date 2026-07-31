@@ -24,12 +24,13 @@
 
 mod common;
 
-use common::{BLACK, buffer_with, darkened_pixel};
+use common::{BLACK, buffer_with, darkened_pixel, dimmed_pixel_with};
 use spotfreeze::capture::DibBuffer;
 use spotfreeze::geometry::{Point, Rect};
 use spotfreeze::overlay::composite::{RenderState, compose_frame, crop_normalized};
-use spotfreeze::overlay::modes::snip::SnipMode;
 use spotfreeze::overlay::modes::SnipSelection;
+use spotfreeze::overlay::modes::snip::SnipMode;
+use spotfreeze::settings::model::Rgb;
 
 /// Coordinate-encoding pattern: pixel (x, y) = [x, y, x^y, 255] (BGRA).
 fn coord_pattern(x: u32, y: u32) -> [u8; 4] {
@@ -251,4 +252,86 @@ fn compose_frame_snip_only_shows_original_inside_dimmed_outside() {
             );
         }
     }
+}
+
+// ---- capture-mode look (rework: snip veil + crisp border) ---------------------
+
+/// The documented snip veil defaults (`overlay.snip_dim_opacity` /
+/// `overlay.snip_color`): much lighter and cooler than the spotlight veil.
+const SNIP_DIM: u8 = 90;
+const SNIP_VEIL: Rgb = Rgb {
+    r: 0x16,
+    g: 0x28,
+    b: 0x3A,
+};
+
+#[test]
+fn snip_veil_defaults_are_lighter_and_a_different_color_than_the_spotlight_veil() {
+    let s = spotfreeze::settings::model::OverlaySettings::default();
+    assert_eq!(s.snip_dim_opacity, SNIP_DIM);
+    assert!(
+        s.snip_dim_opacity <= 100,
+        "much lower opacity than the spotlight veil's {}",
+        s.dim_opacity
+    );
+    assert_eq!(s.snip_color, SNIP_VEIL);
+    assert_ne!(s.snip_color, s.color, "different from the spotlight veil");
+}
+
+#[test]
+fn compose_capture_frame_dims_with_the_snip_veil_and_keeps_the_selection_clear() {
+    // Capture mode: the frame composes the re-frozen base under the SNIP
+    // veil (dim + cool color), not the spotlight veil; the drawn rectangle
+    // stays COMPLETELY CLEAR (the raw base pixels, zero dimming) behind the
+    // two-tone border.
+    let original = buffer_with(40, 30, coord_pattern);
+    let (a, b) = (Point::new(8, 6), Point::new(20, 18));
+    let state = RenderState {
+        zoom: None,
+        spotlight: None,
+        snip: Some((a, b)),
+        capture: true,
+    };
+    let mut out = DibBuffer::new(40, 30);
+    compose_frame(
+        &original,
+        &mut out,
+        Rect::new(0, 0, 40, 30),
+        &state,
+        SNIP_DIM,
+        SNIP_VEIL,
+    );
+
+    // Exterior: dimmed with the SNIP veil (the colored formula), and visibly
+    // different from the spotlight-veil result. (Probes stay 2 px off the
+    // frame edge, clear of the capture indicator ring.)
+    for (x, y) in [(2u32, 2u32), (37, 27), (30, 2), (2, 25)] {
+        assert_eq!(
+            out.pixel(x, y).unwrap(),
+            dimmed_pixel_with(original.pixel(x, y).unwrap(), SNIP_DIM, SNIP_VEIL),
+            "snip veil at ({x}, {y})"
+        );
+        assert_ne!(
+            out.pixel(x, y).unwrap(),
+            darkened_pixel(original.pixel(x, y).unwrap(), 160),
+            "not the spotlight veil at ({x}, {y})"
+        );
+    }
+    // Interior (margin-safe): EXACT base pixels — zero dimming.
+    for y in 8..=15u32 {
+        for x in 10..=17u32 {
+            assert_eq!(
+                out.pixel(x, y).unwrap(),
+                original.pixel(x, y).unwrap(),
+                "clear selection at ({x}, {y})"
+            );
+        }
+    }
+    // The border ring is crisp and two-tone: white OUTER line (over the
+    // veil), black INNER line (over the clear selection).
+    assert_eq!(out.pixel(8, 5).unwrap(), [255, 255, 255, 255], "outer top");
+    assert_eq!(out.pixel(7, 10).unwrap(), [255, 255, 255, 255], "outer left");
+    assert_eq!(out.pixel(8, 6).unwrap(), [0, 0, 0, 255], "inner top-left");
+    assert_eq!(out.pixel(19, 17).unwrap(), [0, 0, 0, 255], "inner bottom-right");
+    assert_eq!(out.pixel(20, 18).unwrap(), [255, 255, 255, 255], "outer bottom-right");
 }

@@ -302,7 +302,7 @@ pub struct RenderState {
     pub snip: Option<(Point, Point)>,
     /// `true` while capture mode is active: a thin accent-colored frame
     /// border is drawn around the whole frame (the persistent capture-mode
-    /// indicator, distinct from the one-off mode-change border flashes).
+    /// indicator).
     pub capture: bool,
 }
 
@@ -319,12 +319,13 @@ pub struct RenderState {
 ///    to the base copied into `out`.
 /// 3. **Spotlight hole**: [`spotlight_hole`] restores the UNDARKENED base
 ///    inside the circle.
-/// 4. **Snip selection**: the interior reveals the undarkened base and a 2 px
-///    border ring (1 px outside + 1 px inside the rect edge) is drawn by
-///    INVERTING the current frame pixels — inversion contrasts with both the
-///    darkened veil and the restored base on any content, needs no settings
-///    color, and matches the layer's dirty-region contract
-///    ([`crate::overlay::modes::snip`]).
+/// 4. **Snip selection**: the interior reveals the undarkened base (COMPLETELY
+///    clear — zero dimming) and a crisp 2 px two-tone border ring (1 px
+///    outside + 1 px inside the rect edge) is drawn: a light outer pixel line
+///    against the dimmed veil and a dark inner pixel line against the clear
+///    selection, so the border reads on ANY content ([`SNIP_BORDER_OUTER`] /
+///    [`SNIP_BORDER_INNER`]). The footprint matches the layer's dirty-region
+///    contract ([`crate::overlay::modes::snip`]).
 /// 5. **Capture-mode indicator**: when `state.capture` is set, a thin
 ///    accent-colored frame border is drawn around the whole frame — the
 ///    PERSISTENT capture-mode affordance, painted LAST so no other stage
@@ -362,19 +363,18 @@ pub fn compose_frame(
         spotlight_hole(out, base, center, radius);
     }
 
-    // 4. Snip selection: interior reveals the undarkened base; the border
-    //    ring inverts whatever the frame currently shows (painted LAST so the
-    //    ring is never overwritten by the other layers).
+    // 4. Snip selection: interior reveals the undarkened base; the two-tone
+    //    border ring is painted over both the veil and the restored interior
+    //    (LAST of the selection stage, so it is never overwritten).
     if let Some((a, b)) = state.snip {
         let rect = Rect::from_points(a, b);
         if !rect.is_empty() {
             restore_rect(out, base, rect);
-            invert_border_ring(out, rect);
+            draw_selection_border(out, rect);
         }
     }
 
-    // 5. Capture-mode indicator: a persistent accent frame border (distinct
-    //    from the controller's one-off white mode-change flashes), painted
+    // 5. Capture-mode indicator: a persistent accent frame border, painted
     //    over everything.
     if state.capture {
         draw_border(out, CAPTURE_INDICATOR_COLOR, CAPTURE_INDICATOR_THICKNESS);
@@ -428,74 +428,75 @@ fn restore_rect(out: &mut DibBuffer, base: &DibBuffer, r: Rect) {
 /// Mirrors the layer's dirty-region contract in `modes::snip`.
 const SNIP_BORDER_OUT: i32 = 1;
 
-/// Invert B/G/R of the pixel span `x0..=x1` on row `y` (alpha untouched);
-/// clipped to the buffer, so out-of-bounds spans are safely ignored.
-fn invert_span(buf: &mut DibBuffer, y: i32, x0: i32, x1: i32) {
-    if y < 0 || y >= buf.height as i32 {
+/// Selection border outer line color (1 px OUTSIDE the rect edge, painted
+/// over the dimmed veil): white — crisp against any darkened content.
+const SNIP_BORDER_OUTER: Rgb = Rgb {
+    r: 0xFF,
+    g: 0xFF,
+    b: 0xFF,
+};
+
+/// Selection border inner line color (1 px INSIDE the rect edge, painted over
+/// the clear selection): black — crisp against any undimmed content.
+const SNIP_BORDER_INNER: Rgb = Rgb { r: 0, g: 0, b: 0 };
+
+/// Set the B/G/R channels of pixel `(x, y)` when in bounds (alpha untouched);
+/// out-of-bounds coordinates are safely ignored.
+fn px_set(buf: &mut DibBuffer, x: i32, y: i32, color: Rgb) {
+    if x < 0 || y < 0 || x >= buf.width as i32 || y >= buf.height as i32 {
         return;
     }
-    let x0 = x0.max(0);
-    let x1 = x1.min(buf.width as i32 - 1);
-    if x0 > x1 {
-        return;
-    }
-    let stride = buf.stride as usize;
-    let row = y as usize * stride;
-    for x in x0..=x1 {
-        let i = row + x as usize * 4;
-        buf.pixels[i] = !buf.pixels[i];
-        buf.pixels[i + 1] = !buf.pixels[i + 1];
-        buf.pixels[i + 2] = !buf.pixels[i + 2];
-    }
+    let i = y as usize * buf.stride as usize + x as usize * 4;
+    buf.pixels[i] = color.b;
+    buf.pixels[i + 1] = color.g;
+    buf.pixels[i + 2] = color.r;
 }
 
-/// Draw the snip selection border as a 2 px ring (1 px outside + 1 px inside
-/// the rect edge) by INVERTING the current frame pixels. `rc` is the
-/// normalized selection rect (buffer-local, unclipped input tolerated).
-fn invert_border_ring(buf: &mut DibBuffer, rc: Rect) {
-    let bw = buf.width as i32;
-    let bh = buf.height as i32;
-    if bw == 0 || bh == 0 {
+/// Draw the snip selection border as a crisp 2 px two-tone ring: the outer
+/// line 1 px OUTSIDE the rect edge in [`SNIP_BORDER_OUTER`] (over the dimmed
+/// veil), the inner line 1 px INSIDE the edge in [`SNIP_BORDER_INNER`] (over
+/// the clear selection). `rc` is the normalized selection rect (buffer-local,
+/// unclipped input tolerated; degenerate rects paint nothing).
+fn draw_selection_border(buf: &mut DibBuffer, rc: Rect) {
+    if buf.width == 0 || buf.height == 0 || rc.is_empty() {
         return;
     }
     let rright = rc.x + rc.width as i32;
     let rbottom = rc.y + rc.height as i32;
-    // Clipped outer-ring bounds, inclusive.
-    let ox0 = (rc.x - SNIP_BORDER_OUT).max(0);
-    let oy0 = (rc.y - SNIP_BORDER_OUT).max(0);
-    let ox1 = (rright + SNIP_BORDER_OUT - 1).min(bw - 1);
-    let oy1 = (rbottom + SNIP_BORDER_OUT - 1).min(bh - 1);
-    if ox0 > ox1 || oy0 > oy1 {
-        return;
+    // Outer ring, 1 px outside the edge (corners included).
+    for x in (rc.x - SNIP_BORDER_OUT)..=(rright - 1 + SNIP_BORDER_OUT) {
+        px_set(buf, x, rc.y - SNIP_BORDER_OUT, SNIP_BORDER_OUTER);
+        px_set(buf, x, rbottom - 1 + SNIP_BORDER_OUT, SNIP_BORDER_OUTER);
     }
-    for y in oy0..=oy1 {
-        // The two edge rows on each side (outer + inner ring) span the full
-        // width; middle rows touch only the two side columns. For 1-px-wide
-        // selections the side columns overlap into a full-width span.
-        if y <= rc.y || y >= rbottom - 1 || rc.width == 1 {
-            invert_span(buf, y, ox0, ox1);
-        } else {
-            invert_span(buf, y, ox0, rc.x);
-            invert_span(buf, y, rright - 1, ox1);
-        }
+    for y in rc.y..rbottom {
+        px_set(buf, rc.x - SNIP_BORDER_OUT, y, SNIP_BORDER_OUTER);
+        px_set(buf, rright - 1 + SNIP_BORDER_OUT, y, SNIP_BORDER_OUTER);
+    }
+    // Inner ring, 1 px inside the edge. On rects thinner than the ring the
+    // lines overlap; painting the inner line last keeps the edge readable.
+    for x in rc.x..rright {
+        px_set(buf, x, rc.y, SNIP_BORDER_INNER);
+        px_set(buf, x, rbottom - 1, SNIP_BORDER_INNER);
+    }
+    for y in (rc.y + 1)..(rbottom - 1) {
+        px_set(buf, rc.x, y, SNIP_BORDER_INNER);
+        px_set(buf, rright - 1, y, SNIP_BORDER_INNER);
     }
 }
 
 /// Capture-mode indicator frame color: accent amber, readable over both the
-/// darkened veil and the undarkened base and distinct from the white
-/// mode-change flash.
+/// dimmed veil and the undarkened base.
 const CAPTURE_INDICATOR_COLOR: Rgb = Rgb {
     r: 0xFF,
     g: 0xA5,
     b: 0x00,
 };
-/// Capture-mode indicator frame thickness in physical pixels (thin — the
-/// one-off mode-change flash is 6 px).
+/// Capture-mode indicator frame thickness in physical pixels.
 const CAPTURE_INDICATOR_THICKNESS: u32 = 2;
 
 /// Draw a solid border ring `thickness` px wide around the frame edge in
-/// `color` (B/G/R channels; alpha untouched) — the mode-change flash frame
-/// painted by the controller on top of a freshly composed frame.
+/// `color` (B/G/R channels; alpha untouched) — the capture-mode indicator
+/// painted on top of a freshly composed frame.
 ///
 /// `thickness` is clamped to the buffer dimensions: an oversized thickness
 /// simply fills the whole frame. `thickness == 0` is a no-op.
@@ -1158,7 +1159,7 @@ mod tests {
     }
 
     #[test]
-    fn compose_snip_shows_base_inside_dimmed_outside_with_inverted_ring() {
+    fn compose_snip_shows_base_inside_dimmed_outside_with_two_tone_ring() {
         let original = make_buf(20, 20, pattern);
         let (a, b) = (Point::new(5, 5), Point::new(12, 10)); // rect x 5..12, y 5..10
         let state = RenderState {
@@ -1170,7 +1171,7 @@ mod tests {
         let mut out = DibBuffer::new(20, 20);
         compose_frame(&original, &mut out, Rect::new(0, 0, 20, 20), &state, 160, BLACK);
 
-        // Deep interior (>= 2 px off every edge): exact original.
+        // Deep interior (>= 2 px off every edge): exact original, zero dimming.
         for y in 7..=7u32 {
             for x in 7..=10u32 {
                 assert_eq!(px(&out, x, y), pattern(x, y), "interior ({x},{y})");
@@ -1179,19 +1180,18 @@ mod tests {
         // Far exterior: dimmed original.
         assert_eq!(px(&out, 0, 0), dimmed(pattern(0, 0), 160, BLACK));
         assert_eq!(px(&out, 19, 19), dimmed(pattern(19, 19), 160, BLACK));
-        // The ring is 1 px OUTSIDE + 1 px INSIDE the rect edge, inverted:
-        // outer-ring pixel (4,5) shows the inverted DIMMED original; inner-ring
-        // pixel (5,6) shows the inverted RESTORED original; one px further
-        // out/in the frame is untouched by the ring.
-        let outer = px(&out, 4, 5);
-        let expect_outer = {
-            let d = dimmed(pattern(4, 5), 160, BLACK);
-            [!d[0], !d[1], !d[2], d[3]]
-        };
-        assert_eq!(outer, expect_outer, "outer ring inverts the dimmed frame");
-        let inner = px(&out, 5, 6);
-        let p56 = pattern(5, 6);
-        assert_eq!(inner, [!p56[0], !p56[1], !p56[2], p56[3]], "inner ring inverts the base");
+        // The ring is 1 px OUTSIDE + 1 px INSIDE the rect edge, two-tone:
+        // the outer line is white (over the dimmed veil), the inner line is
+        // black (over the restored clear selection).
+        let white = [255, 255, 255, 255];
+        let black = [0, 0, 0, 255];
+        for (x, y) in [(4u32, 5u32), (5, 4), (12, 5), (6, 10), (12, 10), (4, 9)] {
+            assert_eq!(px(&out, x, y), white, "outer ring pixel ({x},{y})");
+        }
+        for (x, y) in [(5u32, 5u32), (11, 5), (5, 9), (11, 9), (6, 5), (6, 9)] {
+            assert_eq!(px(&out, x, y), black, "inner ring pixel ({x},{y})");
+        }
+        // One px further out/in the frame is untouched by the ring.
         assert_eq!(px(&out, 6, 6), pattern(6, 6), "just inside the ring: plain base");
         assert_eq!(px(&out, 3, 5), dimmed(pattern(3, 5), 160, BLACK), "beyond the ring");
         // Negative drags normalize identically.
@@ -1224,7 +1224,56 @@ mod tests {
         }
     }
 
-    // ---- draw_border (mode-change flash frame) ----------------------------
+    // ---- draw_selection_border (snip two-tone ring) -------------------------
+
+    #[test]
+    fn selection_border_constants_are_the_spec_values() {
+        // Pinned so an accidental edit of the snip affordance fails loudly.
+        assert_eq!(
+            SNIP_BORDER_OUTER,
+            Rgb {
+                r: 0xFF,
+                g: 0xFF,
+                b: 0xFF
+            }
+        );
+        assert_eq!(SNIP_BORDER_INNER, Rgb { r: 0, g: 0, b: 0 });
+        assert_eq!(SNIP_BORDER_OUT, 1);
+    }
+
+    #[test]
+    fn selection_border_clips_to_the_buffer_edge() {
+        // Selection rect reaching the buffer corner: the outer ring pixels
+        // outside the buffer are clipped, the inner ring still paints.
+        let mut buf = solid(8, 8, [9, 9, 9, 255]);
+        draw_selection_border(&mut buf, Rect::new(0, 0, 4, 4));
+        assert_eq!(px(&buf, 0, 0), [0, 0, 0, 255], "inner corner");
+        assert_eq!(px(&buf, 3, 3), [0, 0, 0, 255], "inner far corner");
+        assert_eq!(px(&buf, 4, 0), [255, 255, 255, 255], "outer right line");
+        assert_eq!(px(&buf, 0, 4), [255, 255, 255, 255], "outer bottom line");
+        assert_eq!(px(&buf, 1, 1), [9, 9, 9, 255], "interior untouched");
+        assert_eq!(px(&buf, 5, 5), [9, 9, 9, 255], "outside untouched");
+    }
+
+    #[test]
+    fn selection_border_thin_rects_and_empty_buffer_are_safe() {
+        let mut buf = solid(8, 8, [9, 9, 9, 255]);
+        // 1-px-wide selection: inner and outer lines overlap, no panic.
+        draw_selection_border(&mut buf, Rect::new(3, 3, 1, 4));
+        assert_eq!(px(&buf, 3, 4), [0, 0, 0, 255], "the single column is the inner line");
+        assert_eq!(px(&buf, 2, 4), [255, 255, 255, 255], "left outer line");
+        assert_eq!(px(&buf, 4, 4), [255, 255, 255, 255], "right outer line");
+        // Empty buffer: no-op, no panic.
+        let mut empty = DibBuffer::default();
+        draw_selection_border(&mut empty, Rect::new(0, 0, 4, 4));
+        assert!(empty.pixels.is_empty());
+        // Degenerate rect: paints nothing.
+        let mut buf2 = solid(4, 4, [7, 7, 7, 255]);
+        draw_selection_border(&mut buf2, Rect::new(1, 1, 0, 3));
+        assert_eq!(buf2, solid(4, 4, [7, 7, 7, 255]));
+    }
+
+    // ---- draw_border (capture indicator frame) ----------------------------
 
     #[test]
     fn draw_border_paints_a_solid_ring_and_keeps_alpha() {
@@ -1327,7 +1376,7 @@ mod tests {
         assert_eq!(px(&out, 0, 0), dimmed(pattern(0, 0), 160, BLACK));
 
         // The indicator overwrites every earlier stage at the frame edge —
-        // here a snip selection reaching the corner, whose inverted ring would
+        // here a snip selection reaching the corner, whose border ring would
         // otherwise own those pixels.
         let state = RenderState {
             snip: Some((Point::new(0, 0), Point::new(5, 5))),

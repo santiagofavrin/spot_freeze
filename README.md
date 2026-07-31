@@ -29,17 +29,20 @@ re-composited from reusable buffers — never a full repaint from scratch.
   that moment (spotlight and/or zoom) baked in, then drag a rectangle and
   copy the *effected* pixels to the clipboard (see *Copying screenshots*
   below). A persistent accent frame border marks capture mode.
-- **Border flash feedback** — every mode change flashes the screen border so
-  you always know which mode you just entered.
-- **Customizable overlay** — set the dim-veil color and opacity.
+- **Seamless, animated transitions** — freezing and mode changes crossfade
+  with a quick ease-out animation (200 ms); no flashes, no abrupt cuts.
+- **On-screen legend** — while frozen, a small pill at the bottom of each
+  monitor shows the modes as tabs with the active one highlighted, labelled
+  with the hotkeys that reach them.
+- **Customizable overlay** — set the dim-veil color and opacity, plus a
+  separate, lighter veil color and opacity for capture mode.
 - **Every hotkey is rebindable**, with conflict validation. On Windows the
   built-in settings window captures whatever you press — including `Win`+key
   combinations; on Linux/macOS you edit the binding strings in `spotfreeze.jsonc`
   (same gesture syntax, e.g. `Win+F` or `Ctrl+Alt+F`).
-- **Tray-based** — no window until you ask for one. On Windows, left-click the
-  tray icon for settings and right-click for the Settings/Exit menu; on Linux
-  the tray menu offers *Edit settings*, *Reload settings*, and *Exit*; on macOS
-  *Edit Settings…*, *Reload Settings*, and *Exit SpotFreeze*.
+- **Tray-based** — no window until you ask for one. Click the tray icon with
+  either mouse button for the menu: *Spotlight* and *Screenshot* (one-click
+  activation), *Reload Settings*, *Settings…*, and *Exit*.
 - **Human-friendly settings** — a commented JSONC file (see *Settings* for the
   per-OS location); malformed files never crash the app (it falls back to
   defaults).
@@ -75,10 +78,10 @@ screen is frozen.
 | Action | Default | Scope |
 | --- | --- | --- |
 | Toggle screen freeze | `Win+F` | Global — works from any app (in capture mode it backs out of capture first, like `Esc`) |
-| Spotlight toggle | `S` | While frozen — off = screen stays frozen but CLEAR (no dim), on = spotlight back (1 border flash) |
-| Capture mode | `C` | While frozen — re-freezes with the current effects baked in (3 border flashes + a persistent accent frame) |
-| Zoom hold toggle | `F` | While frozen — applies the last-used zoom level as a layer over spotlight on/off (2 border flashes); toggle off to drop it |
-| Zoom in / out (from anywhere) | `Shift` + mouse wheel | While frozen — adds the zoom layer on the spot if it isn't active yet (no border flash) |
+| Spotlight toggle | `S` | While frozen — off = screen stays frozen but CLEAR (no dim), on = spotlight back (animated) |
+| Capture mode | `C` | While frozen — re-freezes with the current effects baked in (persistent accent frame + lighter veil) |
+| Zoom hold toggle | `F` | While frozen — applies the last-used zoom level as a layer over spotlight on/off; toggle off to drop it |
+| Zoom in / out (from anywhere) | `Shift` + mouse wheel | While frozen — adds the zoom layer on the spot if it isn't active yet |
 | Zoom in / out (zoom hold active) | Mouse wheel | While frozen, whenever the zoom layer is on |
 | Resize spotlight circle | `Ctrl` + mouse wheel | While spotlight is active |
 | Reset zoom to 1.0× | `0` | While zoom is active |
@@ -86,16 +89,17 @@ screen is frozen.
 | Unfreeze / exit capture | `Esc` | While frozen — see below |
 
 Other defaults: spotlight radius `150` px, dim-veil opacity `160` (0–255),
-dim-veil color black (`#000000`), zoom step `1.25` (min `1.0`, max `16.0`).
+dim-veil color black (`#000000`), capture-veil opacity `90`, capture-veil
+color dark slate (`#16283A`), zoom step `1.25` (min `1.0`, max `16.0`).
 
 Freezing starts with the spotlight on. `Esc` unfreezes from spotlight mode
 (on or off); in capture mode it exits capture instead — back to the
 pre-capture frozen view with its spotlight/zoom state restored (the capture
 re-freeze is dropped). `Ctrl+C` copies and closes from anywhere.
 
-Freezing and unfreezing play a quick fade (160 ms, never more than 180 ms)
-instead of an abrupt cut: the frozen view fades in over the live screen on
-freeze and back out when the freeze fully ends. On Wayland the unfreeze fade
+Freezing and unfreezing play a quick ease-out animation (200 ms) instead of
+an abrupt cut: the dim veil and spotlight circle ramp in together over the
+live screen, and the exit is the exact time-reverse. On Wayland the unfreeze
 blends back to the freeze-time capture, so anything that changed on screen
 while frozen reappears with a small pop as the overlay closes. Exiting
 capture mode and copying with `Ctrl+C` stay instant — no transition there.
@@ -118,16 +122,17 @@ Spotlight and zoom are **layers**; capture is the only real mode switch:
 
 The wheel follows the layers: `Ctrl`+wheel resizes the spotlight whenever it
 is active, `Shift`+wheel zooms from anywhere (implicitly adding the zoom
-layer — without a border flash — when it isn't active yet), and a plain
-wheel zooms whenever the zoom layer is on.
+layer when it isn't active yet), and a plain wheel zooms whenever the zoom
+layer is on.
 
-**Border flash feedback:** every activation flashes the screen border a
-number of times that identifies it — **1 flash** for Spotlight (`S`), **2**
-for Zoom hold (`F`), **3** for Capture (`C`); deactivating a layer does not
-flash. Freezing the screen starts with the spotlight on, so you also see a
-single flash right at freeze time. While capture mode is active, a thin
-accent-colored frame border stays on screen (separate from these one-off
-flashes).
+**Transitions and legend:** mode changes are seamless — no border flashes, no
+white pops. Entering and leaving spotlight plays a 200 ms ease-out animation
+(the veil fades while the spotlight circle grows into place). While frozen, a
+small pill at the bottom-center of each monitor shows the modes as tabs —
+**SPOTLIGHT**, **ZOOM**, **SNIP** — with the active one(s) highlighted and
+the hotkey that reaches each. While capture mode is active, a thin
+accent-colored frame border stays on screen, the veil switches to a lighter,
+distinctly tinted shade, and the dragged selection stays completely clear.
 
 ## Install
 

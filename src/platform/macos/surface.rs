@@ -21,8 +21,9 @@
 //! `width*height*4` BGRA buffer owned by the content view, invalidates the
 //! matching view rect, and calls `displayIfNeeded()` so the draw happens
 //! SYNCHRONOUSLY. The synchronous part is load-bearing: the controller's
-//! border flash sleeps the main thread between presents, so a deferred
-//! AppKit display cycle would collapse the flash into a single frame.
+//! transition drivers sleep the main thread between presents, so a deferred
+//! AppKit display cycle would collapse the animation into fewer, coarser
+//! frames.
 //! `drawRect:` wraps the store in a zero-copy `CGImage` (a `CGDataProvider`
 //! over the live buffer — no pixel copy on the draw path) clipped to the
 //! dirty rect. The view keeps the default (unflipped, y-up) coordinate

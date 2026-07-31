@@ -204,6 +204,13 @@ pub struct OverlaySettings {
     pub dim_opacity: u8,
     /// Color of the veil. Default: black (`#000000`).
     pub color: Rgb,
+    /// Opacity of the dim veil in capture (snip) mode — much lower than the
+    /// spotlight veil, so the screen stays readable while picking a region.
+    /// 0 = invisible veil, 255 = fully opaque. Default: 90.
+    pub snip_dim_opacity: u8,
+    /// Color of the capture (snip) veil — a cool dark slate, visibly distinct
+    /// from the spotlight veil. Default: `#16283A`.
+    pub snip_color: Rgb,
 }
 
 impl Default for OverlaySettings {
@@ -211,6 +218,12 @@ impl Default for OverlaySettings {
         Self {
             dim_opacity: 160,
             color: Rgb::BLACK,
+            snip_dim_opacity: 90,
+            snip_color: Rgb {
+                r: 0x16,
+                g: 0x28,
+                b: 0x3A,
+            },
         }
     }
 }
@@ -258,6 +271,25 @@ mod tests {
         assert_eq!(d.dim_opacity, 160);
         assert_eq!(d.color, Rgb { r: 0, g: 0, b: 0 });
         assert_eq!(d.color, Rgb::BLACK);
+    }
+
+    #[test]
+    fn snip_veil_defaults_are_lighter_and_cooler_than_the_spotlight_veil() {
+        let d = OverlaySettings::default();
+        assert_eq!(d.snip_dim_opacity, 90);
+        assert!(
+            d.snip_dim_opacity < d.dim_opacity,
+            "the snip veil is much lighter than the spotlight veil"
+        );
+        assert_eq!(
+            d.snip_color,
+            Rgb {
+                r: 0x16,
+                g: 0x28,
+                b: 0x3A
+            }
+        );
+        assert_ne!(d.snip_color, d.color, "distinct from the spotlight veil");
     }
 
     #[test]

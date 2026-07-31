@@ -1,45 +1,77 @@
-//! PURE freeze/unfreeze fade: the step schedule (alpha over elapsed time), the
-//! easing, the duration/step caps, and the clock the controller's fade driver
-//! runs on. No pixel math here (the blend lives in
-//! [`crate::overlay::composite::blend_frames`]) and no OS calls — the
-//! controller turns these decisions into `set_alpha` calls or blended
-//! presents.
+//! PURE transition schedule: the step grid (progress over elapsed time), the
+//! easing, the spotlight radius curve, the duration/step caps, and the clock
+//! the controller's transition drivers run on. No pixel math here (the blend
+//! lives in [`crate::overlay::composite::blend_frames`]) and no OS calls — the
+//! controller turns these decisions into `set_alpha` calls, blended presents,
+//! or re-composed frames.
+//!
+//! The schedule drives every overlay transition: the freeze/unfreeze fades
+//! AND the in-session spotlight enter/exit animations (the `S` toggle). A
+//! single eased progress byte (`alpha`, 0..=255) parameterizes all of them:
+//! the veil strength, the whole-window alpha, and the spotlight circle scale
+//! all read the same value, so one step grid drives the whole choreography.
+//!
+//! # Motion design (researched: Material motion, Apple HIG)
+//!
+//! - **Easing**: ease-out cubic (`1 - (1-t)^3`) for entries — Material's
+//!   *deceleration curve*: "elements enter the screen at full velocity and
+//!   slowly decelerate to a resting point", scaling size up to 100% and
+//!   opacity to 100% in the same curve. Exits play the exact time-reverse
+//!   (Material's *acceleration curve*: slow start, full-velocity exit) —
+//!   `fade_alpha(t, Out) == fade_alpha(DURATION - t, In)` by construction.
+//! - **Duration**: [`FADE_DURATION_MS`] = 200 ms. Material places mobile
+//!   transitions at 200-300 ms (entering ~225 ms), Apple HIG asks for
+//!   animations of "a few tenths of a second" at most, and micro-transition
+//!   guidance clusters at 100-250 ms. The veil fade and the circle expansion
+//!   share the 200 ms grid.
+//! - **Spotlight circle**: enters at 60% of its settled radius and eases out
+//!   to 100% ([`spotlight_radius_scale`]); exits shrink it back. Starting at
+//!   60% (not 0%) keeps the hole readable from the first visible frame —
+//!   a from-zero circle reads as a dot popping, not a spotlight opening.
 //!
 //! # Caps (product constraint: snappiness first)
 //!
-//! - Total duration is [`FADE_DURATION_MS`] (<= 180 ms, hard cap): the fade
-//!   must never hold the freeze hostage. The driver ends EVERY fade with the
-//!   exact endpoint (fully opaque after freeze, fully transparent / original
-//!   pixels before teardown), so a fade can never leave a half-shown overlay.
-//! - [`FADE_STEPS`] steps: on Wayland each step is a FULL-FRAME pixel blend
-//!   through the normal present path, so the step count doubles as the blend
+//! - Total duration never exceeds 240 ms (hard cap; the 200 ms schedule keeps
+//!   margin under it): a transition must never hold the freeze hostage. The
+//!   driver ends EVERY transition with the exact endpoint (settled frame /
+//!   fully transparent / original pixels), so one can never leave a
+//!   half-shown overlay. (The earlier 180 ms cap pre-dated the radius
+//!   choreography; 200 ms is the smallest grid that fits an eased veil +
+//!   circle ramp without visible stepping, and stays within the revised cap.)
+//! - [`FADE_STEPS`] steps: on Wayland each step is a FULL-FRAME present
+//!   through the normal present path, so the step count doubles as the frame
 //!   cap the present path can absorb; constant-alpha platforms (Windows,
-//!   macOS) pay only a per-window attribute update per step.
-//! - Missed steps are SKIPPED, never queued: alpha is a pure function of
+//!   macOS) pay a per-window attribute update plus one present per step.
+//! - Missed steps are SKIPPED, never queued: progress is a pure function of
 //!   elapsed time, so a slow step (compositor pacing, a busy surface) just
-//!   lands on the alpha for the CURRENT time — the fade degrades to fewer,
-//!   larger steps instead of stalling past the cap.
+//!   lands on the value for the CURRENT time — the transition degrades to
+//!   fewer, larger steps instead of stalling past the cap.
 //!
 //! # Platform paths
 //!
 //! Constant-alpha surfaces (Windows, macOS) fade via `set_alpha` — a true
-//! crossfade against the LIVE desktop underneath. Surfaces without
-//! per-surface alpha (Wayland layer-shell shm) blend pixels between the
-//! freeze-time capture and the composed frame instead: fade-IN starts on the
+//! crossfade against the LIVE desktop underneath — over frames re-composed
+//! with the step's circle scale. Surfaces without per-surface alpha (Wayland
+//! layer-shell shm) present re-composed frames whose veil ramps with the step
+//! alpha on entry, and blend pixels toward the freeze-time capture on exit
+//! (a veil ramp cannot crossfade a zoom base away): fade-IN starts on the
 //! just-captured frame (the live screen's current pixels, so the overlay
 //! appears seamlessly), but fade-OUT ends on the FREEZE-TIME capture —
 //! content that changed while frozen reappears with a small pop when the
 //! overlay unmaps. That pop is inherent to blending toward a snapshot; a
 //! true live crossfade would need the per-surface alpha the protocol lacks.
+//! In-session spotlight toggles present re-composed frames on EVERY platform:
+//! a window-alpha ramp there would unveil the live desktop and break the
+//! freeze illusion.
 //!
 //! # Interruption state machine
 //!
 //! States: `Unfrozen` / `Frozen`; transitions `freeze` (fade IN) and
-//! `unfreeze` (fade OUT) are ATOMIC — the fade driver runs synchronously on
-//! the single UI thread exactly like the mode-change border flash, so
-//! mid-fade interruption is impossible by construction. What happens to
-//! input pressed DURING a fade is platform-specific (no state corruption
-//! anywhere — the controller only ever sees settled requests):
+//! `unfreeze` (fade OUT) are ATOMIC — the drivers run synchronously on the
+//! single UI thread exactly like the in-session spotlight toggle animations,
+//! so mid-transition interruption is impossible by construction. What happens
+//! to input pressed DURING a transition is platform-specific (no state
+//! corruption anywhere — the controller only ever sees settled requests):
 //!
 //! - **Freeze toggle during any fade**: QUEUED on every platform (it is the
 //!   always-registered global hotkey — Win32 `WM_HOTKEY`, the macOS Carbon
@@ -62,43 +94,50 @@
 //!   [`crate::overlay::controller::OverlayController::unfreeze`]).
 //!
 //! What IS guaranteed at every boundary, and what the controller tests pin:
-//! the last alpha applied by a fade is always the exact endpoint, and a
-//! later toggle always finds the controller in the matching settled state.
+//! the last progress applied by a transition is always the exact endpoint,
+//! and a later toggle always finds the controller in the matching settled
+//! state.
 
 use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-/// Total fade duration (hard cap: <= 180 ms per the product constraint).
-pub const FADE_DURATION_MS: u64 = 160;
-/// Fade steps per transition; also the full-frame-blend cap on Wayland.
+/// Total transition duration (hard cap: <= 240 ms per the product constraint).
+pub const FADE_DURATION_MS: u64 = 200;
+/// Steps per transition; also the full-frame-present cap on Wayland.
 pub const FADE_STEPS: u64 = 8;
 /// Nominal time between steps (`FADE_DURATION_MS / FADE_STEPS`).
 pub const FADE_STEP_MS: u64 = FADE_DURATION_MS / FADE_STEPS;
 
-/// Which way a fade runs.
+/// Spotlight circle scale at the START of an enter transition, in permille of
+/// the settled radius (exit transitions end on it): 60%.
+pub const SPOTLIGHT_SCALE_MIN_PM: u32 = 600;
+
+/// Which way a transition runs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FadeDirection {
-    /// Freeze: transparent / original pixels -> opaque composed frame.
+    /// Enter (freeze, spotlight toggle-on): progress ramps 0 -> 255.
     In,
-    /// Full unfreeze: opaque composed frame -> transparent / original pixels.
+    /// Exit (full unfreeze, spotlight toggle-off): progress ramps 255 -> 0,
+    /// the exact time-reverse of `In`.
     Out,
 }
 
-/// One driver iteration: apply `alpha` (0 = transparent/original, 255 =
-/// opaque/composed) to every monitor, then wait `wait` before re-sampling the
-/// clock. The endpoint itself is NOT a step — the driver applies it exactly
-/// after the last step (see module docs).
+/// One driver iteration: apply `alpha` (the eased progress byte — 0 =
+/// transparent/original/60% circle, 255 = opaque/composed/settled) to every
+/// monitor, then wait `wait` before re-sampling the clock. The endpoint itself
+/// is NOT a step — the driver applies it exactly after the last step (see
+/// module docs).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FadeStep {
     pub alpha: u8,
     pub wait: Duration,
 }
 
-/// The step schedule at `elapsed` since the fade started; `None` once the
-/// duration is exhausted (the driver then applies the exact endpoint). Alpha
-/// comes straight from [`fade_alpha`] at the CURRENT time, so any number of
-/// missed nominal steps collapses into the next single application.
+/// The step schedule at `elapsed` since the transition started; `None` once
+/// the duration is exhausted (the driver then applies the exact endpoint).
+/// Alpha comes straight from [`fade_alpha`] at the CURRENT time, so any
+/// number of missed nominal steps collapses into the next single application.
 pub fn fade_step(elapsed: Duration, direction: FadeDirection) -> Option<FadeStep> {
     let ms = elapsed.as_millis() as u64;
     if ms >= FADE_DURATION_MS {
@@ -113,31 +152,40 @@ pub fn fade_step(elapsed: Duration, direction: FadeDirection) -> Option<FadeStep
     })
 }
 
-/// Alpha byte at `elapsed_ms` for `direction`: smoothstep-eased, `In` ramps
-/// 0 -> 255, `Out` ramps 255 -> 0 (the mirror — the easing is symmetric, so
-/// `fade_alpha(t, In) + fade_alpha(t, Out) == 255` up to rounding). Elapsed
-/// times past the duration clamp to the endpoint.
+/// Eased progress byte at `elapsed_ms` for `direction`: `In` follows the
+/// ease-out cubic 0 -> 255, `Out` evaluates the SAME curve at the mirrored
+/// time (`(DURATION - elapsed) / DURATION`), so `Out` at time t equals `In`
+/// at time `DURATION - t` bit-for-bit — the exit is the exact time-reverse of
+/// the entry. Elapsed times past the duration clamp to the endpoint.
 pub fn fade_alpha(elapsed_ms: u64, direction: FadeDirection) -> u8 {
-    let t = (elapsed_ms.min(FADE_DURATION_MS)) as f32 / FADE_DURATION_MS as f32;
-    let progress = match direction {
-        FadeDirection::In => t,
-        FadeDirection::Out => 1.0 - t,
-    };
-    (smoothstep(progress) * 255.0).round() as u8
+    let ms = elapsed_ms.min(FADE_DURATION_MS);
+    let t = match direction {
+        FadeDirection::In => ms,
+        FadeDirection::Out => FADE_DURATION_MS - ms,
+    } as f32
+        / FADE_DURATION_MS as f32;
+    (ease_out_cubic(t) * 255.0).round() as u8
 }
 
-/// Smoothstep (`t*t*(3 - 2t)`): ease in AND out, symmetric around t = 0.5 —
-/// a productivity-utility fade, not a bounce. Symmetry keeps the two
-/// directions exact mirrors of each other.
-fn smoothstep(t: f32) -> f32 {
-    t * t * (3.0 - 2.0 * t)
+/// Spotlight radius scale in permille of the settled radius for the eased
+/// progress byte `alpha`: 60% ([`SPOTLIGHT_SCALE_MIN_PM`]) at alpha 0 up to
+/// 100% (1000) at alpha 255, linear in the (already eased) progress.
+pub fn spotlight_radius_scale(alpha: u8) -> u32 {
+    SPOTLIGHT_SCALE_MIN_PM + (u32::from(alpha) * (1000 - SPOTLIGHT_SCALE_MIN_PM) + 127) / 255
 }
 
-/// The fade driver's time source, injected so tests drive the clock instead
-/// of waiting on it (test constraint: no real sleeps). Production uses
-/// [`FadeClock::system`]; controller tests advance a shared cell from the
-/// `sleep` closure, making every fade complete in zero wall-clock time while
-/// still walking the full step schedule.
+/// Ease-out cubic (`1 - (1-t)^3`): full initial velocity decelerating to a
+/// rest — Material's deceleration curve for entering elements, a close
+/// polynomial approximation of `cubic-bezier(0.0, 0.0, 0.2, 1.0)`.
+fn ease_out_cubic(t: f32) -> f32 {
+    1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t)
+}
+
+/// The transition driver's time source, injected so tests drive the clock
+/// instead of waiting on it (test constraint: no real sleeps). Production
+/// uses [`FadeClock::system`]; controller tests advance a shared cell from
+/// the `sleep` closure, making every transition complete in zero wall-clock
+/// time while still walking the full step schedule.
 #[derive(Clone)]
 pub struct FadeClock {
     now: Rc<dyn Fn() -> Duration>,
@@ -157,7 +205,7 @@ impl FadeClock {
     /// Manual clock over a shared cell: `sleep(d)` advances the cell by
     /// exactly `d`, instantly. Nominal-schedule tests step through every
     /// boundary; the cell is shared with the test so it can assert (or jump)
-    /// the fade's idea of time.
+    /// the transition's idea of time.
     pub fn manual(clock: Rc<Cell<Duration>>) -> Self {
         Self {
             now: {
@@ -195,9 +243,30 @@ mod tests {
 
     #[test]
     fn caps_are_within_the_product_budget() {
-        assert!(FADE_DURATION_MS <= 180, "total duration must never exceed 180 ms");
-        assert!(FADE_STEPS <= 8, "Wayland full-frame blends are capped at 8");
+        assert!(
+            FADE_DURATION_MS <= 240,
+            "total duration must never exceed 240 ms"
+        );
+        assert!(FADE_STEPS <= 8, "Wayland full-frame presents are capped at 8");
         assert_eq!(FADE_STEP_MS * FADE_STEPS, FADE_DURATION_MS);
+    }
+
+    // ---- ease_out_cubic ----
+
+    #[test]
+    fn ease_out_cubic_endpoints_and_shape() {
+        assert_eq!(ease_out_cubic(0.0), 0.0);
+        assert_eq!(ease_out_cubic(1.0), 1.0);
+        // Deceleration: most of the distance is covered early.
+        assert!(ease_out_cubic(0.5) > 0.8, "half time covers >80%: {}", ease_out_cubic(0.5));
+        // Monotonically increasing.
+        let mut prev = 0.0;
+        for i in 1..=100 {
+            let t = i as f32 / 100.0;
+            let v = ease_out_cubic(t);
+            assert!(v >= prev, "regressed at {t}");
+            prev = v;
+        }
     }
 
     // ---- fade_alpha ----
@@ -231,18 +300,52 @@ mod tests {
     }
 
     #[test]
-    fn alpha_directions_are_mirrors() {
+    fn alpha_exit_is_the_exact_time_reverse_of_the_entry() {
         for t in 0..=FADE_DURATION_MS {
-            let sum = fade_alpha(t, FadeDirection::In) as i32
-                + fade_alpha(t, FadeDirection::Out) as i32;
-            assert!((sum - 255).abs() <= 1, "mirror mismatch at {t} ms: {sum}");
+            assert_eq!(
+                fade_alpha(t, FadeDirection::Out),
+                fade_alpha(FADE_DURATION_MS - t, FadeDirection::In),
+                "mirror mismatch at {t} ms"
+            );
         }
     }
 
     #[test]
-    fn alpha_midpoint_is_about_half() {
-        let mid = fade_alpha(FADE_DURATION_MS / 2, FadeDirection::In);
-        assert!((mid as i32 - 128).abs() <= 1, "smoothstep midpoint: {mid}");
+    fn alpha_entry_decelerates() {
+        // Ease-out: the first quarter covers more progress than the last.
+        let first = fade_alpha(FADE_DURATION_MS / 4, FadeDirection::In);
+        let last = 255 - fade_alpha(3 * FADE_DURATION_MS / 4, FadeDirection::In);
+        assert!(
+            first > last * 2,
+            "entry must be front-loaded: first quarter {first} vs last {last}"
+        );
+    }
+
+    // ---- spotlight_radius_scale ----
+
+    #[test]
+    fn radius_scale_endpoints_are_exact() {
+        assert_eq!(spotlight_radius_scale(0), SPOTLIGHT_SCALE_MIN_PM);
+        assert_eq!(spotlight_radius_scale(255), 1000);
+    }
+
+    #[test]
+    fn radius_scale_is_monotonic_within_the_60_100_band() {
+        let mut prev = SPOTLIGHT_SCALE_MIN_PM;
+        for a in 1..=255u16 {
+            let s = spotlight_radius_scale(a as u8);
+            assert!(s >= prev, "scale regressed at alpha {a}");
+            assert!((SPOTLIGHT_SCALE_MIN_PM..=1000).contains(&s));
+            prev = s;
+        }
+    }
+
+    #[test]
+    fn radius_scale_midpoint_is_about_80_percent() {
+        // Eased midpoint alpha (~223 at half time) puts the circle near 95%;
+        // the linear-in-alpha midpoint (128) sits near 80%.
+        let s = spotlight_radius_scale(128);
+        assert!((795..=810).contains(&s), "alpha 128 scale: {s}");
     }
 
     // ---- fade_step ----
@@ -269,8 +372,8 @@ mod tests {
         // on the next grid boundary — a late step is skipped TO, not queued.
         let step = fade_step(ms(45), FadeDirection::In).expect("inside the duration");
         assert_eq!(step.alpha, fade_alpha(45, FadeDirection::In));
-        assert_eq!(step.wait, ms(15)); // next boundary: 60
-        let step = fade_step(ms(159), FadeDirection::Out).expect("still inside");
+        assert_eq!(step.wait, ms(5)); // next boundary: 50
+        let step = fade_step(ms(FADE_DURATION_MS - 1), FadeDirection::Out).expect("still inside");
         assert_eq!(step.wait, ms(1));
     }
 
@@ -289,7 +392,7 @@ mod tests {
         let mut t = 0u64;
         while let Some(step) = fade_step(ms(t), FadeDirection::In) {
             seen.push(step.alpha);
-            t += 45; // the surface/compositor stalled: two nominal steps gone
+            t += 45; // the surface/compositor stalled: nominal steps missed
         }
         assert_eq!(
             seen,
@@ -298,6 +401,7 @@ mod tests {
                 fade_alpha(45, FadeDirection::In),
                 fade_alpha(90, FadeDirection::In),
                 fade_alpha(135, FadeDirection::In),
+                fade_alpha(180, FadeDirection::In),
             ]
         );
         assert!(t >= FADE_DURATION_MS);

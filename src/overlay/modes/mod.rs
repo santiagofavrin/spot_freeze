@@ -29,7 +29,7 @@
 //!     sub-notch accumulator;
 //!   * the configured zoom-modifier chord (default Shift+wheel) zooms from ANY
 //!     state — IMPLICITLY ACTIVATING the zoom-hold layer at the last-used
-//!     factor (additive, no border flash) when it isn't active yet;
+//!     factor (additive, no transition animation) when it isn't active yet;
 //!   * the PLAIN wheel (no modifiers) zooms whenever the zoom layer is active;
 //!   * both may respond to the same event (their effects merge).
 //! - **Mouse move** feeds every active cursor-tracking layer (spotlight hole
@@ -184,6 +184,16 @@ impl ModeStack {
     /// frozen but the overlay is unveiled (the controller dims nothing).
     pub fn any_active(&self) -> bool {
         self.spotlight.is_some() || self.zoom.is_some() || self.snip.is_some()
+    }
+
+    /// Per-layer active flags in the legend's tab order (Spotlight, Zoom,
+    /// Snip) — the controller paints the mode legend with them.
+    pub fn layers_active(&self) -> [bool; 3] {
+        [
+            self.spotlight.is_some(),
+            self.zoom.is_some(),
+            self.snip.is_some(),
+        ]
     }
 
     /// Read access to the layers (state inspection, tests, copy planning).
@@ -365,11 +375,10 @@ impl ModeStack {
         // Implicit activation: the zoom-modifier chord adds the zoom-hold
         // layer when it isn't active yet — product spec: the chord zooms
         // straight out of the pristine spotlight-only state. This is ADDITIVE
-        // (existing layers untouched) and deliberately does NOT flash the
-        // border: the flash lives in the controller's key-driven toggle path,
-        // and flashing on every scroll would be wrong. No cursor seeding
-        // needed here — ZoomMode::on_wheel makes the wheel position the new
-        // focus itself.
+        // (existing layers untouched) and plays no transition animation: the
+        // zoom arrives with the scroll itself, one frame per wheel event.
+        // No cursor seeding needed here — ZoomMode::on_wheel makes the wheel
+        // position the new focus itself.
         if zoom_chord && self.zoom.is_none() {
             self.add_mode(ModeKind::Zoom);
         }
@@ -708,8 +717,8 @@ mod tests {
         // Pristine spotlight-only + the zoom-modifier chord (default
         // Shift+wheel) ADDITIVELY activates the zoom-hold layer (at the
         // last-used factor, 1.0 here) and zooms in the same event — no `F`
-        // press needed first. (No border flash is involved at this level:
-        // flashing lives in the controller's key-driven activation path.)
+        // press needed first. (No transition animation is involved at this
+        // level: animations live in the controller's key-driven paths.)
         let mut stack = ModeStack::new(params());
         stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110 first
         assert!(!stack.is_active(ModeKind::Zoom), "pristine: no zoom layer");

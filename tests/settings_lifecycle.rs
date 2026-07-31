@@ -24,6 +24,19 @@ fn documented_default_values() {
     assert_eq!(s.zoom.min, 1.0, "zoom.min");
     assert_eq!(s.zoom.max, 16.0, "zoom.max");
     assert_eq!(s.overlay.dim_opacity, 160, "overlay.dim_opacity");
+    assert_eq!(
+        s.overlay.snip_dim_opacity, 90,
+        "overlay.snip_dim_opacity (capture veil, much lighter)"
+    );
+    assert_eq!(
+        s.overlay.snip_color,
+        Rgb {
+            r: 0x16,
+            g: 0x28,
+            b: 0x3A
+        },
+        "overlay.snip_color (cool dark slate)"
+    );
     // Rework additions (composable modes update, SHARED API SPEC):
     assert_eq!(
         s.overlay.color,

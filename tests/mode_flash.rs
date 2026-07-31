@@ -1,54 +1,177 @@
-//! Scenario (rework-e): mode-change border flash counts.
+//! Scenario (rework): mode changes are SEAMLESS — the white border-flash
+//! feedback is gone.
 //!
-//! User feedback: mode changes flash the screen border N times —
-//! Spotlight = 1, Zoom = 2, Snip = 3 (and freeze starts in Spotlight with
-//! its 1 flash).
+//! The pre-rework app flashed a white 6 px border ring 1-3 times on every
+//! key-driven mode activation (S=1, F=2, C=3, freeze=1). That feedback is
+//! REMOVED: activation into spotlight and every other mode change must be
+//! seamless — no flash frames, no white repaint pops. What remains:
 //!
-//! SHARED API SPEC: the controller gains `flash_count(ModeKind) -> u32`
-//! (pinned as an ASSOCIATED function — pure mapping, no instance state).
+//! - freeze entry and the spotlight toggle run the pure transition schedule
+//!   (src/overlay/fade.rs: 8 steps + 1 settled endpoint, ease-out cubic,
+//!   veil ramp + circle 60%<->100%);
+//! - full mode switches (`set_mode`), capture entry (`C`), and Esc from
+//!   capture repaint exactly ONCE — instant by design;
+//! - NO frame presented on any monitor, at any point of the journey, ever
+//!   carries an entirely white 6 px border band.
 //!
-//! INTEGRATION FLAG (per assignment): if the landed API differs — e.g.
-//! `ModeKind::flash_count(self) -> u32` in `overlay::modes`, or a
-//! `&self` method on the controller — update the import/call form HERE to
-//! match the landed signature (do not weaken the 1/2/3 pins themselves).
+//! Drives the real [`OverlayController`] over the shared in-memory fakes
+//! (tests/common), headless.
 
-use spotfreeze::overlay::controller::OverlayController;
+mod common;
+
+use common::{FakeFreeze, buffer_with, has_white_border_band, monitor_info};
+use spotfreeze::capture::DibBuffer;
+use spotfreeze::geometry::{Point, Rect};
+use spotfreeze::overlay::fade::FADE_STEPS;
 use spotfreeze::overlay::modes::ModeKind;
+use spotfreeze::settings::model::AppSettings;
 
-#[test]
-fn flash_counts_are_one_two_three_per_mode() {
-    assert_eq!(
-        OverlayController::flash_count(ModeKind::Spotlight),
-        1,
-        "Spotlight flashes once"
-    );
-    assert_eq!(
-        OverlayController::flash_count(ModeKind::Zoom),
-        2,
-        "Zoom flashes twice"
-    );
-    assert_eq!(
-        OverlayController::flash_count(ModeKind::Snip),
-        3,
-        "Snip flashes three times"
-    );
+/// Coordinate-encoding pattern: pixel (x, y) = [x, y, x^y, 255] (BGRA).
+fn coord_pattern(x: u32, y: u32) -> [u8; 4] {
+    [x as u8, y as u8, (x ^ y) as u8, 255]
+}
+
+/// Two 32x32 fake monitors (the second at negative virtual x), too small for
+/// the legend pill — these tests exercise the transition machinery only.
+fn small_settings() -> AppSettings {
+    let mut s = AppSettings::default();
+    s.spotlight.default_radius = 6; // clamped to the layer's 10 px minimum
+    s
+}
+
+fn freeze(cursor: Point) -> FakeFreeze {
+    let captured = vec![
+        (
+            monitor_info(Rect::new(0, 0, 32, 32)),
+            buffer_with(32, 32, coord_pattern),
+        ),
+        (
+            monitor_info(Rect::new(-32, 0, 32, 32)),
+            buffer_with(32, 32, |x, y| {
+                let [b, g, r, a] = coord_pattern(x, y);
+                [255 - b, 255 - g, 255 - r, a]
+            }),
+        ),
+    ];
+    FakeFreeze::new(captured, &small_settings(), cursor)
+}
+
+/// One full transition = the schedule's steps + the exact settled endpoint.
+const TRANSITION_PRESENTS: usize = FADE_STEPS as usize + 1;
+
+fn original0() -> DibBuffer {
+    buffer_with(32, 32, coord_pattern)
+}
+
+fn assert_flash_free(f: &FakeFreeze, ctx: &str) {
+    for (i, presents) in f.presents.iter().enumerate() {
+        for (j, frame) in presents.borrow().iter().enumerate() {
+            assert!(
+                !has_white_border_band(frame),
+                "{ctx}: white flash band on monitor {i}, frame {j}"
+            );
+        }
+    }
 }
 
 #[test]
-fn flash_count_is_pure_mapping_total_over_mode_kinds() {
-    // Every ModeKind has a distinct, nonzero flash count (the flash is the
-    // mode-change feedback, so it must exist for all three).
-    let kinds = [ModeKind::Spotlight, ModeKind::Zoom, ModeKind::Snip];
-    let counts: Vec<u32> = kinds.iter().map(|&k| OverlayController::flash_count(k)).collect();
-    for (kind, count) in kinds.iter().zip(&counts) {
-        assert!(*count >= 1, "{kind:?} must flash at least once");
-    }
-    let mut sorted = counts.clone();
-    sorted.sort_unstable();
-    sorted.dedup();
+fn freeze_entry_is_only_the_transition_frames_and_ends_seamless() {
+    let f = freeze(Point::new(16, 16));
+    let p = f.presents[0].borrow();
     assert_eq!(
-        sorted.len(),
-        counts.len(),
-        "flash counts are pairwise distinct: {counts:?}"
+        p.len(),
+        TRANSITION_PRESENTS,
+        "8 transition steps + settled endpoint, zero extra (flash) frames"
     );
+    assert_eq!(
+        p[0].pixels,
+        original0().pixels,
+        "the entry starts exactly on the live screen's pixels"
+    );
+    let settled = p.last().unwrap();
+    assert_ne!(settled.pixels, original0().pixels, "the veil landed");
+    assert_flash_free(&f, "freeze entry");
+}
+
+#[test]
+fn spotlight_toggle_runs_the_schedule_both_ways_without_flashing() {
+    let mut f = freeze(Point::new(16, 16));
+    // Off: veil lifts, circle shrinks, session stays frozen.
+    let before = f.presents[0].borrow().len();
+    f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
+    assert!(f.controller.is_frozen());
+    assert_eq!(
+        f.presents[0].borrow().len(),
+        before + TRANSITION_PRESENTS,
+        "toggle-off: transition steps + settled endpoint, no flash frames"
+    );
+    assert_eq!(
+        f.last_present(0).pixels,
+        original0().pixels,
+        "toggle-off ends exactly on the unveiled original"
+    );
+    // On: veil eases in, circle expands.
+    let before = f.presents[0].borrow().len();
+    f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
+    assert_eq!(f.controller.active_mode(), ModeKind::Spotlight);
+    assert_eq!(
+        f.presents[0].borrow().len(),
+        before + TRANSITION_PRESENTS,
+        "toggle-on: transition steps + settled endpoint, no flash frames"
+    );
+    assert_ne!(
+        f.last_present(0).pixels,
+        original0().pixels,
+        "the veil is back"
+    );
+    assert_flash_free(&f, "spotlight toggles");
+}
+
+#[test]
+fn full_mode_switches_repaint_exactly_once_without_flashing() {
+    let mut f = freeze(Point::new(16, 16));
+    let before = f.presents[0].borrow().len();
+    f.controller.set_mode(ModeKind::Snip, &f.services);
+    assert_eq!(f.presents[0].borrow().len(), before + 1, "capture entry");
+    f.controller.set_mode(ModeKind::Zoom, &f.services);
+    assert_eq!(f.presents[0].borrow().len(), before + 2, "switch out of capture");
+    f.controller.set_mode(ModeKind::Spotlight, &f.services);
+    assert_eq!(f.presents[0].borrow().len(), before + 3, "switch to spotlight");
+    assert_flash_free(&f, "mode switches");
+}
+
+#[test]
+fn capture_entry_and_esc_exit_repaint_once_without_flashing() {
+    let mut f = freeze(Point::new(16, 16));
+    let before = f.presents[0].borrow().len();
+    f.controller.set_mode(ModeKind::Snip, &f.services);
+    assert_eq!(f.presents[0].borrow().len(), before + 1);
+    f.controller.unfreeze(); // Esc in capture: exit capture, stay frozen
+    assert!(f.controller.is_frozen());
+    assert_eq!(f.presents[0].borrow().len(), before + 2, "instant capture exit");
+    f.controller.unfreeze(); // second Esc: real unfreeze (fades out)
+    assert!(!f.controller.is_frozen());
+    assert_eq!(
+        f.presents[0].borrow().len(),
+        before + 2 + TRANSITION_PRESENTS,
+        "the unfreeze fade adds steps + endpoint, no flash frames"
+    );
+    assert_flash_free(&f, "capture entry/exit");
+}
+
+#[test]
+fn the_whole_key_driven_journey_is_flash_free() {
+    let mut f = freeze(Point::new(16, 16));
+    f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
+    f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
+    f.controller.add_mode(ModeKind::Zoom, &f.services);
+    f.controller.toggle_mode(ModeKind::Zoom, &f.services);
+    f.controller.set_mode(ModeKind::Snip, &f.services);
+    f.controller.unfreeze(); // exit capture
+    f.controller.set_mode(ModeKind::Spotlight, &f.services);
+    f.controller.unfreeze(); // fade out
+    assert!(!f.controller.is_frozen());
+    assert_flash_free(&f, "whole journey");
+    // And the original capture comes back exactly at the end.
+    assert_eq!(f.last_present(0).pixels, original0().pixels);
 }

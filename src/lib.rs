@@ -23,7 +23,8 @@
 //!   carry Win32 VKs translated via [`hotkeys::keymap`]).
 //! - **Pure modules** (`geometry`, `settings`, `autostart`, `hotkeys::gesture`,
 //!   `hotkeys::frozen`, `hotkeys::keymap`, `overlay::composite`,
-//!   `overlay::events`, `overlay::modes`, `overlay::controller`, `capture::png`,
+//!   `overlay::events`, `overlay::legend`, `overlay::modes`,
+//!   `overlay::controller`, `capture::png`,
 //!   and the `capture::{DibBuffer, MonitorInfo, Capturer}` types) never expose
 //!   OS API types in their public API, so they are fully testable headless.
 //!   OS types (`HWND`, Wayland objects, AppKit objects) appear only in the

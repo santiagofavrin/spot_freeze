@@ -61,6 +61,19 @@ fn old_schema_full_file_loads_with_new_key_defaults() {
     // NEW keys merge in with their documented defaults.
     assert_eq!(loaded.overlay.color, BLACK, "missing color => black default");
     assert_eq!(
+        loaded.overlay.snip_dim_opacity, 90,
+        "missing snip_dim_opacity => 90 default"
+    );
+    assert_eq!(
+        loaded.overlay.snip_color,
+        Rgb {
+            r: 0x16,
+            g: 0x28,
+            b: 0x3A
+        },
+        "missing snip_color => dark slate default"
+    );
+    assert_eq!(
         loaded.hotkeys.zoom_modifier,
         Modifiers::SHIFT,
         "missing zoom_modifier => Shift default"
@@ -177,6 +190,12 @@ fn new_schema_round_trip_preserves_color_and_zoom_modifier() {
         r: 0x80,
         g: 0x20,
         b: 0x20,
+    };
+    settings.overlay.snip_dim_opacity = 70;
+    settings.overlay.snip_color = Rgb {
+        r: 0x20,
+        g: 0x10,
+        b: 0x30,
     };
     settings.hotkeys.zoom_modifier = Modifiers::ALT | Modifiers::SHIFT;
 
