@@ -1,6 +1,9 @@
-//! Settings window (Win32 common controls, no framework): one row per
-//! rebindable hotkey with a capture button, conflict validation, Save/Cancel,
-//! and an Exit button whose confirmation the APP owns. Win32-only module.
+//! Settings window (Win32 common controls, no framework), styled after a
+//! modern system-settings panel: a light neutral window background, one
+//! rounded white card per section, a three-level font hierarchy, and the
+//! accent color reserved for the primary Save action. One row per rebindable
+//! hotkey with a capture button, conflict validation, Save/Cancel, and an
+//! Exit button whose confirmation the APP owns. Win32-only module.
 //!
 //! # Implementation notes
 //!
@@ -26,6 +29,14 @@
 //!   also disarmed (old binding text restored) the moment the window loses
 //!   activation (`WM_ACTIVATE` / `WA_INACTIVE`) — walking away from the window
 //!   can never leave the rest of the desktop keyboard-dead.
+//! * Visual layer: the section cards and all push buttons are owner-drawn GDI
+//!   (rounded rectangles, hairline edges); labels, checkboxes, and edits get
+//!   their colors through the `WM_CTLCOLOR*` handlers. The font hierarchy is
+//!   derived from the system message-box font once per window and owned by
+//!   the window state; the two background brushes are process-lifetime
+//!   singletons created alongside the window class. Everything visual lives
+//!   in `build_ui`, the `WM_CTLCOLOR*`/`WM_DRAWITEM` handlers, and the
+//!   `draw_*` routines — the validation and capture logic is layout-agnostic.
 
 use crate::hotkeys::gesture::{HotkeyGesture, Modifiers};
 use crate::settings::model::{AppSettings, HotkeySettings, Rgb};
@@ -36,31 +47,36 @@ use windows::Win32::Foundation::{
     COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    BLACK_BRUSH, COLOR_WINDOW, CreateSolidBrush, DEFAULT_GUI_FONT, DeleteObject, FillRect,
-    FrameRect, GetStockObject, GetSysColorBrush, HBRUSH, HDC, HFONT, InvalidateRect, SetTextColor,
+    CLEARTYPE_QUALITY, CreateFontIndirectW, CreatePen, CreateSolidBrush, DEFAULT_CHARSET,
+    DEFAULT_GUI_FONT, DeleteObject, DrawFocusRect, DrawTextW, DT_CENTER, DT_SINGLELINE,
+    DT_VCENTER, FF_SWISS, FW_NORMAL, FW_SEMIBOLD, GetStockObject, HBRUSH, HDC, HFONT,
+    InflateRect, InvalidateRect, LOGFONTW, PS_SOLID, RoundRect, SelectObject, SetBkColor,
+    SetBkMode, SetTextColor, TRANSPARENT, VARIABLE_PITCH, WHITE_BRUSH,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::Dialogs::{CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW, ChooseColorW};
 use windows::Win32::UI::Controls::{
-    DRAWITEMSTRUCT, ICC_WIN95_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, WC_BUTTONW,
-    WC_EDITW, WC_STATICW,
+    DRAWITEMSTRUCT, ICC_WIN95_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, ODS_DISABLED,
+    ODS_FOCUS, ODS_SELECTED, WC_BUTTONW, WC_EDITW, WC_STATICW,
 };
-use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetAsyncKeyState, VK_CONTROL, VK_ESCAPE, VK_LCONTROL, VK_LMENU, VK_LSHIFT,
     VK_LWIN, VK_MENU, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_OWNERDRAW,
-    BS_PUSHBUTTON, CREATESTRUCTW, CW_USEDEFAULT, CallNextHookEx, CreateWindowExW, DefWindowProcW,
+    CREATESTRUCTW, CW_USEDEFAULT, CallNextHookEx, CreateWindowExW, DefWindowProcW,
     DestroyWindow, EN_CHANGE, EN_SETFOCUS, ES_AUTOHSCROLL, ES_CENTER, ES_NUMBER, ES_READONLY,
-    GWLP_USERDATA, GetClientRect, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
-    GetWindowTextW, HHOOK, IDC_ARROW, IsWindow, KBDLLHOOKSTRUCT, LoadCursorW, RegisterClassW,
-    SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER, SendMessageW, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, SetWindowsHookExW, ShowWindow,
+    GWLP_USERDATA, GetClientRect, GetDlgCtrlID, GetWindowLongPtrW, GetWindowRect,
+    GetWindowTextLengthW, GetWindowTextW, HHOOK, HWND_BOTTOM, IDC_ARROW, IsWindow,
+    KBDLLHOOKSTRUCT, LoadCursorW, NONCLIENTMETRICSW, RegisterClassW, SPI_GETNONCLIENTMETRICS,
+    SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
+    SetWindowPos, SetWindowTextW, SetWindowsHookExW, ShowWindow, SystemParametersInfoW,
     UnhookWindowsHookEx, WA_INACTIVE, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE,
-    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORSTATIC, WM_DRAWITEM, WM_KEYDOWN, WM_NCCREATE,
-    WM_NCDESTROY, WM_SETFONT, WM_SYSKEYDOWN, WNDCLASS_STYLES, WNDCLASSW, WS_BORDER, WS_CAPTION,
+    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DRAWITEM, WM_KEYDOWN,
+    WM_NCCREATE, WM_NCDESTROY, WM_SETFONT, WM_SYSKEYDOWN, WNDCLASS_STYLES, WNDCLASSW, WS_CAPTION,
     WS_CHILD, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
 };
 use windows::core::{PCWSTR, w};
@@ -135,6 +151,8 @@ pub fn open(
         auto_start_check: HWND::default(),
         hint_label: HWND::default(),
         save_button: HWND::default(),
+        dpi: 96,
+        fonts: UiFonts::default(),
         capture_row: None,
         capture_hook: None,
         capture_modifiers: HeldModifiers::default(),
@@ -295,11 +313,13 @@ impl NumericField {
         Self::DimOpacity,
     ];
 
+    /// Row label. ZoomMax's goes unused: its edit shares ZoomMin's
+    /// "Zoom range" row (see `build_ui`).
     fn label(self) -> &'static str {
         match self {
             Self::SpotlightRadius => "Spotlight default radius (px)",
             Self::ZoomStep => "Zoom step factor (e.g. 1.25)",
-            Self::ZoomMin => "Zoom minimum",
+            Self::ZoomMin => "Zoom range (min / max)",
             Self::ZoomMax => "Zoom maximum",
             Self::DimOpacity => "Overlay dim opacity (0-255)",
         }
@@ -625,6 +645,25 @@ fn validate_draft(draft: &SettingsDraft) -> Result<ParsedDraft, String> {
 /// thread; atomic purely to satisfy the compiler about shared access.
 static OPEN_HWND: AtomicIsize = AtomicIsize::new(0);
 
+/// Process-lifetime background brushes (window background, edit field
+/// background), created once in `ensure_window_class` and deliberately never
+/// deleted: the class brush must outlive every window of the class anyway.
+static BG_BRUSH: AtomicIsize = AtomicIsize::new(0);
+static EDIT_BRUSH: AtomicIsize = AtomicIsize::new(0);
+
+fn brush_from_slot(slot: &AtomicIsize) -> HBRUSH {
+    HBRUSH(std::ptr::with_exposed_provenance_mut::<core::ffi::c_void>(
+        slot.load(Ordering::Acquire) as usize,
+    ))
+}
+
+/// The white card background brush (a stock object — owned by the system).
+fn card_brush() -> HBRUSH {
+    // SAFETY: WHITE_BRUSH is a valid stock-object index; stock objects are
+    // owned by the system and must NOT be deleted.
+    unsafe { HBRUSH(GetStockObject(WHITE_BRUSH).0) }
+}
+
 // Child-control IDs (travel in the low word of WM_COMMAND's wParam).
 const ID_REBIND_BASE: i32 = 100; // + gesture row index
 const ID_RADIUS_CHECK_BASE: i32 = 300; // + modifier index
@@ -636,24 +675,54 @@ const ID_AUTO_START_CHECK: i32 = 460;
 const ID_SAVE: i32 = 500;
 const ID_CANCEL: i32 = 501;
 const ID_EXIT: i32 = 502;
+// Statics send no commands; these IDs only steer the WM_DRAWITEM /
+// WM_CTLCOLORSTATIC handlers. All card frames share one ID — each frame's
+// DRAWITEMSTRUCT carries its own rect.
+const ID_CARD_FRAME: i32 = 600;
+const ID_CARD_CONTENT: i32 = 601;
+const ID_CARD_SECONDARY: i32 = 602;
 
-// Layout metrics in 96-DPI units (scaled by `px()` at creation).
-const MARGIN: i32 = 12;
-const ROW_H: i32 = 22;
-const ROW_PITCH: i32 = 28;
+// Layout metrics in 96-DPI units (scaled by `px()` at creation). The layout
+// trace lives in `build_ui`; CLIENT_H is its final y + BOTTOM_PAD.
+const MARGIN: i32 = 20;
+const CLIENT_W: i32 = 640;
+const CLIENT_H: i32 = 754;
+const CARD_W: i32 = CLIENT_W - 2 * MARGIN;
+const CARD_PAD_X: i32 = 16;
+const CARD_PAD_TOP: i32 = 10;
+const CARD_PAD_BOTTOM: i32 = 10;
+const CARD_TITLE_H: i32 = 16;
+const CARD_TITLE_GAP: i32 = 6;
+const CARD_GAP: i32 = 8;
+const CARD_RADIUS: i32 = 8;
+const CONTENT_X: i32 = MARGIN + CARD_PAD_X;
+const CONTENT_W: i32 = CARD_W - 2 * CARD_PAD_X;
+const WINDOW_TITLE_H: i32 = 22;
+const WINDOW_TITLE_GAP: i32 = 8;
+const ROW_H: i32 = 24;
+const ROW_PITCH: i32 = 30;
+const SECONDARY_H: i32 = 16;
 const GAP: i32 = 8;
-const LABEL_W: i32 = 210;
-const GESTURE_EDIT_W: i32 = 140;
-const REBIND_BTN_W: i32 = 74;
-const NUMERIC_LABEL_W: i32 = 300;
-const NUMERIC_EDIT_W: i32 = 80;
-const CHECK_W: i32 = 96;
-const CHECK_PITCH: i32 = 106;
-const SWATCH_W: i32 = 64;
-const HEX_EDIT_W: i32 = 90;
-const CLIENT_W: i32 = 600;
-// Bottom edge of the button row (712) + button height (26) + MARGIN slack.
-const CLIENT_H: i32 = 750;
+const SMALL_GAP: i32 = 4;
+const LABEL_W: i32 = 250;
+const GESTURE_EDIT_W: i32 = 130;
+const REBIND_BTN_W: i32 = 84;
+const MOD_LABEL_W: i32 = 200;
+const CHECK_W: i32 = 78;
+const CHECK_H: i32 = 16;
+const CHECK_PITCH: i32 = 88;
+const NUMERIC_LABEL_W: i32 = 330;
+const NUMERIC_EDIT_W: i32 = 72;
+const SWATCH_W: i32 = 44;
+const HEX_EDIT_W: i32 = 92;
+const HINT_H: i32 = 16;
+const FOOTER_GAP: i32 = 6;
+const BUTTON_H: i32 = 26;
+const BUTTON_RADIUS: i32 = 5;
+const SAVE_W: i32 = 92;
+const CANCEL_W: i32 = 84;
+const EXIT_W: i32 = 140;
+const BOTTOM_PAD: i32 = 16;
 
 /// Fixed-size, dialog-style: caption + system menu (close button), no sizing
 /// border, no minimize/maximize.
@@ -661,7 +730,32 @@ const WINDOW_STYLE_FLAGS: WINDOW_STYLE =
     WINDOW_STYLE(WS_OVERLAPPED.0 | WS_CAPTION.0 | WS_SYSMENU.0);
 const WINDOW_EX_STYLE_FLAGS: WINDOW_EX_STYLE = WINDOW_EX_STYLE(0);
 
+/// COLORREF (0x00BBGGRR) from 8-bit RGB channels.
+const fn cref(r: u8, g: u8, b: u8) -> COLORREF {
+    COLORREF(r as u32 | (g as u32) << 8 | (b as u32) << 16)
+}
+
+// The palette: a light neutral window, white cards with hairline edges,
+// near-black primary text, and one accent blue reserved for Save.
+const WINDOW_BG: COLORREF = cref(0xF5, 0xF5, 0xF7);
+const CARD_BG: COLORREF = cref(0xFF, 0xFF, 0xFF);
+const CARD_EDGE: COLORREF = cref(0xD2, 0xD2, 0xD7);
+const TEXT_PRIMARY: COLORREF = cref(0x1D, 0x1D, 0x1F);
+const TEXT_SECONDARY: COLORREF = cref(0x6E, 0x6E, 0x73);
+const EDIT_BG: COLORREF = cref(0xF2, 0xF2, 0xF5);
+const ACCENT: COLORREF = cref(0x00, 0x7A, 0xFF);
+const ACCENT_DOWN: COLORREF = cref(0x00, 0x63, 0xE1);
+const BUTTON_EDGE: COLORREF = cref(0xC7, 0xC7, 0xCC);
+const SECONDARY_DOWN: COLORREF = cref(0xE8, 0xE8, 0xEC);
+const DISABLED_FILL: COLORREF = cref(0xF0, 0xF0, 0xF3);
+const DISABLED_TEXT: COLORREF = cref(0xAE, 0xAE, 0xB2);
+
 const HINT_RED: u32 = 0x0000_00C8; // COLORREF 0x00BBGGRR — dark red
+
+// winuser.h static-control styles the `windows` crate gates behind its
+// (here disabled) Win32_System_SystemServices feature.
+const SS_CENTERIMAGE_U32: u32 = 0x0200;
+const SS_OWNERDRAW_U32: u32 = 0x000D;
 
 /// All mutable state of one settings window. Owned by the window itself via
 /// `GWLP_USERDATA`; created in `open()`, freed in `WM_NCDESTROY`.
@@ -680,6 +774,11 @@ struct SettingsWindowState {
     auto_start_check: HWND,
     hint_label: HWND,
     save_button: HWND,
+    /// The window's DPI, captured in WM_CREATE; the owner-draw routines scale
+    /// corner radii with it.
+    dpi: u32,
+    /// The font hierarchy, created in WM_CREATE.
+    fonts: UiFonts,
     /// Row currently in modal key-capture state ("press keys…"), if any.
     capture_row: Option<usize>,
     /// The temporary LL keyboard hook, alive EXACTLY while `capture_row` is
@@ -689,6 +788,134 @@ struct SettingsWindowState {
     /// Modifier keys currently held, maintained by the capture hook from its
     /// own key events; re-seeded every time a capture arms.
     capture_modifiers: HeldModifiers,
+}
+
+impl Drop for SettingsWindowState {
+    fn drop(&mut self) {
+        for font in self.fonts.owned.drain(..) {
+            // SAFETY: every handle in `owned` came from CreateFontIndirectW
+            // (pushed at creation) and is deleted exactly once, here.
+            unsafe {
+                let _ = DeleteObject(font.into());
+            }
+        }
+    }
+}
+
+/// The window's font hierarchy, derived from the system message-box font
+/// (Segoe UI on any supported Windows). Each font falls back to the stock
+/// GUI font independently, so one failed creation cannot break the window;
+/// only created fonts land in `owned` and are deleted with the state.
+struct UiFonts {
+    /// Control labels, edits, buttons, checkboxes.
+    base: HFONT,
+    /// The large window title.
+    title: HFONT,
+    /// Card section titles.
+    section: HFONT,
+    /// The created (non-stock) fonts, for Drop.
+    owned: Vec<HFONT>,
+}
+
+impl Default for UiFonts {
+    fn default() -> Self {
+        let null = HFONT(std::ptr::null_mut());
+        Self {
+            base: null,
+            title: null,
+            section: null,
+            owned: Vec::new(),
+        }
+    }
+}
+
+impl UiFonts {
+    /// Create the hierarchy for `dpi`: base at the message-box size, the
+    /// window title at 2x semibold, card section titles at 1.25x semibold.
+    fn create(dpi: u32) -> Self {
+        let mut fonts = Self::default();
+        let base_lf = message_box_log_font(dpi);
+
+        let mut title_lf = base_lf;
+        title_lf.lfHeight = scale_font_height(base_lf.lfHeight, 2, 1);
+        title_lf.lfWeight = FW_SEMIBOLD.0 as i32;
+
+        let mut section_lf = base_lf;
+        section_lf.lfHeight = scale_font_height(base_lf.lfHeight, 5, 4);
+        section_lf.lfWeight = FW_SEMIBOLD.0 as i32;
+
+        fonts.base = create_or_stock(&base_lf, &mut fonts.owned);
+        fonts.title = create_or_stock(&title_lf, &mut fonts.owned);
+        fonts.section = create_or_stock(&section_lf, &mut fonts.owned);
+        fonts
+    }
+}
+
+/// Scale a signed GDI font height (negative = em height) by `num / den`,
+/// preserving the sign and never returning zero.
+fn scale_font_height(height: i32, num: u32, den: u32) -> i32 {
+    let magnitude =
+        (i64::from(height.unsigned_abs()) * i64::from(num) / i64::from(den)).max(1) as i32;
+    if height < 0 { -magnitude } else { magnitude }
+}
+
+/// The user's message-box font scaled to `dpi` (SystemParametersInfoW
+/// reports it scaled to the SYSTEM dpi, so rescale by the ratio). Falls back
+/// to a hand-built Segoe UI 9pt description if the metrics call fails.
+fn message_box_log_font(dpi: u32) -> LOGFONTW {
+    let mut metrics = NONCLIENTMETRICSW {
+        cbSize: size_of::<NONCLIENTMETRICSW>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `metrics` is valid for writes of `cbSize` bytes, as the API
+    // requires.
+    let result = unsafe {
+        SystemParametersInfoW(
+            SPI_GETNONCLIENTMETRICS,
+            metrics.cbSize,
+            Some((&raw mut metrics).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    if result.is_err() {
+        return fallback_log_font(dpi);
+    }
+    // SAFETY: GetDpiForSystem is safe to call from any thread.
+    let system_dpi = unsafe { GetDpiForSystem() }.max(96);
+    let mut lf = metrics.lfMessageFont;
+    lf.lfHeight = scale_font_height(lf.lfHeight, dpi, system_dpi);
+    lf
+}
+
+/// Segoe UI 9pt at `dpi`, used only when the system metrics are unavailable.
+fn fallback_log_font(dpi: u32) -> LOGFONTW {
+    let mut lf = LOGFONTW {
+        lfHeight: scale_font_height(-12, dpi, 96),
+        lfWeight: FW_NORMAL.0 as i32,
+        lfCharSet: DEFAULT_CHARSET,
+        lfQuality: CLEARTYPE_QUALITY,
+        lfPitchAndFamily: VARIABLE_PITCH.0 | FF_SWISS.0,
+        ..Default::default()
+    };
+    let face = wide("Segoe UI");
+    lf.lfFaceName[..face.len()].copy_from_slice(&face);
+    lf
+}
+
+/// Create one GDI font, recording it for Drop; on failure return the stock
+/// GUI font (system-owned: never deleted, and NOT recorded).
+fn create_or_stock(lf: &LOGFONTW, owned: &mut Vec<HFONT>) -> HFONT {
+    // SAFETY: `lf` points to a valid LOGFONTW; DEFAULT_GUI_FONT is a valid
+    // stock-object index.
+    unsafe {
+        let font = CreateFontIndirectW(lf);
+        if font.is_invalid() {
+            HFONT(GetStockObject(DEFAULT_GUI_FONT).0)
+        } else {
+            owned.push(font);
+            font
+        }
+    }
 }
 
 fn hwnd_from_raw(raw: isize) -> HWND {
@@ -738,6 +965,12 @@ fn ensure_window_class(hinst: HINSTANCE) -> Result<()> {
     static ONCE: Once = Once::new();
     let mut outcome: Result<()> = Ok(());
     ONCE.call_once(|| {
+        // SAFETY: CreateSolidBrush cannot fail for a valid COLORREF. Both
+        // brushes are process-lifetime by design (see BG_BRUSH).
+        let (bg_brush, edit_brush) =
+            unsafe { (CreateSolidBrush(WINDOW_BG), CreateSolidBrush(EDIT_BG)) };
+        BG_BRUSH.store(bg_brush.0 as isize, Ordering::Release);
+        EDIT_BRUSH.store(edit_brush.0 as isize, Ordering::Release);
         let class = WNDCLASSW {
             style: WNDCLASS_STYLES(0),
             lpfnWndProc: Some(settings_wnd_proc),
@@ -747,8 +980,7 @@ fn ensure_window_class(hinst: HINSTANCE) -> Result<()> {
             hIcon: Default::default(),
             // SAFETY: IDC_ARROW is a valid system cursor resource ID.
             hCursor: unsafe { LoadCursorW(None, IDC_ARROW) }.unwrap_or_default(),
-            // SAFETY: COLOR_WINDOW is a valid system color index.
-            hbrBackground: unsafe { GetSysColorBrush(COLOR_WINDOW) },
+            hbrBackground: bg_brush,
             lpszMenuName: PCWSTR::null(),
             lpszClassName: w!("SpotFreezeSettingsWindow"),
         };
@@ -838,35 +1070,95 @@ unsafe extern "system" fn settings_wnd_proc(
             }
         }
         WM_DRAWITEM => {
-            // SAFETY: GWLP_USERDATA holds the state pointer; with a button
+            // SAFETY: GWLP_USERDATA holds the state pointer; with a control
             // ID in wParam, lParam points to a valid DRAWITEMSTRUCT.
             unsafe {
                 let state =
                     GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindowState;
                 let dis = lparam.0 as *const DRAWITEMSTRUCT;
-                if !state.is_null() && !dis.is_null() && (*dis).CtlID == ID_COLOR_SWATCH as u32 {
-                    draw_color_swatch(&*state, &*dis);
-                    return LRESULT(1); // we handled the drawing
+                if state.is_null() || dis.is_null() {
+                    return DefWindowProcW(hwnd, msg, wparam, lparam);
                 }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
+                let id = (*dis).CtlID as i32;
+                let handled = if id == ID_COLOR_SWATCH {
+                    draw_color_swatch(&*state, &*dis);
+                    true
+                } else if id == ID_CARD_FRAME {
+                    draw_card_frame(&*state, &*dis);
+                    true
+                } else if id == ID_SAVE {
+                    draw_push_button(&*state, &*dis, ButtonRole::Accent);
+                    true
+                } else if id == ID_CANCEL
+                    || id == ID_EXIT
+                    || (ID_REBIND_BASE..ID_REBIND_BASE + GESTURE_ROW_COUNT as i32).contains(&id)
+                {
+                    draw_push_button(&*state, &*dis, ButtonRole::Secondary);
+                    true
+                } else {
+                    false
+                };
+                if handled {
+                    LRESULT(1) // we handled the drawing
+                } else {
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
+                }
+            }
+        }
+        WM_CTLCOLOREDIT => {
+            // Every edit (including the read-only gesture fields) is an inset
+            // field: light gray fill, primary text.
+            // SAFETY: wParam is the edit control's HDC, per Win32 docs.
+            unsafe {
+                let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
+                SetTextColor(hdc, TEXT_PRIMARY);
+                SetBkColor(hdc, EDIT_BG);
+                LRESULT(brush_from_slot(&EDIT_BRUSH).0 as isize)
             }
         }
         WM_CTLCOLORSTATIC => {
-            // SAFETY: GWLP_USERDATA holds the state pointer; wParam is the HDC
-            // of the static control and lParam its HWND, per Win32 docs.
+            // SAFETY: GWLP_USERDATA holds the state pointer; wParam is the
+            // HDC of the static (or checkbox) control and lParam its HWND,
+            // per Win32 docs.
             unsafe {
                 let state =
                     GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindowState;
-                if !state.is_null()
-                    && HWND(lparam.0 as *mut core::ffi::c_void) == (*state).hint_label
-                {
-                    SetTextColor(
-                        HDC(wparam.0 as *mut core::ffi::c_void),
-                        COLORREF(HINT_RED),
-                    );
-                    return LRESULT(GetSysColorBrush(COLOR_WINDOW).0 as isize);
+                if state.is_null() {
+                    return DefWindowProcW(hwnd, msg, wparam, lparam);
                 }
-                DefWindowProcW(hwnd, msg, wparam, lparam)
+                let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
+                let control = HWND(lparam.0 as *mut core::ffi::c_void);
+                if control == (*state).hint_label {
+                    SetTextColor(hdc, COLORREF(HINT_RED));
+                    SetBkColor(hdc, WINDOW_BG);
+                    return LRESULT(brush_from_slot(&BG_BRUSH).0 as isize);
+                }
+                // Checkboxes report through WM_CTLCOLORSTATIC too; everything
+                // living on a card gets the card background, with the
+                // secondary-text gray for ID_CARD_SECONDARY labels.
+                let id = GetDlgCtrlID(control);
+                let on_card = id == ID_CARD_CONTENT
+                    || id == ID_CARD_SECONDARY
+                    || (ID_RADIUS_CHECK_BASE..ID_RADIUS_CHECK_BASE + MOD_CHECK_COUNT as i32)
+                        .contains(&id)
+                    || (ID_ZOOM_CHECK_BASE..ID_ZOOM_CHECK_BASE + MOD_CHECK_COUNT as i32)
+                        .contains(&id)
+                    || id == ID_AUTO_START_CHECK;
+                if on_card {
+                    let text_color = if id == ID_CARD_SECONDARY {
+                        TEXT_SECONDARY
+                    } else {
+                        TEXT_PRIMARY
+                    };
+                    SetTextColor(hdc, text_color);
+                    SetBkColor(hdc, CARD_BG);
+                    return LRESULT(card_brush().0 as isize);
+                }
+                // Window-level statics (the window title): primary text on
+                // the window background.
+                SetTextColor(hdc, TEXT_PRIMARY);
+                SetBkColor(hdc, WINDOW_BG);
+                LRESULT(brush_from_slot(&BG_BRUSH).0 as isize)
             }
         }
         WM_CLOSE => {
@@ -899,8 +1191,15 @@ unsafe extern "system" fn settings_wnd_proc(
     }
 }
 
-/// Create every child control, lay it out, seed it from the working settings
-/// copy, and run the first validation pass. Called once from WM_CREATE.
+/// Create every child control, lay it out in card sections, seed it from the
+/// working settings copy, and run the first validation pass. Called once from
+/// WM_CREATE.
+///
+/// The layout runs in 96-DPI units, scaled by `px()` at creation; `y` walks
+/// top to bottom and ends exactly at CLIENT_H - BOTTOM_PAD (fixup_client_size
+/// has already sized the client area to CLIENT_W x CLIENT_H at this DPI).
+/// Each card's frame static is created AFTER the card's controls — when its
+/// exact bounds are known — and pushed beneath them (see create_card_frame).
 ///
 /// SAFETY: `state.hwnd` must be a valid window during its WM_CREATE.
 unsafe fn build_ui(state: &mut SettingsWindowState) -> Result<()> {
@@ -909,59 +1208,70 @@ unsafe fn build_ui(state: &mut SettingsWindowState) -> Result<()> {
     // are documented at its call site.
     unsafe {
     let dpi = GetDpiForWindow(state.hwnd).max(96);
+    state.dpi = dpi;
     fixup_client_size(state, dpi);
 
     let hinst = module_handle()?;
-    // DEFAULT_GUI_FONT is a valid stock-object index; stock objects
-    // are owned by the system and must NOT be deleted.
-    let font = HFONT(GetStockObject(DEFAULT_GUI_FONT).0);
+    state.fonts = UiFonts::create(dpi);
+    let base_font = state.fonts.base;
     let parent = state.hwnd;
 
-    let label_style = WS_CHILD.0 | WS_VISIBLE.0;
-    let edit_base = WS_CHILD.0 | WS_VISIBLE.0 | WS_BORDER.0 | ES_AUTOHSCROLL as u32;
+    let edit_style = WS_CHILD.0 | WS_VISIBLE.0 | ES_AUTOHSCROLL as u32;
     let button_style =
-        WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_PUSHBUTTON as u32;
+        WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_OWNERDRAW as u32;
     let checkbox_style =
         WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_AUTOCHECKBOX as u32;
 
     let mut y = MARGIN;
 
-    // --- Section: hotkeys -------------------------------------------------
-    create_child(
-        WC_STATICW,
-        "Hotkeys",
-        label_style,
+    // --- Window title -------------------------------------------------------
+    create_label(
+        "Settings",
+        0,
         px(dpi, MARGIN),
         px(dpi, y),
         px(dpi, CLIENT_W - 2 * MARGIN),
-        px(dpi, ROW_H),
-        0,
+        px(dpi, WINDOW_TITLE_H),
         parent,
         hinst,
-        font,
+        state.fonts.title,
     )?;
-    y += ROW_PITCH;
+    y += WINDOW_TITLE_H + WINDOW_TITLE_GAP;
+
+    // --- Card: Hotkeys ------------------------------------------------------
+    let card_top = y;
+    y += CARD_PAD_TOP;
+    create_label(
+        "Hotkeys",
+        ID_CARD_CONTENT,
+        px(dpi, CONTENT_X),
+        px(dpi, y),
+        px(dpi, CONTENT_W),
+        px(dpi, CARD_TITLE_H),
+        parent,
+        hinst,
+        state.fonts.section,
+    )?;
+    y += CARD_TITLE_H + CARD_TITLE_GAP;
 
     for (row, field) in GestureField::ALL.iter().enumerate() {
         let row_y = px(dpi, y);
-        create_child(
-            WC_STATICW,
+        create_label(
             field.label(),
-            label_style,
-            px(dpi, MARGIN),
+            ID_CARD_CONTENT,
+            px(dpi, CONTENT_X),
             row_y,
             px(dpi, LABEL_W),
             px(dpi, ROW_H),
-            0,
             parent,
             hinst,
-            font,
+            base_font,
         )?;
-        let edit_x = MARGIN + LABEL_W + GAP;
+        let edit_x = CONTENT_X + LABEL_W + GAP;
         state.gesture_edits[row] = create_child(
             WC_EDITW,
             "",
-            edit_base | ES_READONLY as u32 | ES_CENTER as u32,
+            edit_style | ES_READONLY as u32 | ES_CENTER as u32,
             px(dpi, edit_x),
             row_y,
             px(dpi, GESTURE_EDIT_W),
@@ -969,7 +1279,7 @@ unsafe fn build_ui(state: &mut SettingsWindowState) -> Result<()> {
             0,
             parent,
             hinst,
-            font,
+            base_font,
         )?;
         let btn_x = edit_x + GESTURE_EDIT_W + GAP;
         state.rebind_buttons[row] = create_child(
@@ -983,163 +1293,201 @@ unsafe fn build_ui(state: &mut SettingsWindowState) -> Result<()> {
             ID_REBIND_BASE + row as i32,
             parent,
             hinst,
-            font,
+            base_font,
         )?;
         y += ROW_PITCH;
     }
 
-    // --- Section: spotlight radius modifier -------------------------------
-    y += GAP;
-    create_child(
-        WC_STATICW,
-        "Spotlight radius modifier (hold + scroll wheel to resize)",
-        label_style,
-        px(dpi, MARGIN),
+    y += SMALL_GAP;
+    create_label(
+        "Tip: S toggles the spotlight, F toggles zoom hold, C enters capture, Esc backs out.",
+        ID_CARD_SECONDARY,
+        px(dpi, CONTENT_X),
         px(dpi, y),
-        px(dpi, CLIENT_W - 2 * MARGIN),
-        px(dpi, ROW_H),
-        0,
+        px(dpi, CONTENT_W),
+        px(dpi, SECONDARY_H),
         parent,
         hinst,
-        font,
+        base_font,
     )?;
-    y += ROW_PITCH;
+    y += SECONDARY_H + CARD_PAD_BOTTOM;
+    create_card_frame(dpi, card_top, y, parent, hinst)?;
+    y += CARD_GAP;
+
+    // --- Card: Scroll-wheel modifiers ---------------------------------------
+    let card_top = y;
+    y += CARD_PAD_TOP;
+    create_label(
+        "Scroll-wheel modifiers",
+        ID_CARD_CONTENT,
+        px(dpi, CONTENT_X),
+        px(dpi, y),
+        px(dpi, CONTENT_W),
+        px(dpi, CARD_TITLE_H),
+        parent,
+        hinst,
+        state.fonts.section,
+    )?;
+    y += CARD_TITLE_H + CARD_TITLE_GAP;
+    create_label(
+        "Hold and scroll the wheel to resize the spotlight or zoom.",
+        ID_CARD_SECONDARY,
+        px(dpi, CONTENT_X),
+        px(dpi, y),
+        px(dpi, CONTENT_W),
+        px(dpi, SECONDARY_H),
+        parent,
+        hinst,
+        base_font,
+    )?;
+    y += SECONDARY_H + SMALL_GAP;
+
+    let row_y = px(dpi, y);
+    create_label(
+        "Spotlight radius",
+        ID_CARD_CONTENT,
+        px(dpi, CONTENT_X),
+        row_y,
+        px(dpi, MOD_LABEL_W),
+        px(dpi, ROW_H),
+        parent,
+        hinst,
+        base_font,
+    )?;
     for (i, label) in MOD_CHECK_LABELS.iter().enumerate() {
         state.radius_checks[i] = create_child(
             WC_BUTTONW,
             label,
             checkbox_style,
-            px(dpi, MARGIN + i as i32 * CHECK_PITCH),
-            px(dpi, y),
+            px(dpi, CONTENT_X + MOD_LABEL_W + GAP + i as i32 * CHECK_PITCH),
+            row_y + px(dpi, (ROW_H - CHECK_H) / 2),
             px(dpi, CHECK_W),
-            px(dpi, ROW_H),
+            px(dpi, CHECK_H),
             ID_RADIUS_CHECK_BASE + i as i32,
             parent,
             hinst,
-            font,
+            base_font,
         )?;
     }
     y += ROW_PITCH;
 
-    // --- Section: zoom modifier -------------------------------------------
-    y += GAP;
-    create_child(
-        WC_STATICW,
-        "Zoom modifier (hold + scroll wheel to zoom)",
-        label_style,
-        px(dpi, MARGIN),
-        px(dpi, y),
-        px(dpi, CLIENT_W - 2 * MARGIN),
+    let row_y = px(dpi, y);
+    create_label(
+        "Zoom",
+        ID_CARD_CONTENT,
+        px(dpi, CONTENT_X),
+        row_y,
+        px(dpi, MOD_LABEL_W),
         px(dpi, ROW_H),
-        0,
         parent,
         hinst,
-        font,
+        base_font,
     )?;
-    y += ROW_PITCH;
     for (i, label) in MOD_CHECK_LABELS.iter().enumerate() {
         state.zoom_checks[i] = create_child(
             WC_BUTTONW,
             label,
             checkbox_style,
-            px(dpi, MARGIN + i as i32 * CHECK_PITCH),
-            px(dpi, y),
+            px(dpi, CONTENT_X + MOD_LABEL_W + GAP + i as i32 * CHECK_PITCH),
+            row_y + px(dpi, (ROW_H - CHECK_H) / 2),
             px(dpi, CHECK_W),
-            px(dpi, ROW_H),
+            px(dpi, CHECK_H),
             ID_ZOOM_CHECK_BASE + i as i32,
             parent,
             hinst,
-            font,
+            base_font,
         )?;
     }
-    y += ROW_PITCH;
+    y += ROW_PITCH + CARD_PAD_BOTTOM;
+    create_card_frame(dpi, card_top, y, parent, hinst)?;
+    y += CARD_GAP;
 
-    // --- Tip ---------------------------------------------------------------
-    y += GAP;
-    create_child(
-        WC_STATICW,
-        "Tip: S toggles the spotlight, F toggles zoom hold, C enters capture, Esc backs out.",
-        label_style,
-        px(dpi, MARGIN),
-        px(dpi, y),
-        px(dpi, CLIENT_W - 2 * MARGIN),
-        px(dpi, ROW_H),
-        0,
-        parent,
-        hinst,
-        font,
-    )?;
-    y += ROW_PITCH;
-
-    // --- Section: numeric options -----------------------------------------
-    y += GAP;
-    create_child(
-        WC_STATICW,
+    // --- Card: Options ------------------------------------------------------
+    let card_top = y;
+    y += CARD_PAD_TOP;
+    create_label(
         "Options",
-        label_style,
-        px(dpi, MARGIN),
+        ID_CARD_CONTENT,
+        px(dpi, CONTENT_X),
         px(dpi, y),
-        px(dpi, CLIENT_W - 2 * MARGIN),
-        px(dpi, ROW_H),
-        0,
+        px(dpi, CONTENT_W),
+        px(dpi, CARD_TITLE_H),
         parent,
         hinst,
-        font,
+        state.fonts.section,
     )?;
-    y += ROW_PITCH;
+    y += CARD_TITLE_H + CARD_TITLE_GAP;
 
     for (i, field) in NumericField::ALL.iter().enumerate() {
+        // ZoomMax's edit rides on ZoomMin's "Zoom range" row (created just
+        // below), so it gets no row of its own.
+        if *field == NumericField::ZoomMax {
+            continue;
+        }
         let row_y = px(dpi, y);
-        create_child(
-            WC_STATICW,
+        create_label(
             field.label(),
-            label_style,
-            px(dpi, MARGIN),
+            ID_CARD_CONTENT,
+            px(dpi, CONTENT_X),
             row_y,
             px(dpi, NUMERIC_LABEL_W),
             px(dpi, ROW_H),
-            0,
             parent,
             hinst,
-            font,
+            base_font,
         )?;
+        let edit_x = CONTENT_X + NUMERIC_LABEL_W + GAP;
         state.numeric_edits[i] = create_child(
             WC_EDITW,
             "",
-            edit_base | WS_TABSTOP.0 | ES_NUMBER as u32,
-            px(dpi, MARGIN + NUMERIC_LABEL_W + GAP),
+            edit_style | WS_TABSTOP.0 | ES_NUMBER as u32,
+            px(dpi, edit_x),
             row_y,
             px(dpi, NUMERIC_EDIT_W),
             px(dpi, ROW_H),
             ID_NUMERIC_BASE + i as i32,
             parent,
             hinst,
-            font,
+            base_font,
         )?;
+        if *field == NumericField::ZoomMin {
+            // ZoomMax is the 4th field (index 3) in NumericField::ALL.
+            state.numeric_edits[3] = create_child(
+                WC_EDITW,
+                "",
+                edit_style | WS_TABSTOP.0 | ES_NUMBER as u32,
+                px(dpi, edit_x + NUMERIC_EDIT_W + GAP),
+                row_y,
+                px(dpi, NUMERIC_EDIT_W),
+                px(dpi, ROW_H),
+                ID_NUMERIC_BASE + 3,
+                parent,
+                hinst,
+                base_font,
+            )?;
+        }
         y += ROW_PITCH;
     }
 
     // --- Overlay color: swatch button + live-parsed hex field ---------------
     {
         let row_y = px(dpi, y);
-        create_child(
-            WC_STATICW,
+        create_label(
             "Overlay color (#RRGGBB)",
-            label_style,
-            px(dpi, MARGIN),
+            ID_CARD_CONTENT,
+            px(dpi, CONTENT_X),
             row_y,
             px(dpi, NUMERIC_LABEL_W),
             px(dpi, ROW_H),
-            0,
             parent,
             hinst,
-            font,
+            base_font,
         )?;
-        let swatch_x = MARGIN + NUMERIC_LABEL_W + GAP;
+        let swatch_x = CONTENT_X + NUMERIC_LABEL_W + GAP;
         state.color_swatch = create_child(
             WC_BUTTONW,
             "",
-            WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_OWNERDRAW as u32,
+            button_style,
             px(dpi, swatch_x),
             row_y,
             px(dpi, SWATCH_W),
@@ -1147,12 +1495,12 @@ unsafe fn build_ui(state: &mut SettingsWindowState) -> Result<()> {
             ID_COLOR_SWATCH,
             parent,
             hinst,
-            font,
+            base_font,
         )?;
         state.color_hex_edit = create_child(
             WC_EDITW,
             "",
-            edit_base | WS_TABSTOP.0,
+            edit_style | WS_TABSTOP.0,
             px(dpi, swatch_x + SWATCH_W + GAP),
             row_y,
             px(dpi, HEX_EDIT_W),
@@ -1160,100 +1508,89 @@ unsafe fn build_ui(state: &mut SettingsWindowState) -> Result<()> {
             ID_COLOR_HEX,
             parent,
             hinst,
-            font,
+            base_font,
         )?;
         y += ROW_PITCH;
     }
 
-    // --- Section: startup -----------------------------------------------------
-    y += GAP;
-    create_child(
-        WC_STATICW,
-        "Startup",
-        label_style,
-        px(dpi, MARGIN),
-        px(dpi, y),
-        px(dpi, CLIENT_W - 2 * MARGIN),
-        px(dpi, ROW_H),
-        0,
-        parent,
-        hinst,
-        font,
-    )?;
-    y += ROW_PITCH;
     state.auto_start_check = create_child(
         WC_BUTTONW,
         "Launch SpotFreeze at login (auto-start)",
         checkbox_style,
-        px(dpi, MARGIN),
-        px(dpi, y),
-        px(dpi, CLIENT_W - 2 * MARGIN),
-        px(dpi, ROW_H),
+        px(dpi, CONTENT_X),
+        px(dpi, y) + px(dpi, (ROW_H - CHECK_H) / 2),
+        px(dpi, CONTENT_W),
+        px(dpi, CHECK_H),
         ID_AUTO_START_CHECK,
         parent,
         hinst,
-        font,
+        base_font,
     )?;
-    y += ROW_PITCH;
+    y += ROW_PITCH + CARD_PAD_BOTTOM;
+    create_card_frame(dpi, card_top, y, parent, hinst)?;
+    y += CARD_GAP;
 
     // --- Validation hint (red) ---------------------------------------------
-    y += GAP;
-    state.hint_label = create_child(
-        WC_STATICW,
+    state.hint_label = create_label(
         "",
-        label_style,
+        0,
         px(dpi, MARGIN),
         px(dpi, y),
         px(dpi, CLIENT_W - 2 * MARGIN),
-        px(dpi, ROW_H),
-        0,
+        px(dpi, HINT_H),
         parent,
         hinst,
-        font,
+        base_font,
     )?;
-    y += ROW_PITCH;
+    y += HINT_H + FOOTER_GAP;
 
-    // --- Bottom buttons -----------------------------------------------------
-    y += GAP;
+    // --- Footer: Exit subdued at the left, Cancel + the accent Save right ---
+    let buttons_y = px(dpi, y);
     state.save_button = create_child(
         WC_BUTTONW,
         "Save",
         button_style,
-        px(dpi, MARGIN),
-        px(dpi, y),
-        px(dpi, 80),
-        px(dpi, 26),
+        px(dpi, CLIENT_W - MARGIN - SAVE_W),
+        buttons_y,
+        px(dpi, SAVE_W),
+        px(dpi, BUTTON_H),
         ID_SAVE,
         parent,
         hinst,
-        font,
+        base_font,
     )?;
     create_child(
         WC_BUTTONW,
         "Cancel",
         button_style,
-        px(dpi, MARGIN + 88),
-        px(dpi, y),
-        px(dpi, 80),
-        px(dpi, 26),
+        px(dpi, CLIENT_W - MARGIN - SAVE_W - GAP - CANCEL_W),
+        buttons_y,
+        px(dpi, CANCEL_W),
+        px(dpi, BUTTON_H),
         ID_CANCEL,
         parent,
         hinst,
-        font,
+        base_font,
     )?;
     create_child(
         WC_BUTTONW,
         "Exit SpotFreeze",
         button_style,
-        px(dpi, CLIENT_W - MARGIN - 132),
-        px(dpi, y),
-        px(dpi, 132),
-        px(dpi, 26),
+        px(dpi, MARGIN),
+        buttons_y,
+        px(dpi, EXIT_W),
+        px(dpi, BUTTON_H),
         ID_EXIT,
         parent,
         hinst,
-        font,
+        base_font,
     )?;
+
+    debug_assert_eq!(
+        y + BUTTON_H + BOTTOM_PAD,
+        CLIENT_H,
+        "the layout trace must fill the client area exactly"
+    );
 
     seed_controls(state);
     refresh_validation(state);
@@ -1294,7 +1631,7 @@ unsafe fn fixup_client_size(state: &SettingsWindowState, dpi: u32) {
     }
 }
 
-/// Create one child control and hand it the default GUI font.
+/// Create one child control and hand it `font`.
 ///
 /// SAFETY: `parent` must be a valid window; `hinst` our module handle.
 #[allow(clippy::too_many_arguments)]
@@ -1332,7 +1669,8 @@ unsafe fn create_child(
         )
     }
     .with_context(|| format!("CreateWindowExW failed for \"{text}\""))?;
-    // SAFETY: hwnd is a live child control; font is a stock object.
+    // SAFETY: hwnd is a live child control; the font is state-owned and
+    // outlives every control (deleted only in WM_NCDESTROY).
     unsafe {
         SendMessageW(
             hwnd,
@@ -1342,6 +1680,85 @@ unsafe fn create_child(
         );
     }
     Ok(hwnd)
+}
+
+/// Create one single-line, vertically-centered label static. `id` steers its
+/// colors in WM_CTLCOLORSTATIC (ID_CARD_CONTENT / ID_CARD_SECONDARY on cards,
+/// 0 on the window background).
+///
+/// SAFETY: same contract as `create_child`.
+#[allow(clippy::too_many_arguments)]
+unsafe fn create_label(
+    text: &str,
+    id: i32,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    parent: HWND,
+    hinst: HINSTANCE,
+    font: HFONT,
+) -> Result<HWND> {
+    // SAFETY: same contract as `create_child`, upheld by the caller.
+    unsafe {
+        create_child(
+            WC_STATICW,
+            text,
+            WS_CHILD.0 | WS_VISIBLE.0 | SS_CENTERIMAGE_U32,
+            x,
+            y,
+            width,
+            height,
+            id,
+            parent,
+            hinst,
+            font,
+        )
+    }
+}
+
+/// Create the owner-drawn card background spanning [card_top, card_bottom]
+/// (96-DPI units) and push it to the bottom of the Z-order: it is created
+/// AFTER the card's controls (when its exact bounds are known) but must paint
+/// and hit-test beneath them.
+///
+/// SAFETY: `parent` must be a valid window; `hinst` our module handle.
+unsafe fn create_card_frame(
+    dpi: u32,
+    card_top: i32,
+    card_bottom: i32,
+    parent: HWND,
+    hinst: HINSTANCE,
+) -> Result<()> {
+    // SAFETY: `parent` and `hinst` are valid, per the caller's contract.
+    let frame = unsafe {
+        create_child(
+            WC_STATICW,
+            "",
+            WS_CHILD.0 | WS_VISIBLE.0 | SS_OWNERDRAW_U32,
+            px(dpi, MARGIN),
+            px(dpi, card_top),
+            px(dpi, CARD_W),
+            px(dpi, card_bottom) - px(dpi, card_top),
+            ID_CARD_FRAME,
+            parent,
+            hinst,
+            HFONT(std::ptr::null_mut()),
+        )
+    }?;
+    // SAFETY: `frame` is a live child window of `parent`.
+    unsafe {
+        let _ = SetWindowPos(
+            frame,
+            Some(HWND_BOTTOM),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+    Ok(())
 }
 
 /// Fill every control from the working settings copy.
@@ -1752,6 +2169,112 @@ fn held_modifiers_snapshot() -> HeldModifiers {
 }
 
 // ---------------------------------------------------------------------------
+// Owner-drawn visuals: card frames and push buttons (GDI)
+// ---------------------------------------------------------------------------
+
+/// Accent = the primary action (Save); Secondary = subdued actions (Cancel,
+/// Exit, the Rebind buttons).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ButtonRole {
+    Accent,
+    Secondary,
+}
+
+/// Owner-draw routine for a card frame static: a white rounded card with a
+/// 1px hairline edge.
+///
+/// SAFETY: `dis` is the DRAWITEMSTRUCT for a card frame static.
+unsafe fn draw_card_frame(state: &SettingsWindowState, dis: &DRAWITEMSTRUCT) {
+    // SAFETY: `dis.hDC`/`dis.rcItem` are valid for the duration of the draw;
+    // the edge pen is created and deleted within this call, and the fill is
+    // a stock brush (owned by the system, never deleted).
+    unsafe {
+        let edge = CreatePen(PS_SOLID, 1, CARD_EDGE);
+        let old_pen = SelectObject(dis.hDC, edge.into());
+        let old_brush = SelectObject(dis.hDC, GetStockObject(WHITE_BRUSH));
+        let diameter = 2 * px(state.dpi, CARD_RADIUS);
+        let _ = RoundRect(
+            dis.hDC,
+            dis.rcItem.left,
+            dis.rcItem.top,
+            dis.rcItem.right,
+            dis.rcItem.bottom,
+            diameter,
+            diameter,
+        );
+        SelectObject(dis.hDC, old_pen);
+        SelectObject(dis.hDC, old_brush);
+        let _ = DeleteObject(edge.into());
+    }
+}
+
+/// Owner-draw routine for the push buttons: a rounded rect — solid accent
+/// blue for the primary action, white with a hairline edge for secondary
+/// ones, grayed when disabled — with the label centered.
+///
+/// SAFETY: `dis` is the DRAWITEMSTRUCT for one of our owner-drawn buttons.
+unsafe fn draw_push_button(state: &SettingsWindowState, dis: &DRAWITEMSTRUCT, role: ButtonRole) {
+    let pressed = dis.itemState.0 & ODS_SELECTED.0 != 0;
+    let disabled = dis.itemState.0 & ODS_DISABLED.0 != 0;
+    let focused = dis.itemState.0 & ODS_FOCUS.0 != 0;
+
+    let (fill, text, edge) = match (role, disabled, pressed) {
+        (ButtonRole::Accent, true, _) => (DISABLED_FILL, DISABLED_TEXT, DISABLED_FILL),
+        (ButtonRole::Accent, false, true) => (ACCENT_DOWN, CARD_BG, ACCENT_DOWN),
+        (ButtonRole::Accent, false, false) => (ACCENT, CARD_BG, ACCENT),
+        (ButtonRole::Secondary, true, _) => (CARD_BG, DISABLED_TEXT, BUTTON_EDGE),
+        (ButtonRole::Secondary, false, true) => (SECONDARY_DOWN, TEXT_PRIMARY, BUTTON_EDGE),
+        (ButtonRole::Secondary, false, false) => (CARD_BG, TEXT_PRIMARY, BUTTON_EDGE),
+    };
+
+    // SAFETY: `dis.hDC`/`dis.rcItem` are valid for the duration of the draw;
+    // the pen and brush are created, selected out, and deleted within this
+    // call, and the state-owned font is only borrowed (never deleted here).
+    unsafe {
+        let pen = CreatePen(PS_SOLID, 1, edge);
+        let brush = CreateSolidBrush(fill);
+        let old_pen = SelectObject(dis.hDC, pen.into());
+        let old_brush = SelectObject(dis.hDC, brush.into());
+        let diameter = 2 * px(state.dpi, BUTTON_RADIUS);
+        let _ = RoundRect(
+            dis.hDC,
+            dis.rcItem.left,
+            dis.rcItem.top,
+            dis.rcItem.right,
+            dis.rcItem.bottom,
+            diameter,
+            diameter,
+        );
+        SelectObject(dis.hDC, old_pen);
+        SelectObject(dis.hDC, old_brush);
+        let _ = DeleteObject(pen.into());
+        let _ = DeleteObject(brush.into());
+
+        let old_font = SelectObject(dis.hDC, state.fonts.base.into());
+        SetBkMode(dis.hDC, TRANSPARENT);
+        SetTextColor(dis.hDC, text);
+        let label = read_text(dis.hwndItem);
+        let mut label_wide = wide(&label);
+        let label_len = label_wide.len().saturating_sub(1); // strip the NUL
+        let mut rect = dis.rcItem;
+        let _ = DrawTextW(
+            dis.hDC,
+            &mut label_wide[..label_len],
+            &mut rect,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+        );
+        SelectObject(dis.hDC, old_font);
+
+        if focused {
+            let mut focus_rect = dis.rcItem;
+            let inset = px(state.dpi, 3);
+            let _ = InflateRect(&mut focus_rect, -inset, -inset);
+            let _ = DrawFocusRect(dis.hDC, &focus_rect);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Overlay color: swatch, hex field, ChooseColorW picker
 // ---------------------------------------------------------------------------
 
@@ -1781,22 +2304,35 @@ fn repaint_swatch(state: &SettingsWindowState) {
     }
 }
 
-/// Owner-draw routine for the swatch button: fill with the draft color (or
-/// the last valid color while the hex text is invalid), plus a thin black
-/// frame so light colors stay visible.
+/// Owner-draw routine for the swatch button: a rounded chip filled with the
+/// draft color (or the last valid color while the hex text is invalid), with
+/// a hairline edge so light colors stay visible on the white card.
 ///
 /// SAFETY: `dis` is the DRAWITEMSTRUCT for our swatch button.
 unsafe fn draw_color_swatch(state: &SettingsWindowState, dis: &DRAWITEMSTRUCT) {
     let color = current_draft_color(state).unwrap_or(state.settings.overlay.color);
     // SAFETY: `dis.hDC`/`dis.rcItem` are valid for the duration of the draw;
-    // the fill brush is created and deleted within this call, and the frame
-    // uses a stock brush (owned by the system, never deleted).
+    // the pen and brush are created, selected out, and deleted within this
+    // call.
     unsafe {
+        let pen = CreatePen(PS_SOLID, 1, BUTTON_EDGE);
         let brush = CreateSolidBrush(rgb_to_colorref(color));
-        let _ = FillRect(dis.hDC, &dis.rcItem, brush);
+        let old_pen = SelectObject(dis.hDC, pen.into());
+        let old_brush = SelectObject(dis.hDC, brush.into());
+        let diameter = 2 * px(state.dpi, BUTTON_RADIUS);
+        let _ = RoundRect(
+            dis.hDC,
+            dis.rcItem.left,
+            dis.rcItem.top,
+            dis.rcItem.right,
+            dis.rcItem.bottom,
+            diameter,
+            diameter,
+        );
+        SelectObject(dis.hDC, old_pen);
+        SelectObject(dis.hDC, old_brush);
+        let _ = DeleteObject(pen.into());
         let _ = DeleteObject(brush.into());
-        let frame = HBRUSH(GetStockObject(BLACK_BRUSH).0);
-        let _ = FrameRect(dis.hDC, &dis.rcItem, frame);
     }
 }
 
@@ -2437,5 +2973,24 @@ mod tests {
         }
         // Spot-check the 0x00BBGGRR byte order.
         assert_eq!(rgb_to_colorref(Rgb { r: 0x11, g: 0x22, b: 0x33 }).0, 0x0033_2211);
+    }
+
+    // --- scale_font_height (signed GDI font heights) -------------------------
+
+    #[test]
+    fn font_height_scaling_preserves_the_em_height_sign() {
+        // Negative = em height (what CreateFontIndirectW wants); the sign
+        // must survive DPI and ratio scaling.
+        assert_eq!(scale_font_height(-12, 144, 96), -18);
+        assert_eq!(scale_font_height(-12, 96, 96), -12);
+        assert_eq!(scale_font_height(-12, 2, 1), -24);
+        assert_eq!(scale_font_height(12, 144, 96), 18);
+    }
+
+    #[test]
+    fn font_height_scaling_never_returns_zero() {
+        // Rounding down to zero would produce an invisible font.
+        assert_eq!(scale_font_height(-3, 1, 4), -1);
+        assert_eq!(scale_font_height(1, 1, 4), 1);
     }
 }
