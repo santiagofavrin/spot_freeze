@@ -16,6 +16,7 @@ use crate::capture::GdiCapturer;
 use crate::hotkeys::frozen::{FrozenAction, plan_frozen_registrations};
 use crate::hotkeys::manager::{HotkeyId, HotkeyManager};
 use crate::overlay::controller::OverlayController;
+use crate::overlay::modes::ModeKind;
 use crate::platform::windows::WindowsServices;
 use crate::platform::{PlatformServices, SurfaceFactory};
 use crate::settings::model::AppSettings;
@@ -445,16 +446,23 @@ fn on_hotkey(state: &mut AppState, hwnd: HWND, wparam: WPARAM) {
 fn toggle_freeze(state: &mut AppState, hwnd: HWND) {
     if state.controller.is_frozen() {
         state.controller.unfreeze();
+        reconcile_frozen_state(state);
     } else {
-        let surfaces: &SurfaceFactory = &crate::platform::windows::create_overlay_surface;
-        let services: &dyn PlatformServices = &state.services;
-        match state
-            .controller
-            .freeze(&state.capturer, &state.settings, surfaces, services)
-        {
-            Ok(()) => register_frozen_hotkeys(state, hwnd),
-            Err(e) => show_error(Some(hwnd), &format!("Could not freeze the screen:\n{e:#}")),
-        }
+        freeze(state, hwnd);
+    }
+}
+
+/// Capture the screen and freeze it (the freeze contract lands in spotlight
+/// mode), registering the frozen-mode hotkeys on success.
+fn freeze(state: &mut AppState, hwnd: HWND) {
+    let surfaces: &SurfaceFactory = &crate::platform::windows::create_overlay_surface;
+    let services: &dyn PlatformServices = &state.services;
+    match state
+        .controller
+        .freeze(&state.capturer, &state.settings, surfaces, services)
+    {
+        Ok(()) => register_frozen_hotkeys(state, hwnd),
+        Err(e) => show_error(Some(hwnd), &format!("Could not freeze the screen:\n{e:#}")),
     }
     reconcile_frozen_state(state);
 }
@@ -476,15 +484,52 @@ fn reconcile_frozen_state(state: &mut AppState) {
     }
 }
 
-/// Tray intents: both left-click and "Settings" open the settings window;
-/// "Exit" starts the shared confirm-and-quit flow.
+/// Tray menu intents: "Spotlight"/"Screenshot" drive the overlay directly,
+/// "Reload Settings" re-reads the JSONC file, "Settings…" opens the settings
+/// window, "Exit" starts the shared confirm-and-quit flow.
 fn on_tray_event(state: &mut AppState, hwnd: HWND, wparam: WPARAM) {
     match wparam.0 {
-        x if x == TrayEvent::LeftClick as usize || x == TrayEvent::MenuSettings as usize => {
-            open_settings(state, hwnd);
-        }
+        x if x == TrayEvent::MenuSpotlight as usize => tray_spotlight(state, hwnd),
+        x if x == TrayEvent::MenuScreenshot as usize => tray_screenshot(state, hwnd),
+        x if x == TrayEvent::MenuReloadSettings as usize => reload_settings(state, hwnd),
+        x if x == TrayEvent::MenuSettings as usize => open_settings(state, hwnd),
         x if x == TrayEvent::MenuExit as usize => confirm_exit(state, hwnd),
         _ => {}
+    }
+}
+
+/// Tray "Spotlight": freeze when unfrozen (the freeze contract lands in
+/// spotlight mode); when already frozen, switch to the spotlight layer.
+fn tray_spotlight(state: &mut AppState, hwnd: HWND) {
+    if state.controller.is_frozen() {
+        state.controller.set_mode(ModeKind::Spotlight, &state.services);
+    } else {
+        freeze(state, hwnd);
+    }
+}
+
+/// Tray "Screenshot": freeze first when unfrozen, then enter snip/capture
+/// mode (`set_mode` is a documented no-op when the freeze failed).
+fn tray_screenshot(state: &mut AppState, hwnd: HWND) {
+    if !state.controller.is_frozen() {
+        freeze(state, hwnd);
+    }
+    state.controller.set_mode(ModeKind::Snip, &state.services);
+}
+
+/// Tray "Reload Settings": re-read spotfreeze.jsonc (edited externally) and
+/// apply it exactly like a settings-window save, minus the save itself (the
+/// file is the source). A malformed file keeps the previous settings.
+fn reload_settings(state: &mut AppState, hwnd: HWND) {
+    match store::load(&state.settings_path) {
+        Ok(loaded) => apply_new_settings(state, hwnd, loaded),
+        Err(e) => show_error(
+            Some(hwnd),
+            &format!(
+                "Could not read {}:\n{e:#}\n\nKeeping the previous settings.",
+                state.settings_path.display()
+            ),
+        ),
     }
 }
 
@@ -524,11 +569,9 @@ fn open_settings(state: &mut AppState, hwnd: HWND) {
 }
 
 /// A validated settings copy arrived from the settings window: persist it,
-/// swap it in, and re-register whatever hotkey bindings changed.
+/// then apply it (hotkeys, tooltip, auto-start).
 fn apply_saved_settings(state: &mut AppState, hwnd: HWND, new_settings: AppSettings) {
-    let old = std::mem::replace(&mut state.settings, new_settings);
-
-    if let Err(e) = store::save(&state.settings_path, &state.settings) {
+    if let Err(e) = store::save(&state.settings_path, &new_settings) {
         show_error(
             Some(hwnd),
             &format!(
@@ -537,6 +580,14 @@ fn apply_saved_settings(state: &mut AppState, hwnd: HWND, new_settings: AppSetti
             ),
         );
     }
+    apply_new_settings(state, hwnd, new_settings);
+}
+
+/// Swap in `new_settings` and re-register whatever hotkey bindings changed.
+/// Shared by the settings-window save path and the tray's "Reload Settings"
+/// (which reads the file itself and must not save it back).
+fn apply_new_settings(state: &mut AppState, hwnd: HWND, new_settings: AppSettings) {
+    let old = std::mem::replace(&mut state.settings, new_settings);
 
     if old.hotkeys.freeze_toggle != state.settings.hotkeys.freeze_toggle {
         // Register the NEW gesture first; only on success is the old

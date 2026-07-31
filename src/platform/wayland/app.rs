@@ -19,6 +19,10 @@
 //!   "Edit settings" opens the JSONC file in the default editor; the file is
 //!   re-read on every freeze and via the tray's "Reload settings" item, and a
 //!   changed `freeze_toggle` rebinds the portal hotkey then.
+//! - **Tray actions**: the tray menu's "Spotlight" freezes into spotlight
+//!   mode (or activates the spotlight layer when already frozen) and
+//!   "Screenshot" freezes first when unfrozen, then enters capture mode —
+//!   the same `OverlayController` entry points the frozen-mode keys use.
 //! - **Exit**: the tray Exit item quits immediately — no Yes/No confirmation
 //!   dialog (documented Linux difference).
 //!
@@ -28,6 +32,7 @@
 use crate::hotkeys::frozen::{FrozenAction, FrozenRegistration, match_frozen_key, plan_frozen_registrations};
 use crate::hotkeys::gesture::HotkeyGesture;
 use crate::overlay::controller::OverlayController;
+use crate::overlay::modes::ModeKind;
 use crate::platform::shared::edit;
 use crate::platform::wayland::capture::WaylandCapturer;
 use crate::platform::wayland::clipboard::WaylandServices;
@@ -50,7 +55,12 @@ use std::rc::Rc;
 enum Intent {
     /// Freeze/unfreeze (portal hotkey; also the unfreeze path while frozen).
     ToggleFreeze,
-    /// Tray "Edit settings" (and tray activation): open the JSONC file.
+    /// Tray "Spotlight": freeze into spotlight mode; when already frozen,
+    /// activate the spotlight layer (a no-op when the layer is already on).
+    Spotlight,
+    /// Tray "Screenshot": freeze first when unfrozen, then enter capture mode.
+    Screenshot,
+    /// Tray "Edit settings": open the JSONC file.
     EditSettings,
     /// Tray "Reload settings": re-read the JSONC file immediately (a changed
     /// freeze binding is re-registered on the spot).
@@ -85,6 +95,8 @@ impl AppState {
     fn handle_intent(&mut self, intent: Intent) {
         match intent {
             Intent::ToggleFreeze => self.toggle_freeze(),
+            Intent::Spotlight => self.spotlight(),
+            Intent::Screenshot => self.screenshot(),
             Intent::EditSettings => {
                 if let Err(e) = edit::open_in_editor(&self.settings_path) {
                     eprintln!("spotfreeze: could not open the settings editor: {e:#}");
@@ -102,6 +114,12 @@ impl AppState {
             unfreeze_syncing_plan(&mut self.controller, &self.frozen_plan);
             return;
         }
+        self.freeze_with_plan();
+    }
+
+    /// The freeze half of the toggle: reload settings, freeze into Spotlight
+    /// mode (the controller default), and arm the frozen-mode key plan.
+    fn freeze_with_plan(&mut self) {
         self.reload_settings();
         let plan = plan_frozen_registrations(&self.settings.hotkeys);
         let factory = self.shell.create_surface_factory();
@@ -117,6 +135,26 @@ impl AppState {
             }
             Err(e) => eprintln!("spotfreeze: could not freeze the screen: {e:#}"),
         }
+    }
+
+    /// Tray "Spotlight": freeze into spotlight mode when unfrozen; when
+    /// frozen, activate the spotlight layer (a no-op when it is already on).
+    fn spotlight(&mut self) {
+        if self.controller.is_frozen() {
+            self.controller.add_mode(ModeKind::Spotlight, &self.services);
+        } else {
+            self.freeze_with_plan();
+        }
+    }
+
+    /// Tray "Screenshot": freeze first when unfrozen, then enter capture
+    /// mode (a failed freeze leaves the session unfrozen and `set_mode`
+    /// no-ops; the freeze error is already reported).
+    fn screenshot(&mut self) {
+        if !self.controller.is_frozen() {
+            self.freeze_with_plan();
+        }
+        self.controller.set_mode(ModeKind::Snip, &self.services);
     }
 
     /// A frozen-mode key matched the plan: apply it exactly like the Windows
@@ -265,6 +303,18 @@ pub fn run() -> Result<()> {
         {
             let tx = intent_tx.clone();
             move || {
+                let _ = tx.send(Intent::Spotlight);
+            }
+        },
+        {
+            let tx = intent_tx.clone();
+            move || {
+                let _ = tx.send(Intent::Screenshot);
+            }
+        },
+        {
+            let tx = intent_tx.clone();
+            move || {
                 let _ = tx.send(Intent::EditSettings);
             }
         },
@@ -383,7 +433,6 @@ mod tests {
     use crate::capture::{Capturer, DibBuffer, MonitorInfo};
     use crate::geometry::{Point, Rect};
     use crate::overlay::events::OverlayEventSink;
-    use crate::overlay::modes::ModeKind;
     use crate::platform::{OverlaySurface, PlatformServices, SurfaceFactory};
 
     struct FakeCapturer {

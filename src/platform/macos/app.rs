@@ -33,6 +33,7 @@ use crate::hotkeys::frozen::{
 use crate::hotkeys::gesture::{HotkeyGesture, Modifiers};
 use crate::overlay::controller::OverlayController;
 use crate::overlay::events::{OverlayEvent, OverlayEventSink};
+use crate::overlay::modes::ModeKind;
 use crate::platform::macos::autostart;
 use crate::platform::macos::capture::MacCapturer;
 use crate::platform::macos::clipboard::MacServices;
@@ -223,6 +224,8 @@ pub fn run() -> Result<()> {
         let state = Rc::clone(&state);
         Rc::new(move |event| {
             match event {
+                TrayEvent::MenuSpotlight => tray_spotlight(&state),
+                TrayEvent::MenuScreenshot => tray_screenshot(&state),
                 TrayEvent::MenuSettings => open_settings(&state),
                 TrayEvent::MenuReloadSettings => reload_settings(&state),
                 TrayEvent::MenuExit => confirm_exit(&state),
@@ -298,6 +301,15 @@ fn toggle_freeze(state: &Rc<RefCell<AppState>>) {
         state.borrow_mut().controller.unfreeze();
         return;
     }
+    freeze_if_unfrozen(state);
+}
+
+/// Capture + overlay entry; no-op when already frozen ([`TrayEvent::MenuSpotlight`]
+/// and [`TrayEvent::MenuScreenshot`] rely on that for their frozen branch).
+fn freeze_if_unfrozen(state: &Rc<RefCell<AppState>>) {
+    if state.borrow().controller.is_frozen() {
+        return;
+    }
 
     reload_settings(state);
     {
@@ -342,6 +354,38 @@ fn toggle_freeze(state: &Rc<RefCell<AppState>>) {
     if let Err(e) = result {
         queue_alert(format!("Could not freeze the screen:\n{e:#}"));
     }
+}
+
+/// Tray "Spotlight": freeze into spotlight mode when unfrozen (the default
+/// freeze mode); when already frozen, activate the spotlight layer — a no-op
+/// when the layer is already on.
+fn tray_spotlight(state: &Rc<RefCell<AppState>>) {
+    if state.borrow().controller.is_frozen() {
+        let mut s = state.borrow_mut();
+        // Split the RefMut into disjoint field borrows for the mode call.
+        let AppState {
+            controller,
+            services,
+            ..
+        } = &mut *s;
+        controller.add_mode(ModeKind::Spotlight, services);
+    } else {
+        freeze_if_unfrozen(state);
+    }
+}
+
+/// Tray "Screenshot": freeze first when unfrozen, then enter snip/capture
+/// mode. A failed freeze leaves the overlay closed and `set_mode` no-ops.
+fn tray_screenshot(state: &Rc<RefCell<AppState>>) {
+    freeze_if_unfrozen(state);
+    let mut s = state.borrow_mut();
+    // Split the RefMut into disjoint field borrows for the mode call.
+    let AppState {
+        controller,
+        services,
+        ..
+    } = &mut *s;
+    controller.set_mode(ModeKind::Snip, services);
 }
 
 /// "Edit Settings…": open the JSONC file in the default editor (detached —

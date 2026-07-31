@@ -15,8 +15,9 @@
 //! * The shell icon uses callback version 0 (no `NIM_SETVERSION`), so `lParam`
 //!   of the callback message carries the raw mouse messages
 //!   (`WM_LBUTTONUP` / `WM_RBUTTONUP`) per the frozen contract.
-//! * The icon image is generated at runtime with `CreateIcon` (a light circle
-//!   on a dark square) — no resource files, no extra crates.
+//! * The icon image is generated at runtime with `CreateIcon` (the "frost
+//!   spotlight" motif: a white disc with a sky ring on a navy rounded square)
+//!   — no resource files, no extra crates.
 
 use anyhow::{Result, anyhow};
 use std::cell::RefCell;
@@ -28,20 +29,27 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIcon, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos,
-    GetSystemMetrics, HICON, MF_STRING, PostMessageW, SM_CXSMICON, SM_CYSMICON, SetForegroundWindow,
-    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP, WM_DESTROY,
-    WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
+    GetSystemMetrics, HICON, MF_SEPARATOR, MF_STRING, PostMessageW, SM_CXSMICON, SM_CYSMICON,
+    SetForegroundWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP,
+    WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
 };
-use windows::core::w;
+use windows::core::{PCWSTR, w};
 
 /// User intents reported by the tray icon.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TrayEvent {
-    /// Left-click on the icon → the app opens the settings window.
-    LeftClick,
-    /// "Settings" chosen from the right-click popup menu.
+    /// "Spotlight" chosen from the popup menu: freeze into spotlight mode, or
+    /// switch to the spotlight layer when already frozen.
+    MenuSpotlight,
+    /// "Screenshot" chosen from the popup menu: freeze first when unfrozen,
+    /// then enter snip/capture mode.
+    MenuScreenshot,
+    /// "Reload Settings" chosen from the popup menu: re-read the JSONC file
+    /// immediately (a changed freeze binding is re-registered on the spot).
+    MenuReloadSettings,
+    /// "Settings…" chosen from the popup menu.
     MenuSettings,
-    /// "Exit" chosen from the right-click popup menu. The tray itself NEVER
+    /// "Exit" chosen from the popup menu. The tray itself NEVER
     /// asks and NEVER exits — the app runs its Yes/No confirmation flow.
     MenuExit,
 }
@@ -55,8 +63,11 @@ const TRAY_SUBCLASS_ID: usize = 1;
 const WM_TRAY_CALLBACK: u32 = WM_APP + 1;
 
 /// Popup-menu item ids (returned by `TrackPopupMenu` with `TPM_RETURNCMD`).
-const IDM_SETTINGS: usize = 1;
-const IDM_EXIT: usize = 2;
+const IDM_SPOTLIGHT: usize = 1;
+const IDM_SCREENSHOT: usize = 2;
+const IDM_RELOAD_SETTINGS: usize = 3;
+const IDM_SETTINGS: usize = 4;
+const IDM_EXIT: usize = 5;
 
 /// State shared between [`TrayIcon`] and the subclass proc. The subclass chain
 /// owns one `Rc` reference (passed as `dwRefData`) while
@@ -70,12 +81,13 @@ struct TrayShared {
     /// True while the subclass chain holds its extra `Rc` reference, i.e. the
     /// subclass is installed and has not released its ref yet.
     subclass_ref_held: bool,
-    /// Where left-clicks and menu choices are forwarded.
+    /// Where menu choices are forwarded.
     sink: Rc<dyn Fn(TrayEvent)>,
 }
 
-/// Tray icon with tooltip. Right-click shows a popup menu (Settings / Exit);
-/// left-click and menu choices are forwarded to the sink.
+/// Tray icon with tooltip. Either mouse button shows the popup menu
+/// (Spotlight / Screenshot / Reload Settings / Settings… / Exit); menu
+/// choices are forwarded to the sink.
 pub struct TrayIcon {
     hwnd: HWND,
     #[allow(dead_code)] // retained for API parity; the live sink is in `shared`
@@ -214,13 +226,10 @@ unsafe extern "system" fn tray_subclass_proc(
     let shared = unsafe { &*(ref_data as *const RefCell<TrayShared>) };
 
     if msg == WM_TRAY_CALLBACK {
-        // Callback version 0: lParam carries the raw mouse message.
+        // Callback version 0: lParam carries the raw mouse message. Either
+        // button opens the same context menu.
         match lparam.0 as u32 {
-            WM_LBUTTONUP => {
-                let sink = shared.borrow().sink.clone();
-                sink(TrayEvent::LeftClick);
-            }
-            WM_RBUTTONUP => {
+            WM_LBUTTONUP | WM_RBUTTONUP => {
                 let sink = shared.borrow().sink.clone();
                 show_context_menu(hwnd, &sink);
             }
@@ -252,14 +261,20 @@ unsafe extern "system" fn tray_subclass_proc(
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
-/// Right-click popup: Settings / Exit. `TPM_RETURNCMD | TPM_NONOTIFY` makes
+/// Popup menu shown for either mouse button: Spotlight / Screenshot /
+/// Reload Settings / Settings… / Exit. `TPM_RETURNCMD | TPM_NONOTIFY` makes
 /// the selection the synchronous return value, so no `WM_COMMAND` routing is
 /// needed. `SetForegroundWindow` first (plus the `WM_NULL` nudge after) so the
 /// menu dismisses correctly when the user clicks elsewhere.
 fn show_context_menu(hwnd: HWND, sink: &Rc<dyn Fn(TrayEvent)>) {
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
-        let _ = AppendMenuW(menu, MF_STRING, IDM_SETTINGS, w!("Settings"));
+        let _ = AppendMenuW(menu, MF_STRING, IDM_SPOTLIGHT, w!("Spotlight"));
+        let _ = AppendMenuW(menu, MF_STRING, IDM_SCREENSHOT, w!("Screenshot"));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        let _ = AppendMenuW(menu, MF_STRING, IDM_RELOAD_SETTINGS, w!("Reload Settings"));
+        let _ = AppendMenuW(menu, MF_STRING, IDM_SETTINGS, w!("Settings…"));
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, IDM_EXIT, w!("Exit"));
 
         let mut pt = POINT::default();
@@ -278,6 +293,9 @@ fn show_context_menu(hwnd: HWND, sink: &Rc<dyn Fn(TrayEvent)>) {
         let _ = DestroyMenu(menu);
 
         match cmd.0 as usize {
+            IDM_SPOTLIGHT => sink(TrayEvent::MenuSpotlight),
+            IDM_SCREENSHOT => sink(TrayEvent::MenuScreenshot),
+            IDM_RELOAD_SETTINGS => sink(TrayEvent::MenuReloadSettings),
             IDM_SETTINGS => sink(TrayEvent::MenuSettings),
             IDM_EXIT => sink(TrayEvent::MenuExit),
             _ => {} // dismissed without a choice
@@ -285,8 +303,9 @@ fn show_context_menu(hwnd: HWND, sink: &Rc<dyn Fn(TrayEvent)>) {
     }
 }
 
-/// Build the icon at runtime: light circle on a dark square. Sized to the
-/// system small-icon metrics (16 px fallback, clamped to a sane range).
+/// Build the icon at runtime: the "frost spotlight" motif (see
+/// [`motif_bgr`]). Sized to the system small-icon metrics (16 px fallback,
+/// clamped to a sane range).
 fn create_app_icon() -> Result<HICON> {
     let w = unsafe { GetSystemMetrics(SM_CXSMICON) };
     let h = unsafe { GetSystemMetrics(SM_CYSMICON) };
@@ -308,26 +327,79 @@ fn create_app_icon() -> Result<HICON> {
     .map_err(|e| anyhow!("CreateIcon failed: {e}"))
 }
 
-/// Pure: AND mask (1 bpp, 0 = opaque → all zero) + XOR mask (32 bpp BGRX,
-/// top-down rows) for a `size`×`size` icon showing a light circle centered on
-/// a dark square. Kept Win32-free so it is unit-testable headless.
+/// Motif geometry, all fractions of the icon edge.
+const CORNER_RADIUS_FRAC: f32 = 0.22;
+const SPOTLIGHT_RADIUS_FRAC: f32 = 0.30;
+const RING_RADIUS_FRAC: f32 = 0.43; // stroke center
+const RING_WIDTH_FRAC: f32 = 0.06;
+const SPARKLE_ARM_FRAC: f32 = 0.12;
+/// The sparkle is dropped below this edge length (illegible at 16 px).
+const SPARKLE_MIN_SIZE: usize = 24;
+/// Concavity of the sparkle's 4-point star (superellipse exponent < 1; 0.5 is
+/// the classic astroid sparkle).
+const SPARKLE_STAR_K: f32 = 0.5;
+
+/// Motif colors as `[B, G, R]` (XOR-mask channel order).
+const NAVY: [u8; 3] = [0x2A, 0x17, 0x0F]; // #0F172A
+const WHITE: [u8; 3] = [0xFC, 0xFA, 0xF8]; // #F8FAFC
+const SKY: [u8; 3] = [0xF8, 0xBD, 0x38]; // #38BDF8
+
+/// The "frost spotlight" motif at pixel `(x, y)` of a `size`×`size` icon:
+/// a navy rounded square (transparent outside), a centered white spotlight
+/// disc, a sky ring around it, and — for edges >= [`SPARKLE_MIN_SIZE`] — a
+/// small 4-point sparkle on the ring at 45° upper-right. `None` = transparent.
+/// Sampled at pixel centers with hard edges (the AND mask is 1 bpp, so
+/// antialiasing is impossible anyway). Pure, so it is unit-testable headless.
+fn motif_bgr(size: usize, x: usize, y: usize) -> Option<[u8; 3]> {
+    let edge = size as f32;
+    let px = x as f32 + 0.5;
+    let py = y as f32 + 0.5;
+    let c = edge / 2.0;
+
+    // Rounded-square tile: outside when the distance past the corner square
+    // exceeds the corner radius.
+    let corner = edge * CORNER_RADIUS_FRAC;
+    let qx = ((px - c).abs() - (c - corner)).max(0.0);
+    let qy = ((py - c).abs() - (c - corner)).max(0.0);
+    if qx.hypot(qy) > corner {
+        return None;
+    }
+
+    // Sparkle: |u|^k + |v|^k <= arm^k centered on the ring at 45° upper-right.
+    if size >= SPARKLE_MIN_SIZE {
+        let diag = edge * RING_RADIUS_FRAC * std::f32::consts::FRAC_1_SQRT_2;
+        let u = px - (c + diag);
+        let v = py - (c - diag);
+        let arm = edge * SPARKLE_ARM_FRAC;
+        if u.abs().powf(SPARKLE_STAR_K) + v.abs().powf(SPARKLE_STAR_K) <= arm.powf(SPARKLE_STAR_K) {
+            return Some(SKY);
+        }
+    }
+
+    let d = (px - c).hypot(py - c);
+    if d <= edge * SPOTLIGHT_RADIUS_FRAC {
+        return Some(WHITE);
+    }
+    if (d - edge * RING_RADIUS_FRAC).abs() <= edge * RING_WIDTH_FRAC / 2.0 {
+        return Some(SKY);
+    }
+    Some(NAVY)
+}
+
+/// Pure: AND mask (1 bpp, 1 = transparent → only the corners outside the
+/// rounded square; MSB-first, WORD-aligned rows) + XOR mask (32 bpp BGRX,
+/// top-down rows) for a `size`×`size` icon showing [`motif_bgr`]. Kept
+/// Win32-free so it is unit-testable headless.
 fn build_icon_masks(size: usize) -> (Vec<u8>, Vec<u8>) {
     let and_stride = size.div_ceil(16) * 2; // monochrome DDB rows are WORD-aligned
-    let and_mask = vec![0u8; and_stride * size]; // all opaque
+    let mut and_mask = vec![0u8; and_stride * size]; // opaque by default
     let mut xor_mask = vec![0u8; size * size * 4];
 
-    const DARK: [u8; 3] = [32, 32, 32]; // B, G, R
-    const LIGHT: [u8; 3] = [245, 245, 245];
-    let center = (size as f32 - 1.0) / 2.0;
-    let radius = size as f32 * 0.32;
     for y in 0..size {
         for x in 0..size {
-            let dx = x as f32 - center;
-            let dy = y as f32 - center;
-            let [b, g, r] = if dx * dx + dy * dy <= radius * radius {
-                LIGHT
-            } else {
-                DARK
+            let Some([b, g, r]) = motif_bgr(size, x, y) else {
+                and_mask[y * and_stride + x / 8] |= 0x80 >> (x % 8);
+                continue;
             };
             let off = (y * size + x) * 4;
             xor_mask[off] = b;
@@ -357,32 +429,68 @@ mod tests {
         [xor[off], xor[off + 1], xor[off + 2]]
     }
 
+    /// Read the AND-mask bit of pixel `(x, y)` (1 = transparent).
+    fn and_bit(and: &[u8], size: usize, x: usize, y: usize) -> bool {
+        let stride = size.div_ceil(16) * 2;
+        and[y * stride + x / 8] & (0x80 >> (x % 8)) != 0
+    }
+
     #[test]
     fn icon_masks_have_ddb_layout() {
         for size in [16usize, 24, 32, 48] {
             let (and_mask, xor_mask) = build_icon_masks(size);
             assert_eq!(and_mask.len(), size.div_ceil(16) * 2 * size);
             assert_eq!(xor_mask.len(), size * size * 4);
-            // AND mask all zero → every pixel opaque.
-            assert!(and_mask.iter().all(|&b| b == 0));
+            // Corners are transparent, the tile's edge midpoints opaque.
+            for (x, y) in [(0, 0), (size - 1, 0), (0, size - 1), (size - 1, size - 1)] {
+                assert!(
+                    and_bit(&and_mask, size, x, y),
+                    "corner ({x}, {y}) not transparent at {size}"
+                );
+            }
+            for (x, y) in [(size / 2, 0), (size / 2, size - 1), (0, size / 2), (size - 1, size / 2)]
+            {
+                assert!(
+                    !and_bit(&and_mask, size, x, y),
+                    "edge midpoint ({x}, {y}) transparent at {size}"
+                );
+            }
         }
     }
 
     #[test]
-    fn icon_pattern_is_light_circle_on_dark_square() {
+    fn icon_pattern_is_frost_spotlight() {
+        let size = 16usize;
+        let (and, xor) = build_icon_masks(size);
+        // Center of the icon is inside the spotlight disc → white.
+        assert_eq!(xor_rgb(&xor, size, 8, 8), WHITE);
+        // The ring sits at 43% of the edge on the horizontal axis → sky.
+        assert_eq!(xor_rgb(&xor, size, 14, 8), SKY);
+        // Between disc and ring the navy tile shows through.
+        assert_eq!(xor_rgb(&xor, size, 13, 8), NAVY);
+        // All four corners are outside the rounded square → transparent.
+        for (x, y) in [(0, 0), (15, 0), (0, 15), (15, 15)] {
+            assert!(and_bit(&and, size, x, y));
+        }
+    }
+
+    #[test]
+    fn icon_sparkle_only_on_large_icons() {
+        // On the ring at 45° upper-right, then ~70% of the arm length further
+        // out: beyond the ring's outer edge, so only the sparkle paints sky.
+        let size = 32usize;
+        let (_and, xor) = build_icon_masks(size);
+        assert_eq!(xor_rgb(&xor, size, 27, 6), SKY);
+        // At 16 px the sparkle is dropped: the analogous pixel stays navy.
         let size = 16usize;
         let (_and, xor) = build_icon_masks(size);
-        // Center of the icon is inside the circle → light.
-        assert_eq!(xor_rgb(&xor, size, 8, 8), [245, 245, 245]);
-        // All four corners are outside the circle → dark.
-        for (x, y) in [(0, 0), (15, 0), (0, 15), (15, 15)] {
-            assert_eq!(xor_rgb(&xor, size, x, y), [32, 32, 32]);
-        }
+        assert_eq!(xor_rgb(&xor, size, 14, 3), NAVY);
     }
 
     #[test]
-    fn icon_circle_is_centered_symmetrically() {
-        let size = 32usize;
+    fn icon_motif_is_centered_symmetrically() {
+        // Only testable at 16 px: larger sizes carry the upper-right sparkle.
+        let size = 16usize;
         let (_and, xor) = build_icon_masks(size);
         // Mirrored pixels across the center must share the same color.
         for y in 0..size {

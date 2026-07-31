@@ -1,9 +1,18 @@
 //! StatusNotifierItem tray icon (`ksni`) for the Wayland shell.
 //!
 //! Implementation notes:
-//! * The icon is generated at runtime by a pure function (light circle on a
-//!   dark rounded square, the same motif as the Windows tray) in the SNI
-//!   `IconPixmap` format: ARGB32, network byte order (A,R,G,B per pixel).
+//! * The icon is generated at runtime by a pure function (the shared "frost
+//!   spotlight" design: a white circle and sky ring with a small 4-point
+//!   sparkle on a deep-navy rounded square) in the SNI `IconPixmap` format:
+//!   ARGB32, network byte order (A,R,G,B per pixel).
+//! * Clicks: BOTH buttons open the menu. Right-click is the host rendering
+//!   the SNI dbusmenu (`ContextMenu` stays unimplemented; the spec route is
+//!   the `Menu` property). Left-click goes through ksni's `MENU_ON_ACTIVATE`
+//!   (`ItemIsMenu = true`), which KDE Plasma and the GNOME appindicator
+//!   extension honor by opening the menu on `Activate`. Limitation: a host
+//!   that ignores `ItemIsMenu` and still calls `Activate` gets an
+//!   `UnknownMethod` error and shows nothing, and the item can no longer
+//!   receive left-click itself — `Tray::activate` is dead with this set.
 //! * `ksni` runs in `async-io` mode: its D-Bus connection and service loop are
 //!   driven by ksni's/zbus's internal executor threads. Our own thread only
 //!   owns the ksni handle and pumps intents (tooltip updates, shutdown) so
@@ -26,36 +35,65 @@ use ksni::menu::StandardItem;
 /// Edge length of the generated icon pixmap in pixels.
 const ICON_SIZE: usize = 32;
 
+/// Smallest icon edge that carries the ring sparkle (below it the arm would
+/// rasterize as a stray pixel, not a sparkle).
+const SPARKLE_MIN_SIZE: usize = 24;
+
 // ---------------------------------------------------------------------------
 // Pure: runtime icon pixmap
 // ---------------------------------------------------------------------------
 
 /// The app icon as raw ARGB32 bytes (SNI `IconPixmap` layout: per pixel A,R,G,B
-/// in network byte order), `size`×`size`, top-down. A light circle centered on
-/// a dark rounded square; pixels outside the rounded square are transparent.
+/// in network byte order), `size`×`size`, top-down. The shared "frost
+/// spotlight" design: a filled white circle (the spotlight) inside a sky ring
+/// on a deep-navy rounded square, with a small 4-point sparkle on the ring at
+/// 45° upper-right; pixels outside the rounded square are transparent.
 fn build_icon_argb(size: usize) -> Vec<u8> {
-    const DARK: [u8; 3] = [32, 32, 32];
-    const LIGHT: [u8; 3] = [245, 245, 245];
+    const NAVY: [u8; 3] = [0x0F, 0x17, 0x2A]; // #0F172A — the tile
+    const WHITE: [u8; 3] = [0xF8, 0xFA, 0xFC]; // #F8FAFC — circle and sparkle
+    const SKY: [u8; 3] = [0x38, 0xBD, 0xF8]; // #38BDF8 — the ring
     let mut data = vec![0u8; size * size * 4];
 
     let half = size as f32 / 2.0;
-    let corner = size as f32 * 0.2; // rounded-square corner radius
-    let circle = size as f32 * 0.32; // light circle radius (the Windows tray's ratio)
+    let corner = size as f32 * 0.22; // rounded-square corner radius
+    let circle = size as f32 * 0.30; // spotlight circle radius
+    let ring_center = size as f32 * 0.43; // ring stroke-center radius
+    let ring_half = size as f32 * 0.03; // ring stroke half-width (6% wide)
+    // 4-point sparkle centered ON the ring at 45° upper-right. Its center is
+    // snapped to the pixel grid so the arms rasterize symmetric at small
+    // sizes (at even sizes the snapped center stays exactly at 45°).
+    let sparkle_arm = size as f32 * 0.12;
+    let sparkle_d = ring_center * std::f32::consts::FRAC_1_SQRT_2;
+    let sparkle_cx = (half + sparkle_d).floor() + 0.5;
+    let sparkle_cy = (half - sparkle_d).floor() + 0.5;
     for y in 0..size {
         for x in 0..size {
-            // Pixel-center distance from the icon center.
-            let dx = (x as f32 + 0.5 - half).abs();
-            let dy = (y as f32 + 0.5 - half).abs();
+            // Pixel-center offsets from the icon center (signed, y down).
+            let px = x as f32 + 0.5 - half;
+            let py = y as f32 + 0.5 - half;
+            let (dx, dy) = (px.abs(), py.abs());
             // Rounded-square coverage (SDF of a center-aligned rounded rect).
             let qx = (dx - (half - corner)).max(0.0);
             let qy = (dy - (half - corner)).max(0.0);
             if qx * qx + qy * qy > corner * corner {
                 continue; // outside the rounded square: stays transparent
             }
-            let [r, g, b] = if dx * dx + dy * dy <= circle * circle {
-                LIGHT
+            let dist = (dx * dx + dy * dy).sqrt();
+            // The sparkle is an astroid (superellipse with exponent 1/2, so
+            // the four arms taper to points); it draws OVER the ring.
+            let in_sparkle = size >= SPARKLE_MIN_SIZE && {
+                let sx = (x as f32 + 0.5 - sparkle_cx).abs();
+                let sy = (y as f32 + 0.5 - sparkle_cy).abs();
+                sx.sqrt() + sy.sqrt() <= sparkle_arm.sqrt()
+            };
+            let [r, g, b] = if dist <= circle {
+                WHITE
+            } else if in_sparkle {
+                WHITE
+            } else if (dist - ring_center).abs() <= ring_half {
+                SKY
             } else {
-                DARK
+                NAVY
             };
             let off = (y * size + x) * 4;
             data[off] = 255; // A — SNI IconPixmap is A,R,G,B per pixel
@@ -81,24 +119,34 @@ fn app_icon() -> ksni::Icon {
 // ---------------------------------------------------------------------------
 
 /// The SNI exposed over D-Bus. Callbacks fire on the tray service's thread.
-struct SpotFreezeTray<F, G, H>
+struct SpotFreezeTray<F, G, H, I, J>
 where
     F: Fn() + Send + 'static,
     G: Fn() + Send + 'static,
     H: Fn() + Send + 'static,
+    I: Fn() + Send + 'static,
+    J: Fn() + Send + 'static,
 {
     tooltip: String,
-    on_edit_settings: F,
-    on_reload_settings: G,
-    on_exit: H,
+    on_spotlight: F,
+    on_screenshot: G,
+    on_edit_settings: H,
+    on_reload_settings: I,
+    on_exit: J,
 }
 
-impl<F, G, H> ksni::Tray for SpotFreezeTray<F, G, H>
+impl<F, G, H, I, J> ksni::Tray for SpotFreezeTray<F, G, H, I, J>
 where
     F: Fn() + Send + 'static,
     G: Fn() + Send + 'static,
     H: Fn() + Send + 'static,
+    I: Fn() + Send + 'static,
+    J: Fn() + Send + 'static,
 {
+    /// Left-click opens the menu, same as right-click (see the module docs
+    /// for which hosts honor this and what the others do).
+    const MENU_ON_ACTIVATE: bool = true;
+
     fn id(&self) -> String {
         "spotfreeze".into()
     }
@@ -119,13 +167,21 @@ where
         }
     }
 
-    /// Left-click activation mirrors the Windows tray: open the settings.
-    fn activate(&mut self, _x: i32, _y: i32) {
-        (self.on_edit_settings)();
-    }
-
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         vec![
+            StandardItem {
+                label: "Spotlight".into(),
+                activate: Box::new(|tray: &mut Self| (tray.on_spotlight)()),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: "Screenshot".into(),
+                activate: Box::new(|tray: &mut Self| (tray.on_screenshot)()),
+                ..Default::default()
+            }
+            .into(),
+            ksni::MenuItem::Separator,
             StandardItem {
                 label: "Edit settings".into(),
                 activate: Box::new(|tray: &mut Self| (tray.on_edit_settings)()),
@@ -161,14 +217,16 @@ enum TrayCommand {
 
 /// The tray thread's whole life: register the SNI (tolerating a missing
 /// watcher), report readiness, then serve tooltip updates until shutdown.
-fn tray_thread<F, G, H>(
-    tray: SpotFreezeTray<F, G, H>,
+fn tray_thread<F, G, H, I, J>(
+    tray: SpotFreezeTray<F, G, H, I, J>,
     ready: mpsc::Sender<Result<()>>,
     commands: mpsc::Receiver<TrayCommand>,
 ) where
     F: Fn() + Send + 'static,
     G: Fn() + Send + 'static,
     H: Fn() + Send + 'static,
+    I: Fn() + Send + 'static,
+    J: Fn() + Send + 'static,
 {
     let handle = match future::block_on(tray.assume_sni_available(true).spawn())
         .context("failed to start the StatusNotifierItem tray service")
@@ -201,31 +259,38 @@ fn tray_thread<F, G, H>(
     }
 }
 
-/// Tray icon with an "Edit settings" / "Reload settings" / "Exit" menu.
-/// Callbacks fire on the tray's own thread.
+/// Tray icon with a "Spotlight" / "Screenshot" / "Edit settings" /
+/// "Reload settings" / "Exit" menu; both mouse buttons open the menu (see
+/// the module docs). Callbacks fire on the tray's own thread.
 pub struct WaylandTray {
     commands: mpsc::Sender<TrayCommand>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl WaylandTray {
-    /// Register the SNI and show the icon. `on_edit_settings` also fires on
-    /// left-click activation (mirrors the Windows tray).
-    pub fn spawn<F, G, H>(
+    /// Register the SNI and show the icon. The callbacks fire in menu order:
+    /// "Spotlight", "Screenshot", "Edit settings", "Reload settings", "Exit".
+    pub fn spawn<F, G, H, I, J>(
         tooltip: &str,
-        on_edit_settings: F,
-        on_reload_settings: G,
-        on_exit: H,
+        on_spotlight: F,
+        on_screenshot: G,
+        on_edit_settings: H,
+        on_reload_settings: I,
+        on_exit: J,
     ) -> Result<Self>
     where
         F: Fn() + Send + 'static,
         G: Fn() + Send + 'static,
         H: Fn() + Send + 'static,
+        I: Fn() + Send + 'static,
+        J: Fn() + Send + 'static,
     {
         let (commands, command_rx) = mpsc::channel();
         let (ready, ready_rx) = mpsc::channel();
         let tray = SpotFreezeTray {
             tooltip: tooltip.to_string(),
+            on_spotlight,
+            on_screenshot,
             on_edit_settings,
             on_reload_settings,
             on_exit,
@@ -332,34 +397,70 @@ mod tests {
     }
 
     #[test]
-    fn icon_is_light_circle_on_dark_square_network_byte_order() {
+    fn icon_is_the_frost_spotlight_palette_in_network_byte_order() {
         let size = ICON_SIZE;
         let data = build_icon_argb(size);
-        // Center: inside the circle → opaque light gray, bytes in A,R,G,B order.
-        assert_eq!(pixel(&data, size, 16, 16), [255, 245, 245, 245]);
-        // Edge midpoint: inside the square, outside the circle → opaque dark.
-        assert_eq!(pixel(&data, size, 16, 1), [255, 32, 32, 32]);
-        assert_eq!(pixel(&data, size, 1, 16), [255, 32, 32, 32]);
+        // Center: inside the spotlight circle → opaque white, A,R,G,B order.
+        assert_eq!(pixel(&data, size, 16, 16), [255, 0xF8, 0xFA, 0xFC]);
+        // On the ring (stroke center 43% of the edge): opaque sky.
+        assert_eq!(pixel(&data, size, 16, 2), [255, 0x38, 0xBD, 0xF8]);
+        assert_eq!(pixel(&data, size, 2, 16), [255, 0x38, 0xBD, 0xF8]);
+        // Between the circle and the ring, and at the edge midpoint: navy.
+        assert_eq!(pixel(&data, size, 16, 5), [255, 0x0F, 0x17, 0x2A]);
+        assert_eq!(pixel(&data, size, 16, 0), [255, 0x0F, 0x17, 0x2A]);
         // Transparent pixels are zeroed (no color bleed into a hidden pixel).
         assert_eq!(pixel(&data, size, 0, 0), [0, 0, 0, 0]);
     }
 
     #[test]
-    fn icon_is_center_symmetric() {
-        let size = ICON_SIZE;
-        let data = build_icon_argb(size);
-        for y in 0..size {
-            for x in 0..size {
-                assert_eq!(
-                    pixel(&data, size, x, y),
-                    pixel(&data, size, size - 1 - x, y),
-                    "horizontal asymmetry at ({x}, {y})"
-                );
-                assert_eq!(
-                    pixel(&data, size, x, y),
-                    pixel(&data, size, x, size - 1 - y),
-                    "vertical asymmetry at ({x}, {y})"
-                );
+    fn icon_is_center_symmetric_below_the_sparkle_size() {
+        // The sparkle is the only asymmetric element; the tile, circle, and
+        // ring stay center-symmetric at every size.
+        for size in [16usize, 22] {
+            let data = build_icon_argb(size);
+            for y in 0..size {
+                for x in 0..size {
+                    assert_eq!(
+                        pixel(&data, size, x, y),
+                        pixel(&data, size, size - 1 - x, y),
+                        "horizontal asymmetry at ({x}, {y}) size {size}"
+                    );
+                    assert_eq!(
+                        pixel(&data, size, x, y),
+                        pixel(&data, size, x, size - 1 - y),
+                        "vertical asymmetry at ({x}, {y}) size {size}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sparkle_is_upper_right_only_from_24px() {
+        let is_white = |p: [u8; 4]| p[0] == 255 && p[1..] == [0xF8, 0xFA, 0xFC];
+        for size in [16usize, 22, 24, 32, 48] {
+            let data = build_icon_argb(size);
+            let half = size as f32 / 2.0;
+            let circle = size as f32 * 0.30;
+            let mut sparkle_pixels = 0;
+            for y in 0..size {
+                for x in 0..size {
+                    let px = x as f32 + 0.5 - half;
+                    let py = y as f32 + 0.5 - half;
+                    if is_white(pixel(&data, size, x, y)) && px * px + py * py > circle * circle
+                    {
+                        sparkle_pixels += 1;
+                        assert!(
+                            px > 0.0 && py < 0.0,
+                            "sparkle pixel outside the upper-right quadrant at ({x}, {y}) size {size}"
+                        );
+                    }
+                }
+            }
+            if size >= SPARKLE_MIN_SIZE {
+                assert!(sparkle_pixels > 0, "no sparkle at size {size}");
+            } else {
+                assert_eq!(sparkle_pixels, 0, "sparkle below {SPARKLE_MIN_SIZE}px");
             }
         }
     }
@@ -368,10 +469,14 @@ mod tests {
         Box<dyn Fn() + Send>,
         Box<dyn Fn() + Send>,
         Box<dyn Fn() + Send>,
+        Box<dyn Fn() + Send>,
+        Box<dyn Fn() + Send>,
     >;
 
     /// Callback invocation counters, one per tray menu action.
     struct Counters {
+        spotlights: Arc<AtomicUsize>,
+        screenshots: Arc<AtomicUsize>,
         edits: Arc<AtomicUsize>,
         reloads: Arc<AtomicUsize>,
         exits: Arc<AtomicUsize>,
@@ -379,6 +484,8 @@ mod tests {
 
     fn counter_tray() -> (CounterTray, Counters) {
         let counters = Counters {
+            spotlights: Arc::new(AtomicUsize::new(0)),
+            screenshots: Arc::new(AtomicUsize::new(0)),
             edits: Arc::new(AtomicUsize::new(0)),
             reloads: Arc::new(AtomicUsize::new(0)),
             exits: Arc::new(AtomicUsize::new(0)),
@@ -391,6 +498,8 @@ mod tests {
         };
         let tray = SpotFreezeTray {
             tooltip: "Freeze: Win+F".to_string(),
+            on_spotlight: bump(&counters.spotlights),
+            on_screenshot: bump(&counters.screenshots),
             on_edit_settings: bump(&counters.edits),
             on_reload_settings: bump(&counters.reloads),
             on_exit: bump(&counters.exits),
@@ -415,26 +524,41 @@ mod tests {
     fn menu_items_are_wired_to_the_callbacks() {
         let (mut tray, counters) = counter_tray();
         let menu = ksni::Tray::menu(&tray);
-        assert_eq!(menu.len(), 3);
         let mut labels = Vec::new();
-        for item in menu {
-            let ksni::MenuItem::Standard(item) = item else {
-                panic!("expected standard menu items only");
-            };
-            labels.push(item.label.clone());
-            (item.activate)(&mut tray);
+        let mut separators = Vec::new();
+        for (index, item) in menu.into_iter().enumerate() {
+            match item {
+                ksni::MenuItem::Standard(item) => {
+                    labels.push(item.label.clone());
+                    (item.activate)(&mut tray);
+                }
+                ksni::MenuItem::Separator => separators.push(index),
+                _ => panic!("expected standard menu items and separators only"),
+            }
         }
-        assert_eq!(labels, ["Edit settings", "Reload settings", "Exit"]);
+        assert_eq!(
+            labels,
+            [
+                "Spotlight",
+                "Screenshot",
+                "Edit settings",
+                "Reload settings",
+                "Exit"
+            ]
+        );
+        assert_eq!(separators, [2], "one separator after the freeze actions");
+        assert_eq!(counters.spotlights.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.screenshots.load(Ordering::Relaxed), 1);
         assert_eq!(counters.edits.load(Ordering::Relaxed), 1);
         assert_eq!(counters.reloads.load(Ordering::Relaxed), 1);
         assert_eq!(counters.exits.load(Ordering::Relaxed), 1);
     }
 
     #[test]
-    fn left_click_activation_opens_settings() {
-        let (mut tray, counters) = counter_tray();
-        ksni::Tray::activate(&mut tray, 0, 0);
-        assert_eq!(counters.edits.load(Ordering::Relaxed), 1);
-        assert_eq!(counters.exits.load(Ordering::Relaxed), 0);
+    fn left_click_opens_the_menu_via_item_is_menu() {
+        // SNI gives the item no way to pop its own menu on Activate; ksni's
+        // MENU_ON_ACTIVATE (ItemIsMenu = true) is the protocol route that
+        // makes the host open the menu on left-click.
+        assert!(<CounterTray as ksni::Tray>::MENU_ON_ACTIVATE);
     }
 }
