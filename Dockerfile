@@ -21,16 +21,20 @@ RUN mkdir src \
 FROM deps AS test
 COPY src ./src
 COPY tests ./tests
+# `assets/` holds files embedded at compile time via include_bytes! (the
+# legend's Inter font faces), so the crate cannot build without it.
+COPY assets ./assets
 # BuildKit COPY keeps the (older) git mtimes; touch sources so cargo rebuilds
 # the local crate instead of reusing the deps stage's dummy-lib artifacts.
-RUN find src tests -type f -exec touch {} + \
+RUN find src tests assets -type f -exec touch {} + \
     && cargo test --locked
 CMD ["cargo", "test", "--locked"]
 
 FROM deps AS build
 COPY src ./src
 COPY tests ./tests
-RUN find src tests -type f -exec touch {} + \
+COPY assets ./assets
+RUN find src tests assets -type f -exec touch {} + \
     && cargo build --release --locked \
     && mkdir -p /out \
     && cp target/release/spotfreeze /out/spotfreeze
