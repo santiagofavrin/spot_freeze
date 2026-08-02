@@ -24,8 +24,8 @@
 //! - **Double buffering**: a slot is writable only after the compositor's
 //!   `wl_buffer.release`. Releases arrive on a DEDICATED event queue per
 //!   surface (pumped non-blocking inside `present`/`can_present`, which also
-//!   read the connection themselves — required while the synchronous
-//!   freeze/unfreeze fade blocks the main loop, harmless otherwise; events
+//!   read the connection themselves, keeping releases flowing even when the
+//!   caller drives presents in a burst; events
 //!   for the main queue stay buffered for it). `present` NEVER blocks: with
 //!   both slots busy it drops the frame — the controller defers through
 //!   [`OverlaySurface::can_present`] and repaints with the latest composed
@@ -246,10 +246,10 @@ impl LayerOverlaySurface {
     }
 
     /// Process buffer releases without blocking, feeding the release queue
-    /// from the socket FIRST: during the synchronous freeze/unfreeze fade
-    /// the main loop is blocked inside the controller, so compositor
-    /// releases would never be read off the connection and every fade step
-    /// after the second would starve for a free slot (both attached). The
+    /// from the socket FIRST: when the controller drives presents in a burst
+    /// (freeze entry presents every monitor back to back), compositor
+    /// releases must be read off the connection here or later presents in
+    /// the same burst would starve for a free slot (both attached). The
     /// read is a non-blocking attempt mirroring the shell's
     /// `read_and_dispatch` (`WouldBlock` = no new bytes; other errors defer
     /// to the main loop's authoritative handling there). Events addressed to

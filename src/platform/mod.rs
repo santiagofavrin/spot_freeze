@@ -44,27 +44,6 @@ pub trait OverlaySurface {
     fn can_present(&mut self) -> bool {
         true
     }
-
-    /// `true` when [`set_alpha`](Self::set_alpha) drives a real per-window
-    /// constant alpha (Windows layered windows, macOS `NSWindow.alphaValue`).
-    /// The default `false` (e.g. Wayland shm surfaces, which have no
-    /// per-surface alpha) makes the controller fade by pixel-blending frames
-    /// through the normal present path instead (capped per
-    /// [`crate::overlay::fade`]).
-    fn supports_alpha(&self) -> bool {
-        false
-    }
-
-    /// Set the surface's constant alpha (`0` = transparent … `255` = opaque)
-    /// without re-presenting pixels. Default no-op: surfaces without alpha
-    /// support are faded by pixel blends (see [`supports_alpha`](Self::supports_alpha)).
-    /// The fade driver always ends a transition with an exact endpoint call
-    /// (255 after freeze, 0 before teardown), so a no-op here never leaves a
-    /// surface stuck mid-alpha. `present` must keep honoring the alpha set
-    /// here (Windows folds it into the ULW blend's `SourceConstantAlpha`).
-    fn set_alpha(&mut self, _alpha: u8) -> Result<()> {
-        Ok(())
-    }
 }
 
 /// Creates one [`OverlaySurface`] per monitor: `(monitor_index, monitor_rect,

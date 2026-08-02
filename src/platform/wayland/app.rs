@@ -494,10 +494,7 @@ mod tests {
                        _sink: OverlayEventSink|
          -> Result<Box<dyn OverlaySurface>> { Ok(Box::new(FakeSurface)) };
         let factory: &SurfaceFactory = &factory;
-        let mut controller =
-            OverlayController::with_fade_clock(crate::overlay::fade::FadeClock::manual(Rc::new(
-                std::cell::Cell::new(std::time::Duration::ZERO),
-            )));
+        let mut controller = OverlayController::new();
         controller
             .freeze(
                 &FakeCapturer {

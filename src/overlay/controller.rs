@@ -1,35 +1,23 @@
 //! Overlay orchestration: freeze/unfreeze, COMPOSABLE mode layers, event
-//! routing, freeze transitions, the mode legend, clipboard copy.
+//! routing, the mode legend, clipboard copy.
 //! Platform-agnostic shell around the PURE [`ModeStack`] and
 //! [`crate::overlay::composite`] pixel ops; the per-OS pieces (surfaces,
 //! cursor, clipboard) go through the [`crate::platform`] seam.
 //!
 //! Implementation notes (contract clarifications — public API kept):
-//! - **Default mode**: `freeze` enters Spotlight (product spec default) with
-//!   the entry transition (see below).
+//! - **Default mode**: `freeze` enters Spotlight (product spec default).
 //! - **Mode model**: Spotlight is a TOGGLE (`S`: layer on/off — with every
 //!   layer off the screen stays frozen but UNVEILED); the zoom hold (`F` or
 //!   the zoom-modifier wheel chord) is an effect LAYER re-activating at the
 //!   last-used factor; Capture (`C`) RE-BASES the freeze (see below). Every
 //!   key-driven mode change is SEAMLESS: no flash frames, no border rings.
 //!   Spotlight toggles and full mode switches repaint once, instantly.
-//! - **Transitions**: freeze/unfreeze runs on the pure step schedule in
-//!   [`crate::overlay::fade`] (200 ms, ease-out cubic, <= 240 ms hard cap).
-//!   Freeze fades the overlay IN with the spotlight circle already at its
-//!   settled radius; a full unfreeze mirrors (the veil lifts). The circle
-//!   never grows or shrinks. Where the surface supports a constant window
-//!   alpha ([`OverlaySurface::supports_alpha`] — Windows layered windows,
-//!   macOS) the freeze/unfreeze fades are per-step alpha updates over the
-//!   settled frames; elsewhere (Wayland) the
-//!   entry presents re-composed frames whose veil ramps with the step alpha,
-//!   and the exit blends toward the original capture
-//!   ([`crate::overlay::composite::blend_frames`]) into the preallocated
-//!   `fade_scratch` buffers through the normal present path (capped at 8
-//!   full-frame steps). Esc from capture mode and the Ctrl+C close stay
-//!   instant (no fade). Transitions are ATOMIC: they run synchronously on
-//!   the UI thread; input pressed during one queues or drops per platform
-//!   without ever corrupting the session (the interruption state machine is
-//!   defined in the fade module docs).
+//! - **No transitions**: freeze and unfreeze are INSTANT. Freeze presents
+//!   each monitor's settled frame once — veil at full strength, spotlight
+//!   circle at its settled radius, legend at full strength; unfreeze simply
+//!   destroys the overlay windows. There are no fades or animations anywhere
+//!   in the controller: every key-driven change (mode switches, spotlight
+//!   toggles, capture entry/exit) repaints once, immediately.
 //! - **Capture re-freeze**: entering capture mode composes every monitor's
 //!   CURRENT view (zoom base → veil → spotlight hole — WITHOUT the mode
 //!   legend) and swaps it in as the new ORIGINAL, stashing the pre-capture
@@ -75,11 +63,10 @@
 use crate::capture::{Capturer, DibBuffer, MonitorInfo};
 use crate::geometry::{Point, Rect};
 use crate::overlay::composite::{
-    RenderState, ZoomFilter, blend_frames, compose_frame, crop_normalized, monitor_index_at,
-    virtual_to_local, zoom_resample,
+    RenderState, ZoomFilter, compose_frame, crop_normalized, monitor_index_at, virtual_to_local,
+    zoom_resample,
 };
 use crate::overlay::events::{OverlayEvent, OverlayEventSink};
-use crate::overlay::fade::{FadeClock, FadeDirection, fade_step};
 use crate::overlay::legend::Legend;
 use crate::overlay::modes::{ModeEffect, ModeKind, ModeParams, ModeStack, SnipSelection};
 use crate::platform::{OverlaySurface, PlatformServices, SurfaceFactory};
@@ -87,7 +74,6 @@ use crate::settings::model::{AppSettings, Rgb};
 use anyhow::Result;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
 
 /// A repaint deferred because its surface was busy: full frame or a
 /// monitor-local region. Merging follows the damage contract: the union of
@@ -162,12 +148,6 @@ struct FreezeState {
     /// every capture transition (set_mode/add_mode/toggle_mode/unfreeze)
     /// moves this stash and the mode stack's layer stash together.
     capture: Option<Vec<DibBuffer>>,
-    /// Per-monitor blend target for the pixel-blend fade (surfaces without
-    /// [`OverlaySurface::supports_alpha`]), allocated ONCE at freeze time and
-    /// reused by every freeze-fade step of the session — fades never allocate
-    /// per step. EMPTY when every surface has a constant window alpha (the
-    /// fade then only updates `set_alpha`).
-    fade_scratch: Vec<DibBuffer>,
 }
 
 /// Owns the frozen captures, one [`OverlaySurface`] per monitor, and the
@@ -186,23 +166,13 @@ pub struct OverlayController {
     /// reset to Spotlight on every freeze and on Esc from capture mode.
     /// Meaningless while unfrozen (returns the last used kind).
     active: ModeKind,
-    /// Time source for the fade driver (system clock in production; tests
-    /// inject a manual clock via [`OverlayController::with_fade_clock`]).
-    clock: FadeClock,
 }
 
 impl OverlayController {
     pub fn new() -> Self {
-        Self::with_fade_clock(FadeClock::system())
-    }
-
-    /// Controller driving its fades on `clock` (tests: a manual clock, so
-    /// fades walk the full step schedule in zero wall-clock time).
-    pub fn with_fade_clock(clock: FadeClock) -> Self {
         Self {
             inner: Rc::new(RefCell::new(None)),
             active: ModeKind::Spotlight,
-            clock,
         }
     }
 
@@ -216,10 +186,10 @@ impl OverlayController {
     }
 
     /// Capture all monitors ONCE via `capturer`, create one overlay surface
-    /// per monitor via `surfaces`, enter Spotlight mode, and run the entry
-    /// transition (see [`crate::overlay::fade`]): the veil eases in with the
-    /// spotlight circle already at its full radius. Cursor seeding and
-    /// clipboard copies go through `services`.
+    /// per monitor via `surfaces`, enter Spotlight mode, and present each
+    /// monitor's settled frame immediately (no fade, no animation): the veil
+    /// at full strength, the spotlight circle at its full radius. Cursor
+    /// seeding and clipboard copies go through `services`.
     ///
     /// Settings are SNAPSHOT at freeze time: changing hotkeys/radius/zoom while
     /// frozen takes effect on the next freeze. No-op when already frozen.
@@ -263,16 +233,6 @@ impl OverlayController {
             .iter()
             .map(|o| DibBuffer::new(o.width, o.height))
             .collect();
-        // The pixel-blend fade's scratch targets, preallocated for the whole
-        // session (constant-alpha surfaces fade without them).
-        let fade_scratch = if windows.iter().all(|w| w.supports_alpha()) {
-            Vec::new()
-        } else {
-            originals
-                .iter()
-                .map(|o| DibBuffer::new(o.width, o.height))
-                .collect()
-        };
 
         let settings = settings.clone();
         let monitor_count = monitors.len();
@@ -286,14 +246,15 @@ impl OverlayController {
             legend: Legend::from_hotkeys(&settings.hotkeys),
             settings,
             capture: None,
-            fade_scratch,
         };
 
         // Spotlight is the default mode (product spec). Seed the live cursor
-        // position, then run the entry transition: the veil eases in over the
-        // settled circle (freeze == spotlight activation).
+        // position, then present every monitor's settled frame at once —
+        // freezing is INSTANT: no fade, no animation.
         seed_cursor(&mut state, services);
-        fade_in(&mut state, &self.clock);
+        for m in 0..state.windows.len() {
+            render_and_present(&mut state, m, None);
+        }
 
         *self.inner.borrow_mut() = Some(state);
         self.active = ModeKind::Spotlight;
@@ -302,10 +263,9 @@ impl OverlayController {
 
     /// Esc / cancel contract: in CAPTURE mode this only EXITS capture — the
     /// pre-capture originals and the stashed spotlight/zoom state are
-    /// restored (the re-frozen base is dropped) and the session stays frozen
-    /// (deliberately INSTANT: no fade there); anywhere else it fades the
-    /// overlay OUT (see [`crate::overlay::fade`]), then destroys all overlay
-    /// windows and drops the captures. No-op when not frozen.
+    /// restored (the re-frozen base is dropped) and the session stays frozen;
+    /// anywhere else it destroys all overlay windows and drops the captures
+    /// immediately (no fade, no animation). No-op when not frozen.
     pub fn unfreeze(&mut self) {
         {
             let mut slot = self.inner.borrow_mut();
@@ -318,13 +278,9 @@ impl OverlayController {
             }
         }
         // Take first, drop AFTER releasing the borrow: window teardown never
-        // runs while the cell is mutably borrowed. The fade runs on the taken
-        // state — sink events arriving mid-fade already see `None` and no-op.
-        let mut taken = self.inner.borrow_mut().take();
-        if let Some(state) = taken.as_mut() {
-            fade_out(state, &self.clock);
-        }
-        drop(taken);
+        // runs while the cell is mutably borrowed, and sink events arriving
+        // during teardown already see `None` and no-op.
+        drop(self.inner.borrow_mut().take());
     }
 
     pub fn active_mode(&self) -> ModeKind {
@@ -342,7 +298,7 @@ impl OverlayController {
     /// active layer; switching directly OUT of capture mode this way drops
     /// the re-frozen base with the mode stack's layer stash, restoring the
     /// pre-capture originals. One full repaint follows either way — mode
-    /// switches are INSTANT by design (only freeze/unfreeze fades animate;
+    /// switches are INSTANT by design (nothing in the controller animates;
     /// see the module docs).
     /// No-op when not frozen.
     pub fn set_mode(&mut self, kind: ModeKind, services: &dyn PlatformServices) {
@@ -669,185 +625,6 @@ fn drain_pending_repaints(state: &mut FreezeState) {
     }
 }
 
-/// Wait `ms`, draining deferred repaints in small slices so frames deferred
-/// by buffer-slot pacing still reach the screen during the hold.
-fn wait_draining(state: &mut FreezeState, wait: Duration, clock: &FadeClock) {
-    let start = clock.now();
-    loop {
-        let remaining = wait.saturating_sub(clock.now().saturating_sub(start));
-        if remaining.is_zero() {
-            break;
-        }
-        drain_pending_repaints(state);
-        clock.sleep(remaining.min(Duration::from_millis(2)));
-    }
-}
-
-/// How one transition step reaches the screen (per surface kind, per
-/// transition — see the [`crate::overlay::fade`] module docs).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Carrier {
-    /// Constant-alpha surfaces (Windows, macOS): the frame carries the FULL
-    /// veil; the step alpha goes to `set_alpha` (a true crossfade against the
-    /// live desktop). Used by the freeze/unfreeze fades only.
-    WindowAlpha,
-    /// The composed frame carries a veil RAMP (dim lerped by the step alpha)
-    /// and is presented directly. Freeze entry on blend surfaces (alpha 0 ==
-    /// the original capture == the live screen, so the overlay appears
-    /// seamlessly).
-    VeilRamp,
-    /// Blend surfaces fading OUT: the frame carries the full veil and is
-    /// blended toward the original capture by the step alpha into
-    /// `fade_scratch` — a veil ramp cannot crossfade a zoom base away.
-    BlendToOriginal,
-}
-
-/// Per-transition compose/veil schedule shared by [`fade_in`] and
-/// [`fade_out`].
-struct TransitionPlan {
-    /// Veil alpha at step alpha 0 and at step alpha 255 (lerped per step).
-    /// Equal values = a constant veil (the window-alpha and blend carriers).
-    dim_at_0: u8,
-    dim_at_255: u8,
-    /// Scale the legend by the step alpha too (freeze entry on blend
-    /// surfaces, so the pill fades in with the veil instead of popping).
-    fade_legend: bool,
-    carrier: Carrier,
-}
-
-/// Shared step loop of every transition: sample the clock, compose each
-/// monitor's frame with the step's veil/radius values, push it through the
-/// plan's carrier, then wait to the next nominal boundary draining deferred
-/// repaints. A busy blend surface simply skips its step — the next one
-/// carries a newer alpha, so the transition degrades and never stalls (see
-/// the [`crate::overlay::fade`] module docs). The caller applies the exact
-/// endpoint after the loop.
-fn run_transition(
-    state: &mut FreezeState,
-    direction: FadeDirection,
-    plan: &TransitionPlan,
-    clock: &FadeClock,
-) {
-    let start = clock.now();
-    while let Some(step) = fade_step(clock.now().saturating_sub(start), direction) {
-        let a = step.alpha;
-        let dim = lerp_u8(plan.dim_at_0, plan.dim_at_255, a);
-        let legend_alpha = if plan.fade_legend { a } else { 255 };
-        for m in 0..state.windows.len() {
-            match plan.carrier {
-                Carrier::WindowAlpha => {
-                    compose_frame_anim(state, m, Some(dim), legend_alpha);
-                    let _ = state.windows[m].set_alpha(a);
-                    present_or_defer(state, m, None);
-                }
-                Carrier::VeilRamp => {
-                    if state.windows[m].can_present() {
-                        compose_frame_anim(state, m, Some(dim), legend_alpha);
-                        present_or_defer(state, m, None);
-                    }
-                }
-                Carrier::BlendToOriginal => {
-                    if state.windows[m].can_present() {
-                        compose_frame_anim(state, m, Some(dim), legend_alpha);
-                        blend_frames(
-                            &state.originals[m],
-                            &state.frames[m],
-                            &mut state.fade_scratch[m],
-                            a,
-                        );
-                        let _ = state.windows[m].present(&state.fade_scratch[m], None);
-                    }
-                }
-            }
-        }
-        wait_draining(state, step.wait, clock);
-    }
-}
-
-/// Freeze entry transition: the veil eases in with the spotlight circle
-/// already at its settled radius (it never grows). Constant-alpha surfaces
-/// start fully transparent and crossfade via `set_alpha` over the settled
-/// frames; blend surfaces present re-composed frames whose veil ramps with
-/// the step alpha (at alpha 0 the frame IS the original capture — what the
-/// live screen just showed — so the overlay appears seamlessly either way).
-fn fade_in(state: &mut FreezeState, clock: &FadeClock) {
-    let use_alpha = state.windows.iter().all(|w| w.supports_alpha());
-    let dim = state.settings.overlay.dim_opacity;
-    let plan = if use_alpha {
-        // Transparent BEFORE the first present: the initial frame must never
-        // appear at full opacity ahead of the transition.
-        for w in &mut state.windows {
-            let _ = w.set_alpha(0);
-        }
-        TransitionPlan {
-            dim_at_0: dim,
-            dim_at_255: dim,
-            fade_legend: false,
-            carrier: Carrier::WindowAlpha,
-        }
-    } else {
-        TransitionPlan {
-            dim_at_0: 0,
-            dim_at_255: dim,
-            fade_legend: true,
-            carrier: Carrier::VeilRamp,
-        }
-    };
-    run_transition(state, FadeDirection::In, &plan, clock);
-    // The exact endpoint: the settled frame at full opacity on every monitor.
-    if use_alpha {
-        for w in &mut state.windows {
-            let _ = w.set_alpha(255);
-        }
-    }
-    for m in 0..state.windows.len() {
-        compose_frame_for(state, m);
-        present_or_defer(state, m, None);
-    }
-}
-
-/// Full-unfreeze fade-OUT on the taken state (the windows die right after):
-/// the mirror of [`fade_in`] — the veil lifts over the settled frame (the
-/// spotlight circle keeps its size) — down to the exact transparent/original
-/// endpoint. The blend path's full-frame presents supersede every repaint
-/// deferred so far, so the pending slots are dropped up front.
-fn fade_out(state: &mut FreezeState, clock: &FadeClock) {
-    let use_alpha = state.windows.iter().all(|w| w.supports_alpha());
-    let (dim, _) = veil_for(
-        state.modes.in_capture(),
-        state.modes.any_active(),
-        &state.settings,
-    );
-    let plan = TransitionPlan {
-        dim_at_0: dim,
-        dim_at_255: dim,
-        fade_legend: false,
-        carrier: if use_alpha {
-            Carrier::WindowAlpha
-        } else {
-            Carrier::BlendToOriginal
-        },
-    };
-    if !use_alpha {
-        for pending in &mut state.pending_repaint {
-            *pending = None;
-        }
-    }
-    run_transition(state, FadeDirection::Out, &plan, clock);
-    if use_alpha {
-        for w in &mut state.windows {
-            let _ = w.set_alpha(0);
-        }
-    } else {
-        // The alpha-0 blend IS the original capture: present it directly.
-        for m in 0..state.windows.len() {
-            if state.windows[m].can_present() {
-                let _ = state.windows[m].present(&state.originals[m], None);
-            }
-        }
-    }
-}
-
 /// The veil (dim alpha, color) for a layer-set snapshot: capture mode gets
 /// the lighter, cooler snip veil (`overlay.snip_dim_opacity` /
 /// `overlay.snip_color`); any other active layer set gets the spotlight veil;
@@ -866,31 +643,15 @@ fn veil_for(in_capture: bool, any_active: bool, settings: &AppSettings) -> (u8, 
     }
 }
 
-/// Veil alpha between two endpoint veils at the eased progress byte `alpha`
-/// (`from` at alpha 0, `to` at alpha 255): exact at both ends, rounded to
-/// nearest in between — the same one-division blend family as
-/// [`crate::overlay::composite::darken`].
-fn lerp_u8(from: u8, to: u8, alpha: u8) -> u8 {
-    ((from as u32 * (255 - alpha as u32) + to as u32 * alpha as u32 + 127) / 255) as u8
-}
-
-/// Compose monitor `m`'s frame at its settled state (no transition
-/// overrides): [`compose_frame_anim`] with the current veil and a
-/// full-strength legend.
-fn compose_frame_for(state: &mut FreezeState, m: usize) {
-    compose_frame_anim(state, m, None, 255);
-}
-
 /// Compose monitor `m`'s frame: build the
-/// [`crate::overlay::composite::RenderState`] from the active layers, apply
-/// the transition overrides (`dim` forces the veil alpha, `legend_alpha`
-/// scales the legend), run the shared pipeline (zoom base → colored darken →
-/// spotlight hole → snip selection → capture indicator) into the persistent
-/// frame buffer, and paint the mode legend on top. The veil comes from
-/// [`veil_for`]: capture mode gets the snip veil, other active layer sets the
-/// spotlight veil, and with NO active layer the veil is dropped entirely (the
-/// frozen screen shows the original capture).
-fn compose_frame_anim(state: &mut FreezeState, m: usize, dim: Option<u8>, legend_alpha: u8) {
+/// [`crate::overlay::composite::RenderState`] from the active layers, run the
+/// shared pipeline (zoom base → colored darken → spotlight hole → snip
+/// selection → capture indicator) into the persistent frame buffer, and
+/// paint the mode legend on top at full strength. The veil comes from
+/// [`veil_for`]: capture mode gets the snip veil, other active layer sets
+/// the spotlight veil, and with NO active layer the veil is dropped entirely
+/// (the frozen screen shows the original capture).
+fn compose_frame_for(state: &mut FreezeState, m: usize) {
     // Split borrows across disjoint fields: modes (read) builds the render
     // state, originals[m] (read) + frames[m] (write) are the pixel buffers,
     // settings (read) supplies the veil parameters, legend (read) the pill.
@@ -904,16 +665,16 @@ fn compose_frame_anim(state: &mut FreezeState, m: usize, dim: Option<u8>, legend
     } = state;
     let render_state = modes.render_state(m);
     let viewport = Rect::new(0, 0, originals[m].width, originals[m].height);
-    let (base_dim, veil_color) = veil_for(modes.in_capture(), modes.any_active(), settings);
+    let (dim, veil_color) = veil_for(modes.in_capture(), modes.any_active(), settings);
     compose_frame(
         &originals[m],
         &mut frames[m],
         viewport,
         &render_state,
-        dim.unwrap_or(base_dim),
+        dim,
         veil_color,
     );
-    legend.paint(&mut frames[m], &modes.layers_active(), legend_alpha);
+    legend.paint(&mut frames[m], &modes.layers_active());
 }
 
 /// Capture-mode entry: RE-BASE the freeze on the currently composited view.
@@ -922,7 +683,7 @@ fn compose_frame_anim(state: &mut FreezeState, m: usize, dim: Option<u8>, legend
 /// indicator is excluded by construction) and swapped in as the new ORIGINAL;
 /// the pre-capture originals move into `state.capture` for
 /// [`exit_capture`]. The mode legend is NOT composed here (it is painted by
-/// [`compose_frame_anim`] only), so it can never be baked into the base and
+/// [`compose_frame_for`] only), so it can never be baked into the base and
 /// leak into a copy. One-off allocation per monitor on a key press — never
 /// on a repaint path.
 fn rebase_freeze(state: &mut FreezeState) {
@@ -1122,9 +883,7 @@ mod tests {
     //! no-op, services untouched).
     use super::*;
     use crate::overlay::composite::darken;
-    use crate::overlay::fade::{FADE_STEP_MS, FADE_STEPS, fade_alpha};
     use crate::settings::model::AppSettings;
-    use std::cell::Cell;
 
     /// [`PlatformServices`] double for the unfrozen-path tests: never
     /// consulted (every call would be a bug), so both methods panic.
@@ -1154,8 +913,7 @@ mod tests {
     }
 
     /// Overlay surface recording every presented frame (shared with the
-    /// test). No constant-alpha support ⇒ the controller exercises the
-    /// pixel-blend fade path with it.
+    /// test).
     struct FakeSurface {
         presents: Rc<RefCell<Vec<DibBuffer>>>,
     }
@@ -1163,29 +921,6 @@ mod tests {
     impl OverlaySurface for FakeSurface {
         fn present(&mut self, frame: &DibBuffer, _dirty: Option<Rect>) -> Result<()> {
             self.presents.borrow_mut().push(frame.clone());
-            Ok(())
-        }
-    }
-
-    /// Constant-alpha surface (the Windows/macOS path): records the applied
-    /// alpha sequence alongside the presented frames.
-    struct AlphaSurface {
-        presents: Rc<RefCell<Vec<DibBuffer>>>,
-        alphas: Rc<RefCell<Vec<u8>>>,
-    }
-
-    impl OverlaySurface for AlphaSurface {
-        fn present(&mut self, frame: &DibBuffer, _dirty: Option<Rect>) -> Result<()> {
-            self.presents.borrow_mut().push(frame.clone());
-            Ok(())
-        }
-
-        fn supports_alpha(&self) -> bool {
-            true
-        }
-
-        fn set_alpha(&mut self, alpha: u8) -> Result<()> {
-            self.alphas.borrow_mut().push(alpha);
             Ok(())
         }
     }
@@ -1212,9 +947,7 @@ mod tests {
         controller: OverlayController,
         services: FakeServices,
         captured: Vec<(MonitorInfo, DibBuffer)>,
-        alpha_surfaces: bool,
         presents: Vec<Rc<RefCell<Vec<DibBuffer>>>>,
-        alphas: Vec<Rc<RefCell<Vec<u8>>>>,
         copied: Rc<RefCell<Vec<DibBuffer>>>,
     }
 
@@ -1222,24 +955,15 @@ mod tests {
         /// Freeze again over the same fake monitors (recordings accumulate:
         /// the new surfaces share the handles). A no-op while already frozen.
         fn refreeze(&mut self) {
-            let alpha_surfaces = self.alpha_surfaces;
             let factory_presents = self.presents.clone();
-            let factory_alphas = self.alphas.clone();
             let factory = move |index: usize,
                                 _rect: Rect,
                                 _rects: Rc<Vec<Rect>>,
                                 _sink: OverlayEventSink|
                   -> Result<Box<dyn OverlaySurface>> {
-                Ok(if alpha_surfaces {
-                    Box::new(AlphaSurface {
-                        presents: factory_presents[index].clone(),
-                        alphas: factory_alphas[index].clone(),
-                    })
-                } else {
-                    Box::new(FakeSurface {
-                        presents: factory_presents[index].clone(),
-                    })
-                })
+                Ok(Box::new(FakeSurface {
+                    presents: factory_presents[index].clone(),
+                }))
             };
             let factory: &SurfaceFactory = &factory;
             self.controller
@@ -1275,16 +999,10 @@ mod tests {
         s
     }
 
-    /// Manual fade clock: sleeps advance time instantly by the exact request,
-    /// so fades walk the full nominal step schedule in zero wall-clock time.
-    fn manual_fade_clock() -> FadeClock {
-        FadeClock::manual(Rc::new(Cell::new(Duration::ZERO)))
-    }
-
     /// M0 (origin) shows [`coord_pattern`], M1 (negative virtual x) its
-    /// inverse. Blend-path surfaces, manual fade clock.
+    /// inverse.
     fn freeze_fake(cursor: Point) -> FakeFreeze {
-        freeze_fake_ex(cursor, false, manual_fade_clock())
+        freeze_fake_with(two_small_monitors(), cursor)
     }
 
     /// M0 (origin) shows [`coord_pattern`], M1 (negative virtual x) its
@@ -1314,24 +1032,9 @@ mod tests {
         )]
     }
 
-    /// `cursor` is the fixed virtual-screen position the services double
-    /// reports; `alpha_surfaces` picks the constant-alpha surface fake (the
-    /// Windows/macOS fade path) over the blend-path one.
-    fn freeze_fake_ex(cursor: Point, alpha_surfaces: bool, clock: FadeClock) -> FakeFreeze {
-        freeze_fake_with(two_small_monitors(), cursor, alpha_surfaces, clock)
-    }
-
-    /// The [`freeze_fake_ex`] core over arbitrary fake monitors.
-    fn freeze_fake_with(
-        captured: Vec<(MonitorInfo, DibBuffer)>,
-        cursor: Point,
-        alpha_surfaces: bool,
-        clock: FadeClock,
-    ) -> FakeFreeze {
+    /// The [`freeze_fake`] core over arbitrary fake monitors.
+    fn freeze_fake_with(captured: Vec<(MonitorInfo, DibBuffer)>, cursor: Point) -> FakeFreeze {
         let presents: Vec<Rc<RefCell<Vec<DibBuffer>>>> = (0..captured.len())
-            .map(|_| Rc::new(RefCell::new(Vec::new())))
-            .collect();
-        let alphas: Vec<Rc<RefCell<Vec<u8>>>> = (0..captured.len())
             .map(|_| Rc::new(RefCell::new(Vec::new())))
             .collect();
         let copied = Rc::new(RefCell::new(Vec::new()));
@@ -1339,14 +1042,12 @@ mod tests {
             cursor,
             copied: copied.clone(),
         };
-        let controller = OverlayController::with_fade_clock(clock);
+        let controller = OverlayController::new();
         let mut session = FakeFreeze {
             controller,
             services,
             captured,
-            alpha_surfaces,
             presents,
-            alphas,
             copied,
         };
         session.refreeze();
@@ -1513,7 +1214,7 @@ mod tests {
         assert!(!c.is_frozen());
     }
 
-    // ---- transition helpers (veil endpoints, lerp, radius scale) ----
+    // ---- veil selection ----
 
     #[test]
     fn veil_for_selects_snip_spotlight_or_no_veil() {
@@ -1530,20 +1231,6 @@ mod tests {
         );
         // No layers: no veil (the frozen screen shows the original capture).
         assert_eq!(veil_for(false, false, &s), (0, s.overlay.color));
-    }
-
-    #[test]
-    fn lerp_u8_hits_exact_endpoints_and_rounds_to_nearest() {
-        assert_eq!(lerp_u8(0, 160, 0), 0);
-        assert_eq!(lerp_u8(0, 160, 255), 160);
-        assert_eq!(lerp_u8(160, 0, 255), 0);
-        assert_eq!(lerp_u8(160, 0, 0), 160);
-        assert_eq!(lerp_u8(90, 90, 128), 90, "constant veil at any alpha");
-        assert_eq!(
-            lerp_u8(0, 160, 128),
-            ((160u32 * 128 + 127) / 255) as u8,
-            "one-division blend family"
-        );
     }
 
     // ---- mode_params ----
@@ -2171,17 +1858,12 @@ mod tests {
         );
     }
 
-    // ---- freeze/unfreeze fades ----------------------------------------------
+    // ---- freeze/unfreeze are instant -----------------------------------------
     //
-    // The interruption state machine (src/overlay/fade.rs docs): transitions
-    // are atomic on the UI thread, so every rapid-toggle case resolves by
-    // serialization — these tests pin the sequences and the exact endpoints.
-    // The 32x32 fake monitors are smaller than the legend pill, so the
-    // legend never paints in them (legend coverage is at the bottom).
-
-    /// Expected present count of one transition: the schedule's nominal
-    /// steps plus the exact settled endpoint applied after the last step.
-    const TRANSITION_PRESENTS: usize = FADE_STEPS as usize + 1;
+    // No fades, no animations: freeze presents each monitor's settled frame
+    // exactly once; unfreeze presents nothing (the windows are simply
+    // destroyed). The 32x32 fake monitors are smaller than the legend pill,
+    // so the legend never paints in them (legend coverage is at the bottom).
 
     /// The settled spotlight frame for the 32x32 fake: full-strength veil,
     /// hole of `radius` at the cursor (16,16). No legend (monitor too small).
@@ -2198,26 +1880,6 @@ mod tests {
             Rect::new(0, 0, 32, 32),
             &state,
             160,
-            Rgb::BLACK,
-        );
-        out
-    }
-
-    /// Compose the 32x32 frame for one transition step: veil `dim`, circle
-    /// `radius` at the cursor.
-    fn step_frame(dim: u8, radius: u32) -> DibBuffer {
-        let original = make_buf(32, 32, coord_pattern);
-        let mut out = DibBuffer::new(32, 32);
-        let state = RenderState {
-            spotlight: Some((Point::new(16, 16), radius)),
-            ..RenderState::default()
-        };
-        compose_frame(
-            &original,
-            &mut out,
-            Rect::new(0, 0, 32, 32),
-            &state,
-            dim,
             Rgb::BLACK,
         );
         out
@@ -2242,181 +1904,80 @@ mod tests {
     }
 
     #[test]
-    fn freeze_fades_in_from_the_original_capture() {
+    fn freeze_presents_the_settled_frame_once_per_monitor() {
         let f = freeze_fake(Point::new(16, 16));
-        let p = f.presents[0].borrow();
-        assert_eq!(
-            p.len(),
-            TRANSITION_PRESENTS,
-            "steps + exact endpoint, no extra frames"
-        );
-        let original = make_buf(32, 32, coord_pattern);
-        assert_eq!(
-            p[0].pixels, original.pixels,
-            "alpha 0 == the original capture (the live screen's pixels)"
-        );
-        // Each step composes the veil ramp for the schedule's alpha; the
-        // spotlight circle is at its settled radius throughout.
-        for k in 1..FADE_STEPS {
-            let a = fade_alpha(k * FADE_STEP_MS, FadeDirection::In);
-            let expect = step_frame(lerp_u8(0, 160, a), 10);
-            assert_eq!(p[k as usize].pixels, expect.pixels, "fade step {k}");
+        for (m, presents) in f.presents.iter().enumerate() {
+            assert_eq!(
+                presents.borrow().len(),
+                1,
+                "monitor {m}: one present, no fade steps"
+            );
         }
-        // The endpoint is the settled frame (full veil).
-        assert_eq!(p[p.len() - 1].pixels, settled_frame(10).pixels);
-    }
-
-    #[test]
-    fn freeze_fade_in_drives_constant_alpha_surfaces() {
-        let f = freeze_fake_ex(Point::new(16, 16), true, manual_fade_clock());
-        // Transparent BEFORE the first present, the schedule's alphas, then
-        // the exact opaque endpoint.
-        let mut expect = vec![0u8];
-        for k in 0..FADE_STEPS {
-            expect.push(fade_alpha(k * FADE_STEP_MS, FadeDirection::In));
-        }
-        expect.push(255);
-        assert_eq!(*f.alphas[0].borrow(), expect);
         assert_eq!(
-            *f.alphas[1].borrow(),
-            expect,
-            "every monitor fades in lockstep"
-        );
-        // The alpha path never blends pixels: one present per step (the
-        // settled frame) plus the settled endpoint.
-        let p = f.presents[0].borrow();
-        assert_eq!(p.len(), TRANSITION_PRESENTS);
-        assert_eq!(
-            p[0].pixels,
+            f.presents[0].borrow()[0].pixels,
             settled_frame(10).pixels,
-            "step 0: full veil, settled circle"
+            "the first and only frame is the settled spotlight view"
         );
-        assert_eq!(p[p.len() - 1].pixels, settled_frame(10).pixels);
     }
 
     #[test]
-    fn unfreeze_fades_out_to_the_original_capture() {
+    fn unfreeze_presents_nothing_the_windows_just_close() {
         let mut f = freeze_fake(Point::new(16, 16));
-        let before = f.presents[0].borrow().len();
+        let before: Vec<usize> = f.presents.iter().map(|p| p.borrow().len()).collect();
         f.controller.unfreeze();
         assert!(!f.controller.is_frozen());
-        let p = f.presents[0].borrow();
-        let fade = &p[before..];
-        assert_eq!(fade.len(), TRANSITION_PRESENTS, "steps + exact endpoint");
-        let original = make_buf(32, 32, coord_pattern);
-        // Each step blends the original toward the settled frame at the
-        // schedule's alpha (the spotlight circle keeps its size).
-        for k in 0..FADE_STEPS {
-            let a = fade_alpha(k * FADE_STEP_MS, FadeDirection::Out);
-            let target = step_frame(160, 10);
-            let mut expect = DibBuffer::new(32, 32);
-            blend_frames(&original, &target, &mut expect, a);
-            assert_eq!(fade[k as usize].pixels, expect.pixels, "fade-out step {k}");
+        for (m, presents) in f.presents.iter().enumerate() {
+            assert_eq!(
+                presents.borrow().len(),
+                before[m],
+                "monitor {m}: no fade-out frames"
+            );
         }
-        assert_eq!(
-            fade.last().unwrap().pixels,
-            original.pixels,
-            "the fade ends exactly on the original capture"
-        );
     }
 
     #[test]
-    fn unfreeze_fade_out_ends_fully_transparent_on_alpha_surfaces() {
-        let mut f = freeze_fake_ex(Point::new(16, 16), true, manual_fade_clock());
-        f.alphas[0].borrow_mut().clear();
-        let before = f.presents[0].borrow().len();
-        f.controller.unfreeze();
-        let mut expect: Vec<u8> = (0..FADE_STEPS)
-            .map(|k| fade_alpha(k * FADE_STEP_MS, FadeDirection::Out))
-            .collect();
-        expect.push(0); // exact transparent endpoint before teardown
-        assert_eq!(*f.alphas[0].borrow(), expect);
-        assert!(!f.controller.is_frozen());
-        // One present per step (the settled frame is re-composed); no
-        // endpoint present — the windows die right after.
-        assert_eq!(f.presents[0].borrow().len() - before, FADE_STEPS as usize);
-    }
-
-    #[test]
-    fn a_stalled_step_skips_ahead_instead_of_stalling() {
-        // Sleep advances the clock by 50 ms regardless of the request: the
-        // nominal 25 ms steps are missed, and the fade lands on the CURRENT
-        // alpha each time instead of queueing the missed ones.
-        let cell = Rc::new(Cell::new(Duration::ZERO));
-        let clock = FadeClock::custom(
-            {
-                let cell = cell.clone();
-                Rc::new(move || cell.get())
-            },
-            Rc::new(move |_d| cell.set(cell.get() + Duration::from_millis(50))),
-        );
-        let f = freeze_fake_ex(Point::new(16, 16), true, clock);
-        assert_eq!(
-            *f.alphas[0].borrow(),
-            vec![
-                0,
-                fade_alpha(0, FadeDirection::In),
-                fade_alpha(50, FadeDirection::In),
-                fade_alpha(100, FadeDirection::In),
-                fade_alpha(150, FadeDirection::In),
-                255,
-            ]
-        );
-    }
-
-    #[test]
-    fn esc_in_capture_exits_without_fading() {
+    fn esc_in_capture_exits_instantly_and_the_real_unfreeze_adds_no_frames() {
         let mut f = freeze_fake(Point::new(16, 16));
         f.controller.set_mode(ModeKind::Snip, &f.services);
         let before = f.presents[0].borrow().len();
-        // Esc in capture only exits capture: the exit repaint, no fade steps.
+        // Esc in capture only exits capture: the exit repaint, nothing else.
         f.controller.unfreeze();
         assert!(f.controller.is_frozen());
         assert_eq!(
             f.presents[0].borrow().len(),
             before + 1,
-            "only the exit-capture repaint — no fade"
+            "only the exit-capture repaint"
         );
-        // The real unfreeze right after DOES fade (steps + endpoint).
+        // The real unfreeze right after presents nothing at all.
         f.controller.unfreeze();
         assert!(!f.controller.is_frozen());
-        assert_eq!(
-            f.presents[0].borrow().len(),
-            before + 1 + TRANSITION_PRESENTS,
-        );
+        assert_eq!(f.presents[0].borrow().len(), before + 1);
     }
 
     #[test]
-    fn rapid_toggles_serialize_and_every_transition_lands_exact() {
+    fn rapid_toggles_serialize_and_every_freeze_lands_on_its_settled_frame() {
         let mut f = freeze_fake(Point::new(16, 16));
-        // Unfreeze right after the freeze (the "Esc during fade-in" case:
-        // serialized behind the atomic fade-in) — full fade-out, then gone.
+        // Unfreeze right after the freeze, then toggle straight back on: a
+        // FRESH session presenting its own settled frame exactly once.
         f.controller.unfreeze();
         assert!(!f.controller.is_frozen());
-        // Toggle straight back on (the "freeze during fade-out" case): a
-        // FRESH session fading in from its own original capture.
         let before = f.presents[0].borrow().len();
         f.refreeze();
         assert!(f.controller.is_frozen());
         assert_eq!(f.controller.active_mode(), ModeKind::Spotlight);
-        let p = f.presents[0].borrow();
-        assert_eq!(
-            p[before].pixels,
-            make_buf(32, 32, coord_pattern).pixels,
-            "the new session fades in from its original capture"
-        );
-        // And one more full cycle lands exactly on the original again.
-        drop(p);
+        {
+            let p = f.presents[0].borrow();
+            assert_eq!(p.len(), before + 1, "one instant present, no re-animation");
+            assert_eq!(p[p.len() - 1].pixels, settled_frame(10).pixels);
+        }
+        // And one more instant unfreeze adds no frames.
         f.controller.unfreeze();
         assert!(!f.controller.is_frozen());
-        assert_eq!(
-            last_present(&f.presents[0]).pixels,
-            make_buf(32, 32, coord_pattern).pixels,
-        );
+        assert_eq!(f.presents[0].borrow().len(), before + 1);
     }
 
     #[test]
-    fn freeze_while_frozen_does_not_reanimate() {
+    fn freeze_while_frozen_is_a_noop() {
         let mut f = freeze_fake(Point::new(16, 16));
         let before = f.presents[0].borrow().len();
         f.refreeze(); // documented no-op: already frozen
@@ -2424,7 +1985,7 @@ mod tests {
         assert_eq!(
             f.presents[0].borrow().len(),
             before,
-            "no second fade-in while frozen"
+            "no re-present while frozen"
         );
     }
 
@@ -2510,24 +2071,22 @@ mod tests {
 
     #[test]
     fn no_presented_frame_ever_has_a_white_border_band() {
-        // The whole key-driven journey on BOTH surface kinds; every recorded
-        // frame must be flash-free.
-        for alpha_surfaces in [false, true] {
-            let mut f = freeze_fake_ex(Point::new(16, 16), alpha_surfaces, manual_fade_clock());
-            f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
-            f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
-            f.controller.set_mode(ModeKind::Snip, &f.services);
-            f.controller.unfreeze(); // exit capture
-            f.controller.set_mode(ModeKind::Zoom, &f.services);
-            f.controller.set_mode(ModeKind::Spotlight, &f.services);
-            f.controller.unfreeze(); // fade out
-            for (i, presents) in f.presents.iter().enumerate() {
-                for (j, frame) in presents.borrow().iter().enumerate() {
-                    assert!(
-                        !has_white_border_band(frame),
-                        "white flash band on monitor {i}, frame {j} (alpha={alpha_surfaces})"
-                    );
-                }
+        // The whole key-driven journey; every recorded frame must be
+        // flash-free.
+        let mut f = freeze_fake(Point::new(16, 16));
+        f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
+        f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
+        f.controller.set_mode(ModeKind::Snip, &f.services);
+        f.controller.unfreeze(); // exit capture
+        f.controller.set_mode(ModeKind::Zoom, &f.services);
+        f.controller.set_mode(ModeKind::Spotlight, &f.services);
+        f.controller.unfreeze(); // instant close
+        for (i, presents) in f.presents.iter().enumerate() {
+            for (j, frame) in presents.borrow().iter().enumerate() {
+                assert!(
+                    !has_white_border_band(frame),
+                    "white flash band on monitor {i}, frame {j}"
+                );
             }
         }
     }
@@ -2535,42 +2094,13 @@ mod tests {
     // ---- mode legend ------------------------------------------------------------
 
     #[test]
-    fn legend_is_painted_while_frozen_and_fades_in_with_the_veil() {
-        let f = freeze_fake_with(
-            big_monitor(),
-            Point::new(400, 100),
-            false,
-            manual_fade_clock(),
-        );
+    fn legend_is_painted_at_full_strength_from_the_first_frame() {
+        let f = freeze_fake_with(big_monitor(), Point::new(400, 100));
         let p = f.presents[0].borrow();
-        assert_eq!(p.len(), TRANSITION_PRESENTS);
+        assert_eq!(p.len(), 1, "instant freeze: exactly one present");
+        // The single frame is the settled view: full veil, settled circle,
+        // and the pill at full strength (it never fades in).
         let original = make_buf(800, 160, coord_pattern);
-        assert_eq!(
-            p[0].pixels, original.pixels,
-            "step 0: no pill yet (alpha 0)"
-        );
-        // Every step: veil ramp + the pill at the step's alpha (it fades in
-        // WITH the veil, never pops); the circle stays at its settled radius.
-        let legend = Legend::from_hotkeys(&AppSettings::default().hotkeys);
-        for k in 1..FADE_STEPS {
-            let a = fade_alpha(k * FADE_STEP_MS, FadeDirection::In);
-            let mut expect = DibBuffer::new(800, 160);
-            let state = RenderState {
-                spotlight: Some((Point::new(400, 100), 10)),
-                ..RenderState::default()
-            };
-            compose_frame(
-                &original,
-                &mut expect,
-                Rect::new(0, 0, 800, 160),
-                &state,
-                lerp_u8(0, 160, a),
-                Rgb::BLACK,
-            );
-            legend.paint(&mut expect, &[true, false, false], a);
-            assert_eq!(p[k as usize].pixels, expect.pixels, "fade step {k}");
-        }
-        // The settled frame carries the pill at full strength.
         let mut settled = DibBuffer::new(800, 160);
         let state = RenderState {
             spotlight: Some((Point::new(400, 100), 10)),
@@ -2584,18 +2114,14 @@ mod tests {
             160,
             Rgb::BLACK,
         );
-        legend.paint(&mut settled, &[true, false, false], 255);
-        assert_eq!(p[p.len() - 1].pixels, settled.pixels);
+        Legend::from_hotkeys(&AppSettings::default().hotkeys)
+            .paint(&mut settled, &[true, false, false]);
+        assert_eq!(p[0].pixels, settled.pixels);
     }
 
     #[test]
     fn legend_never_reaches_the_rebased_base_or_the_clipboard() {
-        let mut f = freeze_fake_with(
-            big_monitor(),
-            Point::new(400, 100),
-            false,
-            manual_fade_clock(),
-        );
+        let mut f = freeze_fake_with(big_monitor(), Point::new(400, 100));
         f.controller.set_mode(ModeKind::Snip, &f.services);
         // Drag a selection over the pill zone (near the top-center).
         for event in [
@@ -2635,7 +2161,7 @@ mod tests {
         // Discriminator: had the legend been baked into the base, the crop
         // would contain pill pixels.
         let legend = Legend::from_hotkeys(&AppSettings::default().hotkeys);
-        legend.paint(&mut base, &[true, false, false], 255);
+        legend.paint(&mut base, &[true, false, false]);
         let baked = crop_normalized(&base, Point::new(80, 40), Point::new(720, 100)).unwrap();
         assert_ne!(
             crop.pixels, baked.pixels,

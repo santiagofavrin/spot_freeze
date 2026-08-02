@@ -71,9 +71,9 @@ fn pill_is_top_centered_inset_translucent_and_highlights_the_active_tab() {
     let frame_h = 160u32;
 
     let mut active = dark_frame(frame_w, frame_h);
-    legend.paint(&mut active, &[true], 255);
+    legend.paint(&mut active, &[true]);
     let mut inactive = dark_frame(frame_w, frame_h);
-    legend.paint(&mut inactive, &[false], 255);
+    legend.paint(&mut inactive, &[false]);
     let plain = dark_frame(frame_w, frame_h);
 
     let x0 = (frame_w - pw) / 2;

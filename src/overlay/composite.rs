@@ -46,41 +46,6 @@ pub fn darken(buf: &mut DibBuffer, dim_alpha: u8, color: Rgb) {
     }
 }
 
-/// Cross-fade `a` into `b` by `alpha`, writing `out`:
-/// `channel' = (a_channel * (255 - alpha) + b_channel * alpha) / 255` for
-/// every byte (B, G, R, and A — opaque captures blend back to A = 255).
-/// `alpha` 0 = exactly `a`, 255 = exactly `b` (both memcpy fast paths).
-/// This is the `darken` formula with a per-pixel target: the Wayland
-/// freeze/unfreeze fade drives it from the step schedule in
-/// [`crate::overlay::fade`] into the preallocated scratch buffer.
-///
-/// The three buffers are expected to share one layout (same dimensions and
-/// stride — the controller builds them from the same monitor rect); the
-/// common length is the release-build safety net.
-pub fn blend_frames(a: &DibBuffer, b: &DibBuffer, out: &mut DibBuffer, alpha: u8) {
-    debug_assert_eq!(
-        (a.width, a.height, a.stride, a.pixels.len()),
-        (b.width, b.height, b.stride, b.pixels.len())
-    );
-    debug_assert_eq!(a.pixels.len(), out.pixels.len());
-    let len = out.pixels.len().min(a.pixels.len()).min(b.pixels.len());
-    if alpha == 0 {
-        out.pixels[..len].copy_from_slice(&a.pixels[..len]);
-        return;
-    }
-    if alpha == 255 {
-        out.pixels[..len].copy_from_slice(&b.pixels[..len]);
-        return;
-    }
-    let keep = (255 - alpha) as u32;
-    let alpha = alpha as u32;
-    for i in 0..len {
-        // Same exact contract math as `darken`: floor((a*keep + b*alpha)/255).
-        // Max value is 255*255 + 255*255 = 130050 — u32 cannot overflow.
-        out.pixels[i] = ((a.pixels[i] as u32 * keep + b.pixels[i] as u32 * alpha) / 255) as u8;
-    }
-}
-
 /// Restore the ORIGINAL image inside the spotlight circle: copy pixels from
 /// `src_original` into `dst_darkened` for every pixel whose position lies within
 /// `radius` px of `center` (`dx*dx + dy*dy <= radius*radius`).
@@ -726,52 +691,6 @@ mod tests {
         let mut buf = DibBuffer::default();
         darken(&mut buf, 128, VEIL);
         assert!(buf.pixels.is_empty());
-    }
-
-    // ---- blend_frames ----------------------------------------------------
-
-    #[test]
-    fn blend_endpoints_are_exact_copies() {
-        let a = make_buf(8, 8, pattern);
-        let b = make_buf(8, 8, |x, y| {
-            let [pb, pg, pr, pa] = pattern(x, y);
-            [255 - pb, 255 - pg, 255 - pr, pa]
-        });
-        let mut out = solid(8, 8, [9, 9, 9, 9]);
-        blend_frames(&a, &b, &mut out, 0);
-        assert_eq!(out.pixels, a.pixels, "alpha 0 == a");
-        blend_frames(&a, &b, &mut out, 255);
-        assert_eq!(out.pixels, b.pixels, "alpha 255 == b");
-    }
-
-    #[test]
-    fn blend_exact_channel_math() {
-        // floor((a*(255-alpha) + b*alpha)/255) per byte, alpha included.
-        for &av in &[0u8, 1, 127, 200, 255] {
-            for &bv in &[0u8, 3, 128, 254, 255] {
-                for &alpha in &[1u8, 63, 128, 191, 254] {
-                    let a = solid(1, 1, [av, av, av, 255]);
-                    let b = solid(1, 1, [bv, bv, bv, 255]);
-                    let mut out = solid(1, 1, [0, 0, 0, 0]);
-                    blend_frames(&a, &b, &mut out, alpha);
-                    let expect =
-                        ((av as u32 * (255 - alpha as u32) + bv as u32 * alpha as u32) / 255) as u8;
-                    assert_eq!(
-                        px(&out, 0, 0),
-                        [expect, expect, expect, 255],
-                        "a={av} b={bv} alpha={alpha}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn blend_empty_buffers_no_panic() {
-        let empty = DibBuffer::default();
-        let mut out = DibBuffer::default();
-        blend_frames(&empty, &empty, &mut out, 128);
-        assert!(out.pixels.is_empty());
     }
 
     // ---- spotlight_hole ------------------------------------------------

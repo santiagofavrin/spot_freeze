@@ -26,10 +26,9 @@
 //!   the full frame or only the dirty rows into the section, then calls
 //!   `UpdateLayeredWindowIndirect` with `prcDirty` — the OS recomposites only
 //!   the dirty region (spotlight per-mouse-move fast path: O(hole area),
-//!   never a whole-frame copy). Blend: `AC_SRC_OVER` / `AC_SRC_ALPHA` with
-//!   `SourceConstantAlpha` from the window's current alpha — 255 outside the
-//!   freeze/unfreeze fade, which drives `set_alpha` (a bare re-composite at
-//!   the new constant alpha, no pixel copy). The [`DibBuffer`] contract
+//!   never a whole-frame copy). Blend: `AC_SRC_OVER` / `AC_SRC_ALPHA` with a
+//!   constant `SourceConstantAlpha` of 255 (fully opaque — the app has no
+//!   fades or translucency). The [`DibBuffer`] contract
 //!   guarantees alpha == 255 wherever the window is opaque, so its
 //!   non-premultiplied pixels blend identically to premultiplied ones;
 //!   genuinely translucent pixels (none are produced today) would need
@@ -97,9 +96,6 @@ pub struct OverlayWindow {
     sink: OverlayEventSink,
     /// Present surface: top-down BGRA DIB section selected into a memory DC.
     dib: DibSection,
-    /// Constant alpha for the ULW blend (255 = opaque; the freeze/unfreeze
-    /// fade drives it through `set_alpha`).
-    alpha: u8,
 }
 
 impl OverlayWindow {
@@ -186,7 +182,6 @@ impl OverlayWindow {
             monitor_rect,
             sink,
             dib,
-            alpha: 255,
         })
     }
 
@@ -232,20 +227,10 @@ impl OverlayWindow {
         self.composite(region)
     }
 
-    /// Constant-alpha update for the freeze/unfreeze fade: re-composite the
-    /// CURRENT DIB contents at the new alpha — no pixel copy, one ULW call.
-    pub fn set_alpha(&mut self, alpha: u8) -> Result<()> {
-        self.alpha = alpha;
-        if self.hwnd.0.is_null() {
-            bail!("overlay set_alpha: window is closed");
-        }
-        self.composite(None)
-    }
-
-    /// `UpdateLayeredWindowIndirect` from the DIB section at the current
-    /// constant alpha. `region: Some(r)` (pre-clipped) limits the OS-side
-    /// recomposite via `prcDirty` — the spotlight fast path never
-    /// recomposites the full frame.
+    /// `UpdateLayeredWindowIndirect` from the DIB section, fully opaque.
+    /// `region: Some(r)` (pre-clipped) limits the OS-side recomposite via
+    /// `prcDirty` — the spotlight fast path never recomposites the full
+    /// frame.
     fn composite(&self, region: Option<Rect>) -> Result<()> {
         let dst = POINT {
             x: self.monitor_rect.x,
@@ -259,7 +244,7 @@ impl OverlayWindow {
         let blend = BLENDFUNCTION {
             BlendOp: AC_SRC_OVER as u8,
             BlendFlags: 0,
-            SourceConstantAlpha: self.alpha,
+            SourceConstantAlpha: 255,
             AlphaFormat: AC_SRC_ALPHA as u8,
         };
         let dirty_rect = region.map(|r| RECT {
@@ -325,14 +310,6 @@ impl Drop for OverlayWindow {
 impl OverlaySurface for OverlayWindow {
     fn present(&mut self, frame: &DibBuffer, dirty: Option<Rect>) -> Result<()> {
         OverlayWindow::present(self, frame, dirty)
-    }
-
-    fn supports_alpha(&self) -> bool {
-        true
-    }
-
-    fn set_alpha(&mut self, alpha: u8) -> Result<()> {
-        OverlayWindow::set_alpha(self, alpha)
     }
 }
 

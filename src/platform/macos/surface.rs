@@ -20,10 +20,7 @@
 //! (the per-mouse-move spotlight fast path) into a persistent
 //! `width*height*4` BGRA buffer owned by the content view, invalidates the
 //! matching view rect, and calls `displayIfNeeded()` so the draw happens
-//! SYNCHRONOUSLY. The synchronous part is load-bearing: the controller's
-//! transition drivers sleep the main thread between presents, so a deferred
-//! AppKit display cycle would collapse the animation into fewer, coarser
-//! frames.
+//! SYNCHRONOUSLY — a present is on screen before the controller continues.
 //! `drawRect:` wraps the store in a zero-copy `CGImage` (a `CGDataProvider`
 //! over the live buffer — no pixel copy on the draw path) clipped to the
 //! dirty rect. The view keeps the default (unflipped, y-up) coordinate
@@ -31,11 +28,6 @@
 //! and all y-flip math lives in [`crate::platform::macos::coords`]. The
 //! buffer's `premultipliedFirst` flag is exact: A = 255 everywhere, so
 //! premultiplied and non-premultiplied bytes are identical.
-//!
-//! Fades: the window-level `alphaValue` drives the freeze/unfreeze fade (a
-//! per-step attribute update — no pixel work); the fade's endpoint calls
-//! leave the window fully opaque (freeze) or fully transparent right before
-//! `close()` (unfreeze).
 //!
 //! Input: one local `NSEvent` monitor per surface (mouse moved/dragged,
 //! left button down/up, scroll wheel, key down), filtered to events whose
@@ -404,19 +396,6 @@ impl OverlaySurface for MacOverlaySurface {
             None => self.view.setNeedsDisplay(true),
         }
         self.view.displayIfNeeded();
-        Ok(())
-    }
-
-    /// `NSWindow.alphaValue` gives a true per-window constant alpha — the
-    /// freeze/unfreeze fade is a per-step attribute update, no pixel work.
-    fn supports_alpha(&self) -> bool {
-        true
-    }
-
-    /// Whole-window constant alpha; the presented pixels are untouched, so
-    /// the fade endpoint calls leave the store exactly as composed.
-    fn set_alpha(&mut self, alpha: u8) -> Result<()> {
-        self.window.setAlphaValue(alpha as f64 / 255.0);
         Ok(())
     }
 }

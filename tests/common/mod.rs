@@ -12,14 +12,12 @@ use spotfreeze::capture::{Capturer, DibBuffer, MonitorInfo};
 use spotfreeze::geometry::{Point, Rect};
 use spotfreeze::overlay::controller::OverlayController;
 use spotfreeze::overlay::events::OverlayEventSink;
-use spotfreeze::overlay::fade::FadeClock;
 use spotfreeze::platform::{OverlaySurface, PlatformServices, SurfaceFactory};
 use spotfreeze::settings::model::{AppSettings, Rgb};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
 
 /// The default overlay veil color (`overlay.color` documented default: black).
 pub const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
@@ -149,9 +147,7 @@ impl Capturer for FakeCapturer {
     }
 }
 
-/// Overlay surface recording every presented frame in a shared log. No
-/// constant-alpha support, so the controller exercises the pixel-path
-/// (Wayland-style) transition carrier with it.
+/// Overlay surface recording every presented frame in a shared log.
 pub struct RecordingSurface {
     pub presents: Rc<RefCell<Vec<DibBuffer>>>,
 }
@@ -191,9 +187,7 @@ pub fn monitor_info(rect: Rect) -> MonitorInfo {
     }
 }
 
-/// A frozen session over fake monitors plus the recording handles. The
-/// controller runs on a manual fade clock: transitions walk the full nominal
-/// step schedule in zero wall-clock time.
+/// A frozen session over fake monitors plus the recording handles.
 pub struct FakeFreeze {
     pub controller: OverlayController,
     pub services: FakeServices,
@@ -216,9 +210,7 @@ impl FakeFreeze {
             .collect();
         let copied = Rc::new(RefCell::new(Vec::new()));
         let mut session = Self {
-            controller: OverlayController::with_fade_clock(FadeClock::manual(Rc::new(Cell::new(
-                Duration::ZERO,
-            )))),
+            controller: OverlayController::new(),
             services: FakeServices {
                 cursor,
                 copied: copied.clone(),

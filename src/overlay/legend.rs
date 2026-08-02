@@ -249,25 +249,23 @@ impl Legend {
         (self.pill_width, PILL_H)
     }
 
-    /// Paint the pill centered horizontally near the top of `buf`.
-    /// `active[i]` highlights tab `i` (missing flags read as inactive).
-    /// `alpha` scales the whole pill (the freeze fade-in blends it in with
-    /// the veil; 255 = full strength, 0 = nothing painted). Skips monitors
-    /// smaller than the pill instead of clipping it.
-    pub fn paint(&self, buf: &mut DibBuffer, active: &[bool], alpha: u8) {
+    /// Paint the pill centered horizontally near the top of `buf` at full
+    /// strength. `active[i]` highlights tab `i` (missing flags read as
+    /// inactive). Skips monitors smaller than the pill instead of clipping
+    /// it.
+    pub fn paint(&self, buf: &mut DibBuffer, active: &[bool]) {
         let (pw, ph) = self.size();
-        if alpha == 0 || self.tabs.is_empty() || pw > buf.width || ph > buf.height {
+        if self.tabs.is_empty() || pw > buf.width || ph > buf.height {
             return;
         }
         let x0 = ((buf.width - pw) / 2) as i32;
         let slack = buf.height - ph; // >= 0 (checked above)
         let y0 = TOP_MARGIN.min(slack) as i32;
         // Pill body (translucent dark, rounded corners).
-        let pill_alpha = scale_alpha(PILL_ALPHA, alpha);
         for y in y0..y0 + ph as i32 {
             for x in x0..x0 + pw as i32 {
                 if rounded_rect_contains(x, y, x0, y0, pw, ph, PILL_RADIUS) {
-                    blend_px(buf, x, y, PILL_COLOR, pill_alpha);
+                    blend_px(buf, x, y, PILL_COLOR, PILL_ALPHA);
                 }
             }
         }
@@ -278,13 +276,12 @@ impl Legend {
             let cw = self.chip_widths[i];
             let on = active.get(i).copied().unwrap_or(false);
             if on {
-                let chip_alpha = scale_alpha(CHIP_ALPHA, alpha);
                 let cy = y0 + CHIP_INSET_Y as i32;
                 let ch = ph - 2 * CHIP_INSET_Y;
                 for y in cy..cy + ch as i32 {
                     for x in chip_x..chip_x + cw as i32 {
                         if rounded_rect_contains(x, y, chip_x, cy, cw, ch, ch / 2) {
-                            blend_px(buf, x, y, CHIP_COLOR, chip_alpha);
+                            blend_px(buf, x, y, CHIP_COLOR, CHIP_ALPHA);
                         }
                     }
                 }
@@ -295,7 +292,6 @@ impl Legend {
                 text_y,
                 text,
                 if on { TEXT_ACTIVE } else { TEXT_INACTIVE },
-                alpha,
             );
             chip_x += (cw + TAB_GAP) as i32;
         }
@@ -305,11 +301,6 @@ impl Legend {
 /// Pixel width of a text at one glyph cell per character.
 fn text_width(text: &str) -> u32 {
     text.chars().count() as u32 * GLYPH_W
-}
-
-/// A blend alpha scaled by the pill's global alpha, rounded to nearest.
-fn scale_alpha(alpha: u8, global: u8) -> u8 {
-    ((alpha as u32 * global as u32 + 127) / 255) as u8
 }
 
 /// Blend pixel `(x, y)` of `buf` toward `color` at `alpha` (the one-division
@@ -359,9 +350,9 @@ fn rounded_rect_contains(px: i32, py: i32, x0: i32, y0: i32, w: u32, h: u32, r: 
 }
 
 /// Draw `text` at `(x, y)` (top-left of the first glyph cell) in `color`
-/// blended at `alpha`. One glyph cell per character; no clipping beyond the
-/// buffer itself (callers position the text inside the pill).
-fn draw_text(buf: &mut DibBuffer, x: i32, y: i32, text: &str, color: Rgb, alpha: u8) {
+/// (opaque). One glyph cell per character; no clipping beyond the buffer
+/// itself (callers position the text inside the pill).
+fn draw_text(buf: &mut DibBuffer, x: i32, y: i32, text: &str, color: Rgb) {
     for (i, ch) in text.chars().enumerate() {
         let gx = x + i as i32 * GLYPH_W as i32;
         for (row, &bits) in glyph(ch).iter().enumerate() {
@@ -371,7 +362,7 @@ fn draw_text(buf: &mut DibBuffer, x: i32, y: i32, text: &str, color: Rgb, alpha:
                     let py = y + row as i32 * UI_SCALE as i32;
                     for sy in 0..UI_SCALE as i32 {
                         for sx in 0..UI_SCALE as i32 {
-                            blend_px(buf, px + sx, py + sy, color, alpha);
+                            blend_px(buf, px + sx, py + sy, color, 255);
                         }
                     }
                 }
@@ -511,7 +502,7 @@ mod tests {
         assert!(rounded_rect_contains(0, 0, 0, 0, 20, 6, 0));
     }
 
-    // ---- blend_px / scale_alpha ----------------------------------------------
+    // ---- blend_px ---------------------------------------------------------
 
     #[test]
     fn blend_px_exact_math_and_bounds() {
@@ -532,13 +523,6 @@ mod tests {
         assert_eq!(buf.pixels, before);
     }
 
-    #[test]
-    fn scale_alpha_rounds_and_keeps_endpoints() {
-        assert_eq!(scale_alpha(190, 255), 190);
-        assert_eq!(scale_alpha(190, 0), 0);
-        assert_eq!(scale_alpha(190, 128), ((190u32 * 128 + 127) / 255) as u8);
-    }
-
     // ---- paint ---------------------------------------------------------------
 
     #[test]
@@ -546,7 +530,7 @@ mod tests {
         let legend = Legend::new(&tabs(&[("A", "B")]));
         let (pw, ph) = legend.size();
         let mut buf = frame(400, 160, [100, 100, 100, 255]);
-        legend.paint(&mut buf, &[false], 255);
+        legend.paint(&mut buf, &[false]);
         let x0 = (400 - pw) / 2;
         let y0 = TOP_MARGIN;
         // Pill center: blended toward PILL_COLOR at PILL_ALPHA.
@@ -572,7 +556,7 @@ mod tests {
         let legend = Legend::new(&tabs(&[("A", "B")]));
         let (pw, _) = legend.size();
         let mut buf = frame(400, 160, [0, 0, 0, 255]);
-        legend.paint(&mut buf, &[false], 255);
+        legend.paint(&mut buf, &[false]);
         let x0 = ((400 - pw) / 2) as u32;
         let y0 = TOP_MARGIN;
         let text_x = x0 + PILL_PAD_X + TAB_PAD_X;
@@ -597,9 +581,9 @@ mod tests {
         let legend = Legend::new(&tabs(&[("AA", "B"), ("CC", "D")]));
         let (pw, _) = legend.size();
         let mut on = frame(400, 160, [60, 60, 60, 255]);
-        legend.paint(&mut on, &[true, false], 255);
+        legend.paint(&mut on, &[true, false]);
         let mut off = frame(400, 160, [60, 60, 60, 255]);
-        legend.paint(&mut off, &[false, false], 255);
+        legend.paint(&mut off, &[false, false]);
         let x0 = ((400 - pw) / 2) as u32;
         let y0 = TOP_MARGIN;
         // A pixel inside the first chip but off its text: brighter when active.
@@ -620,37 +604,19 @@ mod tests {
     }
 
     #[test]
-    fn paint_scales_with_alpha_and_alpha_zero_is_a_noop() {
-        let legend = Legend::new(&tabs(&[("A", "B")]));
-        let mut buf = frame(400, 160, [100, 100, 100, 255]);
-        let before = buf.pixels.clone();
-        legend.paint(&mut buf, &[false], 0);
-        assert_eq!(buf.pixels, before, "alpha 0 paints nothing");
-        let mut half = frame(400, 160, [100, 100, 100, 255]);
-        legend.paint(&mut half, &[false], 128);
-        let (pw, ph) = legend.size();
-        let cx = ((400 - pw) / 2 + pw / 2) as u32;
-        let cy = TOP_MARGIN + ph / 2;
-        let want = ((100u32 * (255 - scale_alpha(190, 128) as u32)
-            + PILL_COLOR.b as u32 * scale_alpha(190, 128) as u32)
-            / 255) as u8;
-        assert_eq!(px(&half, cx, cy)[0], want);
-    }
-
-    #[test]
     fn paint_skips_monitors_smaller_than_the_pill_and_empty_legends() {
         let legend = Legend::new(&tabs(&[("SPOTLIGHT", "S"), ("ZOOM", "F"), ("SNIP", "C")]));
         let mut tiny = frame(32, 32, [100, 100, 100, 255]);
         let before = tiny.pixels.clone();
-        legend.paint(&mut tiny, &[true, false, false], 255);
+        legend.paint(&mut tiny, &[true, false, false]);
         assert_eq!(tiny.pixels, before, "tiny monitor: skipped, not clipped");
         let empty = Legend::new(&[]);
         let mut buf = frame(400, 64, [100, 100, 100, 255]);
         let before = buf.pixels.clone();
-        empty.paint(&mut buf, &[], 255);
+        empty.paint(&mut buf, &[]);
         assert_eq!(buf.pixels, before);
         // Fewer active flags than tabs: the rest read as inactive (no panic).
         let mut buf2 = frame(400, 64, [100, 100, 100, 255]);
-        legend.paint(&mut buf2, &[true], 255);
+        legend.paint(&mut buf2, &[true]);
     }
 }

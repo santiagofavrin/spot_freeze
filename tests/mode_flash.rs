@@ -1,14 +1,14 @@
 //! Scenario (rework): mode changes are SEAMLESS — the white border-flash
-//! feedback is gone.
+//! feedback is gone — and freeze/unfreeze are INSTANT.
 //!
 //! The pre-rework app flashed a white 6 px border ring 1-3 times on every
 //! key-driven mode activation (S=1, F=2, C=3, freeze=1). That feedback is
 //! REMOVED: activation into spotlight and every other mode change must be
 //! seamless — no flash frames, no white repaint pops. What remains:
 //!
-//! - freeze entry runs the pure transition schedule (src/overlay/fade.rs:
-//!   8 steps + 1 settled endpoint, ease-out cubic, veil ramp over the
-//!   settled spotlight circle);
+//! - freeze entry presents each monitor's settled frame EXACTLY ONCE (no
+//!   fade, no animation); unfreeze presents nothing — the overlay windows
+//!   are simply destroyed;
 //! - spotlight toggles, full mode switches (`set_mode`), capture entry (`C`),
 //!   and Esc from capture repaint exactly ONCE — instant by design;
 //! - NO frame presented on any monitor, at any point of the journey, ever
@@ -22,7 +22,6 @@ mod common;
 use common::{FakeFreeze, buffer_with, has_white_border_band, monitor_info};
 use spotfreeze::capture::DibBuffer;
 use spotfreeze::geometry::{Point, Rect};
-use spotfreeze::overlay::fade::FADE_STEPS;
 use spotfreeze::overlay::modes::ModeKind;
 use spotfreeze::settings::model::AppSettings;
 
@@ -32,7 +31,7 @@ fn coord_pattern(x: u32, y: u32) -> [u8; 4] {
 }
 
 /// Two 32x32 fake monitors (the second at negative virtual x), too small for
-/// the legend pill — these tests exercise the transition machinery only.
+/// the legend pill — these tests exercise the instant freeze/unfreeze paths.
 fn small_settings() -> AppSettings {
     let mut s = AppSettings::default();
     s.spotlight.default_radius = 6; // clamped to the layer's 10 px minimum
@@ -56,9 +55,6 @@ fn freeze(cursor: Point) -> FakeFreeze {
     FakeFreeze::new(captured, &small_settings(), cursor)
 }
 
-/// One full transition = the schedule's steps + the exact settled endpoint.
-const TRANSITION_PRESENTS: usize = FADE_STEPS as usize + 1;
-
 fn original0() -> DibBuffer {
     buffer_with(32, 32, coord_pattern)
 }
@@ -75,21 +71,21 @@ fn assert_flash_free(f: &FakeFreeze, ctx: &str) {
 }
 
 #[test]
-fn freeze_entry_is_only_the_transition_frames_and_ends_seamless() {
+fn freeze_entry_presents_the_settled_frame_once_and_seamless() {
     let f = freeze(Point::new(16, 16));
+    for (m, presents) in f.presents.iter().enumerate() {
+        assert_eq!(
+            presents.borrow().len(),
+            1,
+            "monitor {m}: instant freeze, exactly one present"
+        );
+    }
     let p = f.presents[0].borrow();
-    assert_eq!(
-        p.len(),
-        TRANSITION_PRESENTS,
-        "8 transition steps + settled endpoint, zero extra (flash) frames"
-    );
-    assert_eq!(
+    assert_ne!(
         p[0].pixels,
         original0().pixels,
-        "the entry starts exactly on the live screen's pixels"
+        "the single frame is the settled veiled view, not the bare original"
     );
-    let settled = p.last().unwrap();
-    assert_ne!(settled.pixels, original0().pixels, "the veil landed");
     assert_flash_free(&f, "freeze entry");
 }
 
@@ -161,12 +157,12 @@ fn capture_entry_and_esc_exit_repaint_once_without_flashing() {
         before + 2,
         "instant capture exit"
     );
-    f.controller.unfreeze(); // second Esc: real unfreeze (fades out)
+    f.controller.unfreeze(); // second Esc: real unfreeze (instant close)
     assert!(!f.controller.is_frozen());
     assert_eq!(
         f.presents[0].borrow().len(),
-        before + 2 + TRANSITION_PRESENTS,
-        "the unfreeze fade adds steps + endpoint, no flash frames"
+        before + 2,
+        "unfreeze adds no frames — the windows just close"
     );
     assert_flash_free(&f, "capture entry/exit");
 }
@@ -181,9 +177,7 @@ fn the_whole_key_driven_journey_is_flash_free() {
     f.controller.set_mode(ModeKind::Snip, &f.services);
     f.controller.unfreeze(); // exit capture
     f.controller.set_mode(ModeKind::Spotlight, &f.services);
-    f.controller.unfreeze(); // fade out
+    f.controller.unfreeze(); // instant close
     assert!(!f.controller.is_frozen());
     assert_flash_free(&f, "whole journey");
-    // And the original capture comes back exactly at the end.
-    assert_eq!(f.last_present(0).pixels, original0().pixels);
 }

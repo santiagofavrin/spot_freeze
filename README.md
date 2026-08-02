@@ -29,8 +29,8 @@ re-composited from reusable buffers — never a full repaint from scratch.
   that moment (spotlight and/or zoom) baked in, then drag a rectangle and
   copy the *effected* pixels to the clipboard (see *Copying screenshots*
   below). A persistent accent frame border marks capture mode.
-- **Seamless freeze transitions** — freezing and unfreezing crossfade with a
-  quick ease-out animation (200 ms); in-session mode changes are immediate.
+- **Instant freeze/unfreeze** — the overlay appears and disappears with no
+  fade or animation; in-session mode changes are equally immediate.
 - **On-screen legend** — while frozen, a large pill near the top of each
   monitor shows the modes as tabs with the active one highlighted, labelled
   with the hotkeys that reach them.
@@ -97,13 +97,9 @@ Freezing starts with the spotlight on. `Esc` unfreezes from spotlight mode
 pre-capture frozen view with its spotlight/zoom state restored (the capture
 re-freeze is dropped). `Ctrl+C` copies and closes from anywhere.
 
-Freezing and unfreezing play a quick ease-out animation (200 ms) instead of
-an abrupt cut: the dim veil ramps in over the live screen (the spotlight
-circle is at its full size from the first frame — it never grows or
-shrinks), and the exit is the exact time-reverse. On Wayland the unfreeze
-blends back to the freeze-time capture, so anything that changed on screen
-while frozen reappears with a small pop as the overlay closes. Exiting
-capture mode and copying with `Ctrl+C` stay instant — no transition there.
+Freezing and unfreezing are instant — no fade, no animation. The overlay
+appears at full strength (veil, spotlight circle, legend all settled from
+the first frame) and disappears the moment you unfreeze.
 
 ## Layers and capture
 
@@ -127,9 +123,7 @@ layer when it isn't active yet), and a plain wheel zooms when the zoom layer
 is on and the spotlight is off (with both layers on, the plain wheel resizes
 the spotlight and `Shift`+wheel zooms).
 
-**Transitions and legend:** mode changes are seamless and immediate — no
-animation, border flashes, or white pops when the spotlight turns on or off.
-While frozen, a large pill near the top-center of each monitor shows the modes as tabs —
+**Legend:** while frozen, a large pill near the top-center of each monitor shows the modes as tabs —
 **SPOTLIGHT**, **ZOOM**, **SNIP** — with the active one(s) highlighted and
 the hotkey that reaches each. While capture mode is active, a thin
 accent-colored frame border stays on screen, the veil switches to a lighter,
