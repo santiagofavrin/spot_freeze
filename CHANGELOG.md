@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.9.2...v1.10.0) (2026-08-02)
+
+
+### Features
+
+* show version in tray tooltip ([6eb1c4c](https://github.com/santiagofavrin/spotfreeze/commit/6eb1c4c658ad9b42eaf439a5d19c9313f8759732))
+
 ## [1.9.2](https://github.com/santiagofavrin/spotfreeze/compare/v1.9.1...v1.9.2) (2026-08-02)
 
 
