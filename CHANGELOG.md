@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.1](https://github.com/santiagofavrin/spotfreeze/compare/v1.9.0...v1.9.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* invert spotlight wheel resize ([c5ff643](https://github.com/santiagofavrin/spotfreeze/commit/c5ff643881fa497e8a7eeec5d90166bb568a59fe))
+
 ## [1.9.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.8.0...v1.9.0) (2026-08-02)
 
 
