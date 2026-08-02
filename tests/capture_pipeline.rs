@@ -49,7 +49,14 @@ fn compose_with_stack(original: &DibBuffer, stack: &ModeStack) -> DibBuffer {
     } else {
         0
     };
-    compose_frame(original, &mut out, viewport(), &stack.render_state(0), dim, BLACK);
+    compose_frame(
+        original,
+        &mut out,
+        viewport(),
+        &stack.render_state(0),
+        dim,
+        BLACK,
+    );
     out
 }
 
@@ -169,7 +176,10 @@ fn zoom_hold_layers_over_spotlight_and_restores_the_last_used_factor() {
     stack.toggle_mode(ModeKind::Zoom);
     stack.on_wheel(0, Point::new(12, 12), 240, Modifiers::NONE); // plain wheel, layer active
     let z = stack.zoom().expect("zoom hold active").zoom();
-    assert!((z - 1.5625).abs() < 1e-6, "plain wheel zooms the active hold");
+    assert!(
+        (z - 1.5625).abs() < 1e-6,
+        "plain wheel zooms the active hold"
+    );
 
     // Off and on again: the last-used factor is back (not a fresh 1.0).
     stack.toggle_mode(ModeKind::Zoom);

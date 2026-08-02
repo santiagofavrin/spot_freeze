@@ -635,7 +635,11 @@ mod tests {
         stack.toggle_mode(ModeKind::Spotlight);
         stack.toggle_mode(ModeKind::Spotlight);
         assert!(stack.is_active(ModeKind::Spotlight));
-        assert_eq!(stack.spotlight().unwrap().radius(), 100, "fresh default state");
+        assert_eq!(
+            stack.spotlight().unwrap().radius(),
+            100,
+            "fresh default state"
+        );
     }
 
     #[test]
@@ -783,7 +787,11 @@ mod tests {
         stack.add_mode(ModeKind::Zoom); // both layers active
         let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL);
         assert_eq!(stack.spotlight().unwrap().radius(), 110);
-        assert_eq!(stack.zoom().unwrap().zoom(), 1.0, "Ctrl is not the zoom modifier");
+        assert_eq!(
+            stack.zoom().unwrap().zoom(),
+            1.0,
+            "Ctrl is not the zoom modifier"
+        );
         assert!(!e.repaint.is_empty());
     }
 
@@ -808,7 +816,10 @@ mod tests {
         assert_eq!(e, ModeEffect::none(), "no spotlight layer to resize");
         assert_eq!(stack.zoom().unwrap().zoom(), 1.0);
         let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT);
-        assert!(!e.repaint.is_empty(), "zoom modifier reaches the zoom layer");
+        assert!(
+            !e.repaint.is_empty(),
+            "zoom modifier reaches the zoom layer"
+        );
         assert_zoom_near(&stack, 1.25);
     }
 
@@ -927,7 +938,11 @@ mod tests {
             "selection dropped with the snip layer"
         );
         let spot = stack.spotlight().expect("spotlight restored");
-        assert_eq!(spot.radius(), 110, "spotlight state survives the round-trip");
+        assert_eq!(
+            spot.radius(),
+            110,
+            "spotlight state survives the round-trip"
+        );
         assert_eq!((spot.cursor_monitor(), spot.cursor()), (0, pt(30, 40)));
         let zoom = stack.zoom().expect("zoom restored");
         assert!((zoom.zoom() - 1.25).abs() < 1e-6, "zoom factor restored");
@@ -1040,7 +1055,11 @@ mod tests {
         stack.on_mouse_move(0, pt(9, 9));
 
         let rs = stack.render_state(0);
-        assert_eq!(rs.spotlight, Some((pt(9, 9), 100)), "cursor followed the move");
+        assert_eq!(
+            rs.spotlight,
+            Some((pt(9, 9), 100)),
+            "cursor followed the move"
+        );
         let (z, focus) = rs.zoom.expect("zoom on monitor 0");
         assert!((z - 1.25).abs() < 1e-6);
         assert_eq!(focus, pt(9, 9));
@@ -1060,7 +1079,10 @@ mod tests {
         stack.add_mode(ModeKind::Zoom);
         stack.seed_cursor(1, pt(7, 7));
         stack.on_wheel(1, pt(7, 7), 120, Modifiers::SHIFT);
-        assert_eq!(stack.zoom_on(1).map(|(z, p)| ((z * 100.0) as i32, p)), Some((125, pt(7, 7))));
+        assert_eq!(
+            stack.zoom_on(1).map(|(z, p)| ((z * 100.0) as i32, p)),
+            Some((125, pt(7, 7)))
+        );
         assert_eq!(stack.zoom_on(0), None, "focus is on monitor 1");
     }
 }

@@ -54,7 +54,9 @@ fn drag_produces_selection_and_crop_returns_exact_subrectangle() {
     let b = Point::new(34, 40);
     drag(&mut snip, 0, a, b);
 
-    let sel = snip.snip_selection().expect("selection after finished drag");
+    let sel = snip
+        .snip_selection()
+        .expect("selection after finished drag");
     assert_eq!(sel, SnipSelection { monitor: 0, a, b });
 
     // Controller contract: crop from the ORIGINAL capture of sel.monitor.
@@ -154,8 +156,8 @@ fn crop_clips_to_buffer_bounds() {
     let src = buffer_with(16, 16, coord_pattern);
 
     // Drag starting OUTSIDE the top-left corner: clipped to the buffer.
-    let crop = crop_normalized(&src, Point::new(-10, -10), Point::new(5, 5))
-        .expect("overlapping drag");
+    let crop =
+        crop_normalized(&src, Point::new(-10, -10), Point::new(5, 5)).expect("overlapping drag");
     assert_eq!((crop.width, crop.height), (5, 5), "clipped to x/y in 0..5");
     for y in 0..crop.height {
         for x in 0..crop.width {
@@ -164,12 +166,19 @@ fn crop_clips_to_buffer_bounds() {
     }
 
     // Drag hanging off the bottom-right corner.
-    let crop = crop_normalized(&src, Point::new(12, 12), Point::new(40, 40))
-        .expect("overlapping drag");
-    assert_eq!((crop.width, crop.height), (4, 4), "clipped to x/y in 12..16");
+    let crop =
+        crop_normalized(&src, Point::new(12, 12), Point::new(40, 40)).expect("overlapping drag");
+    assert_eq!(
+        (crop.width, crop.height),
+        (4, 4),
+        "clipped to x/y in 12..16"
+    );
     for y in 0..crop.height {
         for x in 0..crop.width {
-            assert_eq!(crop.pixel(x, y).unwrap(), src.pixel(12 + x, 12 + y).unwrap());
+            assert_eq!(
+                crop.pixel(x, y).unwrap(),
+                src.pixel(12 + x, 12 + y).unwrap()
+            );
         }
     }
 
@@ -197,7 +206,14 @@ fn compose_frame_snip_only_shows_original_inside_dimmed_outside() {
         capture: false,
     };
     let mut out = DibBuffer::new(40, 30);
-    compose_frame(&original, &mut out, Rect::new(0, 0, 40, 30), &state, 160, BLACK);
+    compose_frame(
+        &original,
+        &mut out,
+        Rect::new(0, 0, 40, 30),
+        &state,
+        160,
+        BLACK,
+    );
 
     // Interior, >= 2 px off every rect edge (rect pixels x 8..=19, y 6..=17):
     // EXACT original.
@@ -242,7 +258,14 @@ fn compose_frame_snip_only_shows_original_inside_dimmed_outside() {
         capture: false,
     };
     let mut out2 = DibBuffer::new(40, 30);
-    compose_frame(&original, &mut out2, Rect::new(0, 0, 40, 30), &plain, 160, BLACK);
+    compose_frame(
+        &original,
+        &mut out2,
+        Rect::new(0, 0, 40, 30),
+        &plain,
+        160,
+        BLACK,
+    );
     for y in 0..30u32 {
         for x in 0..40u32 {
             assert_eq!(
@@ -330,8 +353,20 @@ fn compose_capture_frame_dims_with_the_snip_veil_and_keeps_the_selection_clear()
     // The border ring is crisp and two-tone: white OUTER line (over the
     // veil), black INNER line (over the clear selection).
     assert_eq!(out.pixel(8, 5).unwrap(), [255, 255, 255, 255], "outer top");
-    assert_eq!(out.pixel(7, 10).unwrap(), [255, 255, 255, 255], "outer left");
+    assert_eq!(
+        out.pixel(7, 10).unwrap(),
+        [255, 255, 255, 255],
+        "outer left"
+    );
     assert_eq!(out.pixel(8, 6).unwrap(), [0, 0, 0, 255], "inner top-left");
-    assert_eq!(out.pixel(19, 17).unwrap(), [0, 0, 0, 255], "inner bottom-right");
-    assert_eq!(out.pixel(20, 18).unwrap(), [255, 255, 255, 255], "outer bottom-right");
+    assert_eq!(
+        out.pixel(19, 17).unwrap(),
+        [0, 0, 0, 255],
+        "inner bottom-right"
+    );
+    assert_eq!(
+        out.pixel(20, 18).unwrap(),
+        [255, 255, 255, 255],
+        "outer bottom-right"
+    );
 }

@@ -275,8 +275,7 @@ fn mask_coverage(x: usize, y: usize, size: usize) -> f64 {
 /// `true` when the sample point is inside the rounded square and NOT inside
 /// any knocked-out shape (circle, frost ring, ticks, sparkle).
 fn mask_opaque_at(px: f64, py: f64, size: f64) -> bool {
-    rounded_rect_contains(px, py, size, size * CORNER_RADIUS_FRAC)
-        && !knocked_out_at(px, py, size)
+    rounded_rect_contains(px, py, size, size * CORNER_RADIUS_FRAC) && !knocked_out_at(px, py, size)
 }
 
 /// `true` when the sample point is inside a knocked-out (transparent) shape.

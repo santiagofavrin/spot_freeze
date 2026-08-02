@@ -53,7 +53,11 @@ fn custom_bindings_change_tab_text_and_pill_width() {
         wider > default_w,
         "a longer binding widens the pill: {wider} vs {default_w}"
     );
-    assert_eq!(wider - default_w, 11 * 16, "eleven extra characters at 16 px");
+    assert_eq!(
+        wider - default_w,
+        11 * 16,
+        "eleven extra characters at 16 px"
+    );
 }
 
 #[test]
@@ -78,7 +82,11 @@ fn pill_is_top_centered_inset_translucent_and_highlights_the_active_tab() {
     // painted pixel is the top edge at the corner radius (the rounded corner
     // leaves the bbox corner itself untouched).
     let diff = first_diff(&inactive, &plain).expect("pill changes pixels");
-    assert_eq!(diff, (x0 + 20, y0), "first pill pixel (top edge at the radius)");
+    assert_eq!(
+        diff,
+        (x0 + 20, y0),
+        "first pill pixel (top edge at the radius)"
+    );
     // ...it is translucent: in the padding between the pill edge and the
     // chip (off-text), the frame reads through the dark pill (blended toward
     // near-black, not replaced).
@@ -112,11 +120,15 @@ fn controller_paints_the_pill_centered_on_every_monitor() {
     let captured = vec![
         (
             monitor_info(Rect::new(0, 0, 1024, 160)),
-            buffer_with(1024, 160, |x, y| [(x & 0xFF) as u8, (y & 0xFF) as u8, 40, 255]),
+            buffer_with(1024, 160, |x, y| {
+                [(x & 0xFF) as u8, (y & 0xFF) as u8, 40, 255]
+            }),
         ),
         (
             monitor_info(Rect::new(-1024, 0, 1024, 160)),
-            buffer_with(1024, 160, |x, y| [200, (x & 0xFF) as u8, (y & 0xFF) as u8, 255]),
+            buffer_with(1024, 160, |x, y| {
+                [200, (x & 0xFF) as u8, (y & 0xFF) as u8, 255]
+            }),
         ),
     ];
     let f = FakeFreeze::new(captured, &AppSettings::default(), Point::new(512, 100));

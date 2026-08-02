@@ -106,7 +106,9 @@ pub fn spawn_detached() -> Result<()> {
             Ok(())
         });
     }
-    let child = command.spawn().context("spawning the detached SpotFreeze")?;
+    let child = command
+        .spawn()
+        .context("spawning the detached SpotFreeze")?;
     println!("spotfreeze: started detached (pid {})", child.id());
     Ok(())
 }
@@ -151,7 +153,10 @@ mod tests {
     fn unknown_arguments_are_an_error_pointing_at_help() {
         let err = parse_args(&["--nohup"]).expect_err("unknown long flag");
         assert!(err.contains("--nohup") && err.contains("--help"), "{err}");
-        assert!(parse_args(&["file.txt"]).is_err(), "positionals are rejected");
+        assert!(
+            parse_args(&["file.txt"]).is_err(),
+            "positionals are rejected"
+        );
     }
 
     #[test]
@@ -160,7 +165,10 @@ mod tests {
             assert!(HELP.contains(flag), "help mentions {flag}");
         }
         assert!(HELP.contains("nohup"), "the daemon flag explains itself");
-        assert!(HELP.contains("hyprland.conf"), "toggle shows the compositor bind");
+        assert!(
+            HELP.contains("hyprland.conf"),
+            "toggle shows the compositor bind"
+        );
     }
 
     #[test]

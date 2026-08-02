@@ -125,7 +125,11 @@ pub(crate) fn resolve_geometry(draft: &OutputDraft) -> ((i32, i32), (u32, u32), 
         Some((w, h)) => (w / scale, h / scale),
         None => (0, 0),
     });
-    (draft.xdg_pos.unwrap_or(draft.geometry_pos), logical_size, scale)
+    (
+        draft.xdg_pos.unwrap_or(draft.geometry_pos),
+        logical_size,
+        scale,
+    )
 }
 
 /// One Wayland output, snapshotted at connect time.
@@ -230,15 +234,13 @@ impl Shell {
         let seat: wl_seat::WlSeat = glist
             .bind(&qh, 1..=SEAT_VERSION, ())
             .context("wl_seat is not available")?;
-        let layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1 = glist
-            .bind(&qh, 1..=LAYER_SHELL_VERSION, ())
-            .context(
+        let layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1 =
+            glist.bind(&qh, 1..=LAYER_SHELL_VERSION, ()).context(
                 "zwlr_layer_shell_v1 is not available — SpotFreeze needs a wlroots-based \
                  compositor (Hyprland, Sway, …)",
             )?;
-        let screencopy: zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1 = glist
-            .bind(&qh, 1..=SCREENCOPY_VERSION, ())
-            .context(
+        let screencopy: zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1 =
+            glist.bind(&qh, 1..=SCREENCOPY_VERSION, ()).context(
                 "zwlr_screencopy_manager_v1 is not available — SpotFreeze needs a wlroots-based \
                  compositor (Hyprland, Sway, …)",
             )?;
@@ -263,12 +265,14 @@ impl Shell {
                 continue;
             }
             state.output_drafts.entry(global.name).or_default();
-            let output = glist.registry().bind::<wl_output::WlOutput, u32, ShellState>(
-                global.name,
-                global.version.min(OUTPUT_VERSION),
-                &qh,
-                global.name,
-            );
+            let output = glist
+                .registry()
+                .bind::<wl_output::WlOutput, u32, ShellState>(
+                    global.name,
+                    global.version.min(OUTPUT_VERSION),
+                    &qh,
+                    global.name,
+                );
             bound.push((global.name, output));
         }
 
@@ -473,9 +477,13 @@ impl Shell {
     /// capture is an `Rc`-shared or proxy clone — never a borrow of `Shell`.
     pub fn create_surface_factory(
         &self,
-    ) -> impl Fn(usize, Rect, Rc<Vec<Rect>>, crate::overlay::events::OverlayEventSink) -> Result<Box<dyn crate::platform::OverlaySurface>>
-           + 'static
-    {
+    ) -> impl Fn(
+        usize,
+        Rect,
+        Rc<Vec<Rect>>,
+        crate::overlay::events::OverlayEventSink,
+    ) -> Result<Box<dyn crate::platform::OverlaySurface>>
+    + 'static {
         let conn = self.conn.clone();
         let qh = self.qh.clone();
         let globals = self.globals.clone();
@@ -536,7 +544,9 @@ pub(crate) fn pump_until(
     if done(&core.borrow().state) {
         Ok(())
     } else {
-        Err(anyhow!("the compositor did not answer while waiting for {what}"))
+        Err(anyhow!(
+            "the compositor did not answer while waiting for {what}"
+        ))
     }
 }
 

@@ -123,7 +123,9 @@ impl HotkeyManager {
         };
         if let Err(e) = result {
             let _ = self.book.remove(id);
-            return Err(e).context("RegisterHotKey failed (combination may be owned by another application)");
+            return Err(e).context(
+                "RegisterHotKey failed (combination may be owned by another application)",
+            );
         }
         Ok(HotkeyId(id))
     }

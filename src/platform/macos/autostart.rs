@@ -91,8 +91,7 @@ mod tests {
         apply_auto_start_in(true, home.os()).expect("install");
         let path = home.plist_path();
         assert!(path.is_file(), "plist landed in the temp LaunchAgents dir");
-        let expected =
-            crate::autostart::launch_agent_plist(&std::env::current_exe().unwrap());
+        let expected = crate::autostart::launch_agent_plist(&std::env::current_exe().unwrap());
         assert_eq!(fs::read_to_string(&path).unwrap(), expected);
     }
 

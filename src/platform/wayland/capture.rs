@@ -184,7 +184,11 @@ impl Dispatch<ZwlrScreencopyFrameV1, usize> for CaptureState {
                         state.frame(*index).pending = Some(pending);
                     }
                     Err(e) => {
-                        state.finish(*index, proxy, Err(format!("allocating the frame buffer: {e:#}")));
+                        state.finish(
+                            *index,
+                            proxy,
+                            Err(format!("allocating the frame buffer: {e:#}")),
+                        );
                     }
                 }
             }
@@ -234,9 +238,7 @@ fn create_copy_buffer(
 ) -> Result<PendingCopy> {
     let len = offer.stride as usize * offer.height as usize;
     let (fd, mapping) = crate::platform::wayland::shell::map_shm(len)?;
-    let pool = state
-        .shm
-        .create_pool(fd.as_fd(), len as i32, qhandle, ());
+    let pool = state.shm.create_pool(fd.as_fd(), len as i32, qhandle, ());
     let buffer = pool.create_buffer(
         0,
         offer.width as i32,
@@ -321,7 +323,9 @@ impl Capturer for WaylandCapturer {
         }
         let mut state = CaptureState {
             shm: self.shm.clone(),
-            frames: (0..self.outputs.len()).map(|_| FrameProgress::default()).collect(),
+            frames: (0..self.outputs.len())
+                .map(|_| FrameProgress::default())
+                .collect(),
             remaining: self.outputs.len(),
         };
         for (index, (output, _)) in self.outputs.iter().enumerate() {

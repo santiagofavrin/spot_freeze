@@ -74,7 +74,10 @@ fn darken_with_color_alpha_zero_is_identity() {
     let original = buffer_with(16, 16, pattern_a);
     let mut buf = original.clone();
     darken(&mut buf, 0, VEIL);
-    assert_eq!(buf, original, "dim_alpha 0 = no change, regardless of color");
+    assert_eq!(
+        buf, original,
+        "dim_alpha 0 = no change, regardless of color"
+    );
 }
 
 #[test]
@@ -82,7 +85,11 @@ fn darken_with_color_full_alpha_is_exactly_the_veil_color() {
     let mut buf = buffer_with(8, 8, |x, y| [x as u8, y as u8, 200, 123]);
     darken(&mut buf, 255, VEIL);
     // BGRA: veil.b -> B, veil.g -> G, veil.r -> R; alpha byte preserved.
-    assert_uniform(&buf, [VEIL.b, VEIL.g, VEIL.r, 123], "dim_alpha 255 = solid veil");
+    assert_uniform(
+        &buf,
+        [VEIL.b, VEIL.g, VEIL.r, 123],
+        "dim_alpha 255 = solid veil",
+    );
 }
 
 #[test]

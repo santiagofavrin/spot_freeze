@@ -36,10 +36,9 @@ use windows::Win32::UI::HiDpi::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
-    GetMessageW, GetWindowLongPtrW, HWND_MESSAGE, IDYES, MB_ICONERROR,
-    MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG, MessageBoxW, PostMessageW, PostQuitMessage,
-    RegisterClassW, SetWindowLongPtrW, TranslateMessage, WM_APP, WM_DESTROY, WM_HOTKEY,
-    WM_NCCREATE, WNDCLASSW,
+    GetMessageW, GetWindowLongPtrW, HWND_MESSAGE, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK,
+    MB_TOPMOST, MB_YESNO, MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
+    SetWindowLongPtrW, TranslateMessage, WM_APP, WM_DESTROY, WM_HOTKEY, WM_NCCREATE, WNDCLASSW,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
@@ -193,9 +192,8 @@ impl InstanceMutex {
     /// `Ok(None)` when another instance already holds the mutex (the caller
     /// then exits silently). The handle is kept alive until drop.
     fn acquire() -> Result<Option<Self>> {
-        let handle = unsafe {
-            CreateMutexW(std::ptr::null(), 1, w!("Local\\SpotFreeze.SingleInstance"))
-        };
+        let handle =
+            unsafe { CreateMutexW(std::ptr::null(), 1, w!("Local\\SpotFreeze.SingleInstance")) };
         if handle.0.is_null() {
             return Err(anyhow!("CreateMutexW failed"));
         }
@@ -220,7 +218,11 @@ impl Drop for InstanceMutex {
 /// Register the window class (idempotent across instances of this process) and
 /// create the hidden, message-only owner window.
 fn create_hidden_window(state: &mut AppState) -> Result<HWND> {
-    let hinstance = HINSTANCE(unsafe { GetModuleHandleW(None) }.context("GetModuleHandleW")?.0);
+    let hinstance = HINSTANCE(
+        unsafe { GetModuleHandleW(None) }
+            .context("GetModuleHandleW")?
+            .0,
+    );
     let class = WNDCLASSW {
         lpfnWndProc: Some(hidden_wndproc),
         hInstance: hinstance,
@@ -314,7 +316,9 @@ unsafe extern "system" fn hidden_wndproc(
 /// Register (and report failure of) the always-active global freeze hotkey.
 fn register_freeze_hotkey(state: &mut AppState, hwnd: HWND) {
     let gesture = state.settings.hotkeys.freeze_toggle;
-    let Some(hk) = state.hotkeys.as_mut() else { return };
+    let Some(hk) = state.hotkeys.as_mut() else {
+        return;
+    };
     match hk.register(gesture) {
         Ok(id) => state.freeze_id = Some(id),
         Err(e) => show_error(
@@ -335,7 +339,9 @@ fn register_freeze_hotkey(state: &mut AppState, hwnd: HWND) {
 /// `true` when the new binding is live.
 fn rebind_freeze_hotkey(state: &mut AppState, hwnd: HWND) -> bool {
     let new_gesture = state.settings.hotkeys.freeze_toggle;
-    let Some(hk) = state.hotkeys.as_mut() else { return false };
+    let Some(hk) = state.hotkeys.as_mut() else {
+        return false;
+    };
     match hk.register(new_gesture) {
         Ok(new_id) => {
             // Best-effort unregister of the old gesture: a failure only leaks
@@ -411,7 +417,9 @@ fn on_hotkey(state: &mut AppState, hwnd: HWND, wparam: WPARAM) {
         .hotkeys
         .as_ref()
         .and_then(|hk| hk.handle_wm_hotkey(wparam));
-    let Some((id, _gesture)) = resolved else { return };
+    let Some((id, _gesture)) = resolved else {
+        return;
+    };
 
     if state.freeze_id == Some(id) {
         toggle_freeze(state, hwnd);
@@ -502,7 +510,9 @@ fn on_tray_event(state: &mut AppState, hwnd: HWND, wparam: WPARAM) {
 /// spotlight mode); when already frozen, switch to the spotlight layer.
 fn tray_spotlight(state: &mut AppState, hwnd: HWND) {
     if state.controller.is_frozen() {
-        state.controller.set_mode(ModeKind::Spotlight, &state.services);
+        state
+            .controller
+            .set_mode(ModeKind::Spotlight, &state.services);
     } else {
         freeze(state, hwnd);
     }
@@ -537,8 +547,14 @@ fn reload_settings(state: &mut AppState, hwnd: HWND) {
 /// its nested menu loop), so it never touches `AppState` — it posts.
 fn make_tray_sink(hwnd: HWND) -> Rc<dyn Fn(TrayEvent)> {
     Rc::new(move |event| {
-        let _ =
-            unsafe { PostMessageW(Some(hwnd), WM_APP_TRAY_EVENT, WPARAM(event as usize), LPARAM(0)) };
+        let _ = unsafe {
+            PostMessageW(
+                Some(hwnd),
+                WM_APP_TRAY_EVENT,
+                WPARAM(event as usize),
+                LPARAM(0),
+            )
+        };
     })
 }
 
@@ -564,7 +580,10 @@ fn open_settings(state: &mut AppState, hwnd: HWND) {
         }),
     };
     if let Err(e) = settings_window::open(Some(hwnd), &mut state.settings, callbacks) {
-        show_error(Some(hwnd), &format!("Could not open the settings window:\n{e:#}"));
+        show_error(
+            Some(hwnd),
+            &format!("Could not open the settings window:\n{e:#}"),
+        );
     }
 }
 
@@ -574,10 +593,7 @@ fn apply_saved_settings(state: &mut AppState, hwnd: HWND, new_settings: AppSetti
     if let Err(e) = store::save(&state.settings_path, &new_settings) {
         show_error(
             Some(hwnd),
-            &format!(
-                "Could not save {}:\n{e:#}",
-                state.settings_path.display()
-            ),
+            &format!("Could not save {}:\n{e:#}", state.settings_path.display()),
         );
     }
     apply_new_settings(state, hwnd, new_settings);

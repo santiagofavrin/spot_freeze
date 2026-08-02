@@ -70,10 +70,11 @@ pub fn plan_frozen_registrations(hotkeys: &HotkeySettings) -> Vec<FrozenRegistra
 /// whose gesture equals `gesture` wins (plan order is priority order).
 /// Duplicate gestures only ever fire their first entry, matching the
 /// registration layer, which rejects later duplicates.
-pub fn match_frozen_key(plan: &[FrozenRegistration], gesture: HotkeyGesture) -> Option<FrozenAction> {
-    plan.iter()
-        .find(|r| r.gesture == gesture)
-        .map(|r| r.action)
+pub fn match_frozen_key(
+    plan: &[FrozenRegistration],
+    gesture: HotkeyGesture,
+) -> Option<FrozenAction> {
+    plan.iter().find(|r| r.gesture == gesture).map(|r| r.action)
 }
 
 #[cfg(test)]

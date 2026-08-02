@@ -44,7 +44,9 @@ use crate::geometry::Rect;
 use crate::overlay::events::OverlayEventSink;
 use crate::platform::OverlaySurface;
 use crate::platform::wayland::input::SurfaceRegistration;
-use crate::platform::wayland::shell::{FactoryParts, OutputRecord, ShellState, map_shm, pump_until};
+use crate::platform::wayland::shell::{
+    FactoryParts, OutputRecord, ShellState, map_shm, pump_until,
+};
 use anyhow::{Context, Result, bail};
 use std::cell::{Cell, RefCell};
 use std::os::unix::io::AsFd;
@@ -193,7 +195,9 @@ impl LayerOverlaySurface {
         let release_qh = release_queue.handle();
         let make_slot = |slot: usize| -> Result<ShmSlot> {
             let (fd, mapping) = map_shm(len)?;
-            let pool = globals.shm.create_pool(fd.as_fd(), len as i32, &release_qh, ());
+            let pool = globals
+                .shm
+                .create_pool(fd.as_fd(), len as i32, &release_qh, ());
             let buffer = pool.create_buffer(
                 0,
                 width as i32,
@@ -259,7 +263,8 @@ impl LayerOverlaySurface {
         // connection; dispatch_pending only runs their handlers, so it never
         // blocks.
         let _ = self.release_queue.dispatch_pending(&mut self.slot_state);
-    }}
+    }
+}
 
 impl OverlaySurface for LayerOverlaySurface {
     /// Re-composite from `frame` (must match the monitor rect exactly).
@@ -358,7 +363,12 @@ fn clip_dirty(dirty: Rect, width: u32, height: u32) -> Option<Rect> {
     let x1 = (dirty.x as i64 + dirty.width as i64).min(width as i64);
     let y1 = (dirty.y as i64 + dirty.height as i64).min(height as i64);
     if x1 > x0 && y1 > y0 {
-        Some(Rect::new(x0 as i32, y0 as i32, (x1 - x0) as u32, (y1 - y0) as u32))
+        Some(Rect::new(
+            x0 as i32,
+            y0 as i32,
+            (x1 - x0) as u32,
+            (y1 - y0) as u32,
+        ))
     } else {
         None
     }
@@ -378,8 +388,7 @@ fn copy_frame(dst: &mut [u8], src: &DibBuffer, region: Option<Rect>) {
             let col_off = r.x as usize * 4;
             for y in r.y..r.y + r.height as i32 {
                 let off = y as usize * stride + col_off;
-                dst[off..off + row_bytes]
-                    .copy_from_slice(&src.pixels[off..off + row_bytes]);
+                dst[off..off + row_bytes].copy_from_slice(&src.pixels[off..off + row_bytes]);
             }
         }
     }
@@ -410,9 +419,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for ShellState {
                 // monitor rect, never from the configure's suggested size).
                 proxy.ack_configure(serial);
                 let handles = state.layer_handles.borrow();
-                if let Some(h) = handles
-                    .iter()
-                    .find(|h| h.layer_surface.id() == proxy.id())
+                if let Some(h) = handles.iter().find(|h| h.layer_surface.id() == proxy.id())
                     && h.configured.get().is_none()
                 {
                     h.configured.set(Some((width, height)));

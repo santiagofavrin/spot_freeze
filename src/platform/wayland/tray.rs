@@ -447,8 +447,7 @@ mod tests {
                 for x in 0..size {
                     let px = x as f32 + 0.5 - half;
                     let py = y as f32 + 0.5 - half;
-                    if is_white(pixel(&data, size, x, y)) && px * px + py * py > circle * circle
-                    {
+                    if is_white(pixel(&data, size, x, y)) && px * px + py * py > circle * circle {
                         sparkle_pixels += 1;
                         assert!(
                             px > 0.0 && py < 0.0,

@@ -62,17 +62,14 @@ pub fn enumerate_monitors() -> Result<Vec<MonitorInfo>> {
         // SAFETY: `info` is a valid, correctly sized `MONITORINFOEXW`; the cast
         // to `*mut MONITORINFO` is valid because `MONITORINFOEXW` is `repr(C)`
         // and begins with a `MONITORINFO` member.
-        let got = unsafe {
-            GetMonitorInfoW(hmonitor, &mut info as *mut MONITORINFOEXW as *mut _)
-        };
+        let got = unsafe { GetMonitorInfoW(hmonitor, &mut info as *mut MONITORINFOEXW as *mut _) };
         if got.as_bool() {
             let rc = info.monitorInfo.rcMonitor;
             // Best effort: fall back to the 96-DPI baseline when unavailable.
             let mut dpi_x = 96u32;
             let mut dpi_y = 96u32;
-            let _ = unsafe {
-                GetDpiForMonitor(hmonitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y)
-            };
+            let _ =
+                unsafe { GetDpiForMonitor(hmonitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
             out.push(MonitorInfo {
                 rect: Rect::new(
                     rc.left,
@@ -267,7 +264,9 @@ impl Drop for OwnedDc {
         use windows::Win32::Graphics::Gdi::DeleteDC;
         if !self.0.is_invalid() {
             // SAFETY: we own this DC; it has not been deleted elsewhere.
-            unsafe { let _ = DeleteDC(self.0); }
+            unsafe {
+                let _ = DeleteDC(self.0);
+            }
         }
     }
 }
@@ -280,7 +279,9 @@ impl Drop for OwnedBitmap {
         use windows::Win32::Graphics::Gdi::DeleteObject;
         if !self.0.is_invalid() {
             // SAFETY: we own this bitmap; it is deselected before drop.
-            unsafe { let _ = DeleteObject(self.0.into()); }
+            unsafe {
+                let _ = DeleteObject(self.0.into());
+            }
         }
     }
 }
@@ -366,7 +367,9 @@ unsafe fn capture_monitor(
     blt.context("BitBlt failed")?;
 
     // Ensure the blit has landed in the DIB before we read its memory.
-    unsafe { let _ = GdiFlush(); }
+    unsafe {
+        let _ = GdiFlush();
+    }
 
     // Copy the pixels out (contiguous: 32 bpp stride == width*4, matching
     // DibBuffer), then force alpha to 255 because BitBlt leaves it undefined.

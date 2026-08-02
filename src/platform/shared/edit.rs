@@ -17,8 +17,7 @@ pub fn open_in_editor(path: &Path) -> Result<()> {
         }
         // Headless fallback: $EDITOR on the current terminal, if any.
         if let Ok(editor) = std::env::var("EDITOR") {
-            spawn(Command::new(editor).arg(path))
-                .context("spawning $EDITOR")?;
+            spawn(Command::new(editor).arg(path)).context("spawning $EDITOR")?;
             return Ok(());
         }
         anyhow::bail!("neither xdg-open nor $EDITOR is available");

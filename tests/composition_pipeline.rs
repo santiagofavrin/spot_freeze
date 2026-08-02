@@ -75,11 +75,7 @@ fn zoom_plus_spotlight_hole_reveals_zoomed_base_dimmed_zoomed_outside() {
             } else {
                 dimmed_pixel_with(zb, DIM, BLACK)
             };
-            assert_eq!(
-                out.pixel(x as u32, y as u32).unwrap(),
-                want,
-                "({x}, {y})"
-            );
+            assert_eq!(out.pixel(x as u32, y as u32).unwrap(), want, "({x}, {y})");
         }
     }
 

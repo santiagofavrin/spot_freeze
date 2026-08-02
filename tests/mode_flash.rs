@@ -134,9 +134,17 @@ fn full_mode_switches_repaint_exactly_once_without_flashing() {
     f.controller.set_mode(ModeKind::Snip, &f.services);
     assert_eq!(f.presents[0].borrow().len(), before + 1, "capture entry");
     f.controller.set_mode(ModeKind::Zoom, &f.services);
-    assert_eq!(f.presents[0].borrow().len(), before + 2, "switch out of capture");
+    assert_eq!(
+        f.presents[0].borrow().len(),
+        before + 2,
+        "switch out of capture"
+    );
     f.controller.set_mode(ModeKind::Spotlight, &f.services);
-    assert_eq!(f.presents[0].borrow().len(), before + 3, "switch to spotlight");
+    assert_eq!(
+        f.presents[0].borrow().len(),
+        before + 3,
+        "switch to spotlight"
+    );
     assert_flash_free(&f, "mode switches");
 }
 
@@ -148,7 +156,11 @@ fn capture_entry_and_esc_exit_repaint_once_without_flashing() {
     assert_eq!(f.presents[0].borrow().len(), before + 1);
     f.controller.unfreeze(); // Esc in capture: exit capture, stay frozen
     assert!(f.controller.is_frozen());
-    assert_eq!(f.presents[0].borrow().len(), before + 2, "instant capture exit");
+    assert_eq!(
+        f.presents[0].borrow().len(),
+        before + 2,
+        "instant capture exit"
+    );
     f.controller.unfreeze(); // second Esc: real unfreeze (fades out)
     assert!(!f.controller.is_frozen());
     assert_eq!(

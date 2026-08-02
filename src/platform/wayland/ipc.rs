@@ -37,8 +37,12 @@ fn socket_path_from(xdg_runtime_dir: Option<OsString>) -> Option<PathBuf> {
 /// instance. Errors when no instance is listening.
 pub fn toggle_running_instance() -> Result<()> {
     let path = socket_path()?;
-    send_toggle_at(&path)
-        .with_context(|| format!("could not reach the running SpotFreeze instance ({})", path.display()))
+    send_toggle_at(&path).with_context(|| {
+        format!(
+            "could not reach the running SpotFreeze instance ({})",
+            path.display()
+        )
+    })
 }
 
 /// Server side: the daemon's command listener, nonblocking. Any stale socket
@@ -72,7 +76,8 @@ pub fn drain_toggle(listener: &UnixListener) -> bool {
 /// Path-parametrized bind (the testable core of [`bind_listener`]).
 fn bind_listener_at(path: &Path) -> Result<UnixListener> {
     let _ = std::fs::remove_file(path);
-    let listener = UnixListener::bind(path).with_context(|| format!("binding {}", path.display()))?;
+    let listener =
+        UnixListener::bind(path).with_context(|| format!("binding {}", path.display()))?;
     listener
         .set_nonblocking(true)
         .context("setting the IPC listener nonblocking")?;

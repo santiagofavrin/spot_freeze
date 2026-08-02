@@ -59,7 +59,10 @@ fn old_schema_full_file_loads_with_new_key_defaults() {
     let loaded = store::load(&path).expect("old schema must still load");
 
     // NEW keys merge in with their documented defaults.
-    assert_eq!(loaded.overlay.color, BLACK, "missing color => black default");
+    assert_eq!(
+        loaded.overlay.color, BLACK,
+        "missing color => black default"
+    );
     assert_eq!(
         loaded.overlay.snip_dim_opacity, 90,
         "missing snip_dim_opacity => 90 default"
@@ -119,7 +122,10 @@ fn old_schema_minimal_overlay_section_merges_color_default() {
     // Everything else is the NEW defaults.
     let defaults = AppSettings::default();
     assert_eq!(loaded.hotkeys.freeze_toggle, defaults.hotkeys.freeze_toggle);
-    assert_eq!(loaded.hotkeys.mode_spotlight, defaults.hotkeys.mode_spotlight);
+    assert_eq!(
+        loaded.hotkeys.mode_spotlight,
+        defaults.hotkeys.mode_spotlight
+    );
     assert_eq!(loaded.spotlight, defaults.spotlight);
     assert_eq!(loaded.zoom, defaults.zoom);
 }

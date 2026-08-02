@@ -220,7 +220,10 @@ pub fn zoom_resample(
             // and identity) — one memcpy per row instead of per-pixel gather.
             let contiguous = xmap[0] >= 0
                 && xmap[0] + vw as i32 <= sw
-                && xmap.iter().enumerate().all(|(i, &x)| x == xmap[0] + i as i32);
+                && xmap
+                    .iter()
+                    .enumerate()
+                    .all(|(i, &x)| x == xmap[0] + i as i32);
 
             let ostride = out.stride as usize;
             for oy in 0..vh {
@@ -676,7 +679,11 @@ mod tests {
                 let mut buf = solid(1, 1, [ch, ch, ch, 77]);
                 darken(&mut buf, a, BLACK);
                 let expect = (ch as u32 * (255 - a as u32) / 255) as u8;
-                assert_eq!(px(&buf, 0, 0), [expect, expect, expect, 77], "ch={ch} a={a}");
+                assert_eq!(
+                    px(&buf, 0, 0),
+                    [expect, expect, expect, 77],
+                    "ch={ch} a={a}"
+                );
             }
         }
     }
@@ -782,7 +789,11 @@ mod tests {
                 let inside = dx * dx + dy * dy <= 4;
                 let got = px(&dst, x as u32, y as u32);
                 if inside {
-                    assert_eq!(got, pattern(x as u32, y as u32), "({x},{y}) should be restored");
+                    assert_eq!(
+                        got,
+                        pattern(x as u32, y as u32),
+                        "({x},{y}) should be restored"
+                    );
                 } else {
                     assert_eq!(got, [10, 10, 10, 255], "({x},{y}) should stay dark");
                 }
@@ -883,7 +894,13 @@ mod tests {
         // viewport 8x8, zoom 2, focus (2,2) on 4x4 src.
         // src_x = 2 + (ox+0.5-4)/2 - 0.5 => nearest column map [0,0,1,1,2,2,3,3].
         let src = make_buf(4, 4, pattern);
-        let out = zoom_resample(&src, Rect::new(0, 0, 8, 8), 2.0, Point::new(2, 2), ZoomFilter::Nearest);
+        let out = zoom_resample(
+            &src,
+            Rect::new(0, 0, 8, 8),
+            2.0,
+            Point::new(2, 2),
+            ZoomFilter::Nearest,
+        );
         for oy in 0..8u32 {
             for ox in 0..8u32 {
                 let expect = pattern(ox / 2, oy / 2);
@@ -901,7 +918,13 @@ mod tests {
         // round:  -8   -6   -4   -2   1   3   5   7  (f32::round, half away from 0)
         // clamp:   0    0    0    0   1   3   3   3
         let src = make_buf(4, 4, pattern);
-        let out = zoom_resample(&src, Rect::new(0, 0, 8, 8), 0.5, Point::new(0, 0), ZoomFilter::Nearest);
+        let out = zoom_resample(
+            &src,
+            Rect::new(0, 0, 8, 8),
+            0.5,
+            Point::new(0, 0),
+            ZoomFilter::Nearest,
+        );
         let colmap = [0u32, 0, 0, 0, 1, 3, 3, 3];
         for oy in 0..8u32 {
             for ox in 0..8u32 {
@@ -920,8 +943,20 @@ mod tests {
         // wait: ox-0.5? recompute: src_x = 1 + (ox + 0.5 - 1.5)/1 - 0.5 = ox - 0.5.
         // ox=0 -> -0.5 (clamped: both taps pixel 0) ; ox=1 -> 0.5 (50/50 blend);
         // ox=2 -> 1.5 (clamped: both taps pixel 1).
-        let src = make_buf(2, 1, |x, _| if x == 0 { [0, 0, 0, 255] } else { [100, 200, 50, 255] });
-        let out = zoom_resample(&src, Rect::new(0, 0, 3, 1), 1.0, Point::new(1, 0), ZoomFilter::Bilinear);
+        let src = make_buf(2, 1, |x, _| {
+            if x == 0 {
+                [0, 0, 0, 255]
+            } else {
+                [100, 200, 50, 255]
+            }
+        });
+        let out = zoom_resample(
+            &src,
+            Rect::new(0, 0, 3, 1),
+            1.0,
+            Point::new(1, 0),
+            ZoomFilter::Bilinear,
+        );
         assert_eq!(px(&out, 0, 0), [0, 0, 0, 255]);
         assert_eq!(px(&out, 1, 0), [50, 100, 25, 255]);
         assert_eq!(px(&out, 2, 0), [100, 200, 50, 255]);
@@ -932,8 +967,20 @@ mod tests {
         // 1x2 src: top [0,0,0,255], bottom [200,100,0,255].
         // viewport 1x5, focus (0,1), zoom 1: src_y = 1 + (oy+0.5-2.5) - 0.5 = oy - 1.5.
         // oy=0 -> -1.5 clamp top; oy=3 -> 1.5 clamp bottom; oy=2 -> 0.5 => 50/50.
-        let src = make_buf(1, 2, |_, y| if y == 0 { [0, 0, 0, 255] } else { [200, 100, 0, 255] });
-        let out = zoom_resample(&src, Rect::new(0, 0, 1, 5), 1.0, Point::new(0, 1), ZoomFilter::Bilinear);
+        let src = make_buf(1, 2, |_, y| {
+            if y == 0 {
+                [0, 0, 0, 255]
+            } else {
+                [200, 100, 0, 255]
+            }
+        });
+        let out = zoom_resample(
+            &src,
+            Rect::new(0, 0, 1, 5),
+            1.0,
+            Point::new(0, 1),
+            ZoomFilter::Bilinear,
+        );
         assert_eq!(px(&out, 0, 0), [0, 0, 0, 255]);
         assert_eq!(px(&out, 0, 2), [100, 50, 0, 255]);
         assert_eq!(px(&out, 0, 3), [200, 100, 0, 255]);
@@ -943,18 +990,42 @@ mod tests {
     #[test]
     fn zoom_zero_viewport_and_empty_src_are_safe() {
         let src = make_buf(4, 4, pattern);
-        let out = zoom_resample(&src, Rect::new(0, 0, 0, 0), 2.0, Point::new(0, 0), ZoomFilter::Nearest);
+        let out = zoom_resample(
+            &src,
+            Rect::new(0, 0, 0, 0),
+            2.0,
+            Point::new(0, 0),
+            ZoomFilter::Nearest,
+        );
         assert_eq!(out.pixels.len(), 0);
         let empty = DibBuffer::default();
-        let out2 = zoom_resample(&empty, Rect::new(0, 0, 4, 4), 2.0, Point::new(0, 0), ZoomFilter::Bilinear);
+        let out2 = zoom_resample(
+            &empty,
+            Rect::new(0, 0, 4, 4),
+            2.0,
+            Point::new(0, 0),
+            ZoomFilter::Bilinear,
+        );
         assert_eq!(out2.pixels.len(), 4 * 4 * 4); // zeroed, no panic
     }
 
     #[test]
     fn zoom_viewport_xy_ignored() {
         let src = make_buf(8, 6, pattern);
-        let a = zoom_resample(&src, Rect::new(0, 0, 8, 6), 1.0, Point::new(4, 3), ZoomFilter::Nearest);
-        let b = zoom_resample(&src, Rect::new(-1920, 500, 8, 6), 1.0, Point::new(4, 3), ZoomFilter::Nearest);
+        let a = zoom_resample(
+            &src,
+            Rect::new(0, 0, 8, 6),
+            1.0,
+            Point::new(4, 3),
+            ZoomFilter::Nearest,
+        );
+        let b = zoom_resample(
+            &src,
+            Rect::new(-1920, 500, 8, 6),
+            1.0,
+            Point::new(4, 3),
+            ZoomFilter::Nearest,
+        );
         assert_eq!(a.pixels, b.pixels);
     }
 
@@ -1053,8 +1124,14 @@ mod tests {
         assert_eq!(local, Point::new(920, 600));
         assert_eq!(local_to_virtual(local, mon), virt);
         // Corners.
-        assert_eq!(virtual_to_local(Point::new(-1920, -100), mon), Point::new(0, 0));
-        assert_eq!(local_to_virtual(Point::new(0, 0), mon), Point::new(-1920, -100));
+        assert_eq!(
+            virtual_to_local(Point::new(-1920, -100), mon),
+            Point::new(0, 0)
+        );
+        assert_eq!(
+            local_to_virtual(Point::new(0, 0), mon),
+            Point::new(-1920, -100)
+        );
     }
 
     #[test]
@@ -1070,7 +1147,12 @@ mod tests {
     /// Reference colored-dim math, mirroring the documented darken formula.
     fn dimmed(p: [u8; 4], a: u8, color: Rgb) -> [u8; 4] {
         let ch = |c: u8, v: u8| ((c as u32 * (255 - a as u32) + v as u32 * a as u32) / 255) as u8;
-        [ch(p[0], color.b), ch(p[1], color.g), ch(p[2], color.r), p[3]]
+        [
+            ch(p[0], color.b),
+            ch(p[1], color.g),
+            ch(p[2], color.r),
+            p[3],
+        ]
     }
 
     #[test]
@@ -1087,7 +1169,11 @@ mod tests {
         );
         for y in 0..12 {
             for x in 0..16 {
-                assert_eq!(px(&out, x, y), dimmed(pattern(x, y), 160, VEIL), "({x},{y})");
+                assert_eq!(
+                    px(&out, x, y),
+                    dimmed(pattern(x, y), 160, VEIL),
+                    "({x},{y})"
+                );
             }
         }
     }
@@ -1117,7 +1203,14 @@ mod tests {
             capture: false,
         };
         let mut out = DibBuffer::new(16, 16);
-        compose_frame(&original, &mut out, Rect::new(0, 0, 16, 16), &state, 160, VEIL);
+        compose_frame(
+            &original,
+            &mut out,
+            Rect::new(0, 0, 16, 16),
+            &state,
+            160,
+            VEIL,
+        );
         for y in 0..16i32 {
             for x in 0..16i32 {
                 let inside = (x - 8) * (x - 8) + (y - 8) * (y - 8) <= 4;
@@ -1149,7 +1242,14 @@ mod tests {
             ZoomFilter::Nearest,
         );
         let mut out = DibBuffer::new(16, 16);
-        compose_frame(&original, &mut out, Rect::new(0, 0, 16, 16), &state, 160, BLACK);
+        compose_frame(
+            &original,
+            &mut out,
+            Rect::new(0, 0, 16, 16),
+            &state,
+            160,
+            BLACK,
+        );
         // Inside the hole: exact zoomed base. Outside: dimmed zoomed base.
         assert_eq!(px(&out, 8, 8), px(&zoomed, 8, 8));
         assert_eq!(px(&out, 0, 0), dimmed(px(&zoomed, 0, 0), 160, BLACK));
@@ -1169,7 +1269,14 @@ mod tests {
             capture: false,
         };
         let mut out = DibBuffer::new(20, 20);
-        compose_frame(&original, &mut out, Rect::new(0, 0, 20, 20), &state, 160, BLACK);
+        compose_frame(
+            &original,
+            &mut out,
+            Rect::new(0, 0, 20, 20),
+            &state,
+            160,
+            BLACK,
+        );
 
         // Deep interior (>= 2 px off every edge): exact original, zero dimming.
         for y in 7..=7u32 {
@@ -1192,8 +1299,16 @@ mod tests {
             assert_eq!(px(&out, x, y), black, "inner ring pixel ({x},{y})");
         }
         // One px further out/in the frame is untouched by the ring.
-        assert_eq!(px(&out, 6, 6), pattern(6, 6), "just inside the ring: plain base");
-        assert_eq!(px(&out, 3, 5), dimmed(pattern(3, 5), 160, BLACK), "beyond the ring");
+        assert_eq!(
+            px(&out, 6, 6),
+            pattern(6, 6),
+            "just inside the ring: plain base"
+        );
+        assert_eq!(
+            px(&out, 3, 5),
+            dimmed(pattern(3, 5), 160, BLACK),
+            "beyond the ring"
+        );
         // Negative drags normalize identically.
         let state2 = RenderState {
             zoom: None,
@@ -1202,7 +1317,14 @@ mod tests {
             capture: false,
         };
         let mut out2 = DibBuffer::new(20, 20);
-        compose_frame(&original, &mut out2, Rect::new(0, 0, 20, 20), &state2, 160, BLACK);
+        compose_frame(
+            &original,
+            &mut out2,
+            Rect::new(0, 0, 20, 20),
+            &state2,
+            160,
+            BLACK,
+        );
         assert_eq!(out.pixels, out2.pixels);
     }
 
@@ -1216,10 +1338,21 @@ mod tests {
             capture: false,
         };
         let mut out = DibBuffer::new(8, 8);
-        compose_frame(&original, &mut out, Rect::new(0, 0, 8, 8), &state, 160, BLACK);
+        compose_frame(
+            &original,
+            &mut out,
+            Rect::new(0, 0, 8, 8),
+            &state,
+            160,
+            BLACK,
+        );
         for y in 0..8 {
             for x in 0..8 {
-                assert_eq!(px(&out, x, y), dimmed(pattern(x, y), 160, BLACK), "({x},{y})");
+                assert_eq!(
+                    px(&out, x, y),
+                    dimmed(pattern(x, y), 160, BLACK),
+                    "({x},{y})"
+                );
             }
         }
     }
@@ -1260,7 +1393,11 @@ mod tests {
         let mut buf = solid(8, 8, [9, 9, 9, 255]);
         // 1-px-wide selection: inner and outer lines overlap, no panic.
         draw_selection_border(&mut buf, Rect::new(3, 3, 1, 4));
-        assert_eq!(px(&buf, 3, 4), [0, 0, 0, 255], "the single column is the inner line");
+        assert_eq!(
+            px(&buf, 3, 4),
+            [0, 0, 0, 255],
+            "the single column is the inner line"
+        );
         assert_eq!(px(&buf, 2, 4), [255, 255, 255, 255], "left outer line");
         assert_eq!(px(&buf, 4, 4), [255, 255, 255, 255], "right outer line");
         // Empty buffer: no-op, no panic.
@@ -1343,7 +1480,14 @@ mod tests {
             ..RenderState::default()
         };
         let mut out = DibBuffer::new(12, 10);
-        compose_frame(&original, &mut out, Rect::new(0, 0, 12, 10), &state, 160, BLACK);
+        compose_frame(
+            &original,
+            &mut out,
+            Rect::new(0, 0, 12, 10),
+            &state,
+            160,
+            BLACK,
+        );
         let accent = [
             CAPTURE_INDICATOR_COLOR.b,
             CAPTURE_INDICATOR_COLOR.g,
@@ -1354,7 +1498,11 @@ mod tests {
                 let in_ring = x < 2 || x >= 10 || y < 2 || y >= 8;
                 let got = px(&out, x, y);
                 if in_ring {
-                    assert_eq!(got, [accent[0], accent[1], accent[2], 255], "ring ({x},{y})");
+                    assert_eq!(
+                        got,
+                        [accent[0], accent[1], accent[2], 255],
+                        "ring ({x},{y})"
+                    );
                 } else {
                     assert_eq!(
                         got,
@@ -1372,7 +1520,14 @@ mod tests {
         // No flag: the frame edge is the plain dimmed frame.
         let plain = RenderState::default();
         let mut out = DibBuffer::new(10, 10);
-        compose_frame(&original, &mut out, Rect::new(0, 0, 10, 10), &plain, 160, BLACK);
+        compose_frame(
+            &original,
+            &mut out,
+            Rect::new(0, 0, 10, 10),
+            &plain,
+            160,
+            BLACK,
+        );
         assert_eq!(px(&out, 0, 0), dimmed(pattern(0, 0), 160, BLACK));
 
         // The indicator overwrites every earlier stage at the frame edge —
@@ -1384,7 +1539,14 @@ mod tests {
             ..RenderState::default()
         };
         let mut out = DibBuffer::new(10, 10);
-        compose_frame(&original, &mut out, Rect::new(0, 0, 10, 10), &state, 160, BLACK);
+        compose_frame(
+            &original,
+            &mut out,
+            Rect::new(0, 0, 10, 10),
+            &state,
+            160,
+            BLACK,
+        );
         let accent = [
             CAPTURE_INDICATOR_COLOR.b,
             CAPTURE_INDICATOR_COLOR.g,

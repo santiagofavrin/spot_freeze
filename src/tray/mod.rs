@@ -126,10 +126,8 @@ impl TrayIcon {
         // reconstruct it later via `Rc::as_ptr`.
         let refdata = Rc::into_raw(shared.clone()) as usize;
 
-        if !unsafe {
-            SetWindowSubclass(hwnd, Some(tray_subclass_proc), TRAY_SUBCLASS_ID, refdata)
-        }
-        .as_bool()
+        if !unsafe { SetWindowSubclass(hwnd, Some(tray_subclass_proc), TRAY_SUBCLASS_ID, refdata) }
+            .as_bool()
         {
             // Release the subclass ref we just created, then the shell icon.
             unsafe {
@@ -448,8 +446,12 @@ mod tests {
                     "corner ({x}, {y}) not transparent at {size}"
                 );
             }
-            for (x, y) in [(size / 2, 0), (size / 2, size - 1), (0, size / 2), (size - 1, size / 2)]
-            {
+            for (x, y) in [
+                (size / 2, 0),
+                (size / 2, size - 1),
+                (0, size / 2),
+                (size - 1, size / 2),
+            ] {
                 assert!(
                     !and_bit(&and_mask, size, x, y),
                     "edge midpoint ({x}, {y}) transparent at {size}"
@@ -517,7 +519,10 @@ mod tests {
     fn tooltip_is_copied_and_nul_terminated() {
         let mut tip = [1u16; 128];
         write_tooltip(&mut tip, "SpotFreeze");
-        assert_eq!(&tip[..10], &"SpotFreeze".encode_utf16().collect::<Vec<_>>()[..]);
+        assert_eq!(
+            &tip[..10],
+            &"SpotFreeze".encode_utf16().collect::<Vec<_>>()[..]
+        );
         assert_eq!(tip[10], 0);
         assert!(tip[11..].iter().all(|&u| u == 0));
     }

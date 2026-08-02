@@ -204,7 +204,9 @@ impl Xkb {
 
     /// `xkb_state_update_key` for an evdev keycode (converted internally).
     fn update_key(&mut self, evdev_code: u32, direction: xkb_key_direction) {
-        let Some(xkb) = xkbcommon_option() else { return };
+        let Some(xkb) = xkbcommon_option() else {
+            return;
+        };
         // SAFETY: `state` is a live xkb_state owned by `self`.
         unsafe {
             (xkb.xkb_state_update_key)(self.state, evdev_code + EVDEV_TO_XKB, direction);
@@ -213,7 +215,9 @@ impl Xkb {
 
     /// `xkb_state_update_mask` from a wl_keyboard.modifiers event.
     fn update_mask(&mut self, depressed: u32, latched: u32, locked: u32, group: u32) {
-        let Some(xkb) = xkbcommon_option() else { return };
+        let Some(xkb) = xkbcommon_option() else {
+            return;
+        };
         // SAFETY: `state` is a live xkb_state owned by `self`.
         unsafe {
             (xkb.xkb_state_update_mask)(self.state, depressed, latched, locked, 0, 0, group);
@@ -222,21 +226,27 @@ impl Xkb {
 
     /// The single keysym an evdev keycode currently resolves to.
     fn one_sym(&mut self, evdev_code: u32) -> u32 {
-        let Some(xkb) = xkbcommon_option() else { return 0 };
+        let Some(xkb) = xkbcommon_option() else {
+            return 0;
+        };
         // SAFETY: `state` is a live xkb_state owned by `self`.
         unsafe { (xkb.xkb_state_key_get_one_sym)(self.state, evdev_code + EVDEV_TO_XKB) }
     }
 
     /// Whether the key repeats under auto-repeat (for repeat suppression).
     fn key_repeats(&mut self, evdev_code: u32) -> bool {
-        let Some(xkb) = xkbcommon_option() else { return false };
+        let Some(xkb) = xkbcommon_option() else {
+            return false;
+        };
         // SAFETY: `keymap` is a live xkb_keymap owned by `self`.
         unsafe { (xkb.xkb_keymap_key_repeats)(self.keymap, evdev_code + EVDEV_TO_XKB) != 0 }
     }
 
     /// Whether a named modifier is effectively active.
     fn mod_active(&mut self, name: &'static std::ffi::CStr) -> bool {
-        let Some(xkb) = xkbcommon_option() else { return false };
+        let Some(xkb) = xkbcommon_option() else {
+            return false;
+        };
         // SAFETY: `state` is live; `name` is a static NUL-terminated string.
         unsafe {
             (xkb.xkb_state_mod_name_is_active)(
@@ -260,7 +270,9 @@ impl Xkb {
 
 impl Drop for Xkb {
     fn drop(&mut self) {
-        let Some(xkb) = xkbcommon_option() else { return };
+        let Some(xkb) = xkbcommon_option() else {
+            return;
+        };
         // SAFETY: the three handles are live, owned by `self`, released once.
         unsafe {
             (xkb.xkb_state_unref)(self.state);
@@ -400,7 +412,12 @@ impl InputState {
         self.axes[1].clear();
     }
 
-    fn load_keymap(&mut self, format: WEnum<wl_keyboard::KeymapFormat>, fd: std::os::unix::io::OwnedFd, size: u32) {
+    fn load_keymap(
+        &mut self,
+        format: WEnum<wl_keyboard::KeymapFormat>,
+        fd: std::os::unix::io::OwnedFd,
+        size: u32,
+    ) {
         self.xkb = None;
         let WEnum::Value(wl_keyboard::KeymapFormat::XkbV1) = format else {
             return; // NoKeymap or unknown: keys stay unmapped
@@ -429,7 +446,9 @@ impl InputState {
             let _ = rustix::mm::munmap(ptr, len);
         }
         if self.xkb.is_none() {
-            eprintln!("spotfreeze: could not compile the compositor's keymap; frozen-mode keys will not work");
+            eprintln!(
+                "spotfreeze: could not compile the compositor's keymap; frozen-mode keys will not work"
+            );
         }
     }
 
@@ -531,7 +550,9 @@ impl Dispatch<wl_pointer::WlPointer, ()> for ShellState {
                 input.unfocus_pointer();
             }
             wl_pointer::Event::Motion {
-                surface_x, surface_y, ..
+                surface_x,
+                surface_y,
+                ..
             } => {
                 input.track_motion(surface_x, surface_y);
             }
@@ -752,11 +773,26 @@ mod tests {
             modifiers_from_bools(true, true, true, true),
             Modifiers::SHIFT | Modifiers::CTRL | Modifiers::ALT | Modifiers::WIN
         );
-        assert_eq!(modifiers_from_bools(false, false, false, false), Modifiers::NONE);
-        assert_eq!(modifiers_from_bools(true, false, false, false), Modifiers::SHIFT);
-        assert_eq!(modifiers_from_bools(false, true, false, false), Modifiers::CTRL);
-        assert_eq!(modifiers_from_bools(false, false, true, false), Modifiers::ALT);
-        assert_eq!(modifiers_from_bools(false, false, false, true), Modifiers::WIN);
+        assert_eq!(
+            modifiers_from_bools(false, false, false, false),
+            Modifiers::NONE
+        );
+        assert_eq!(
+            modifiers_from_bools(true, false, false, false),
+            Modifiers::SHIFT
+        );
+        assert_eq!(
+            modifiers_from_bools(false, true, false, false),
+            Modifiers::CTRL
+        );
+        assert_eq!(
+            modifiers_from_bools(false, false, true, false),
+            Modifiers::ALT
+        );
+        assert_eq!(
+            modifiers_from_bools(false, false, false, true),
+            Modifiers::WIN
+        );
     }
 
     // ---- local_physical ----
@@ -779,7 +815,10 @@ mod tests {
     #[test]
     fn axis_slot_routes_vertical_to_zero() {
         assert_eq!(axis_slot(WEnum::Value(wl_pointer::Axis::VerticalScroll)), 0);
-        assert_eq!(axis_slot(WEnum::Value(wl_pointer::Axis::HorizontalScroll)), 1);
+        assert_eq!(
+            axis_slot(WEnum::Value(wl_pointer::Axis::HorizontalScroll)),
+            1
+        );
         assert_eq!(axis_slot(WEnum::Unknown(99)), 1);
     }
 
@@ -815,8 +854,18 @@ mod tests {
         assert_eq!(
             *log.borrow(),
             vec![
-                (2, OverlayEvent::MouseMove { at: Point::new(10, 10) }),
-                (2, OverlayEvent::MouseMove { at: Point::new(60, 70) }),
+                (
+                    2,
+                    OverlayEvent::MouseMove {
+                        at: Point::new(10, 10)
+                    }
+                ),
+                (
+                    2,
+                    OverlayEvent::MouseMove {
+                        at: Point::new(60, 70)
+                    }
+                ),
             ]
         );
     }
@@ -842,7 +891,12 @@ mod tests {
         input.flush_motion();
         assert_eq!(
             *log.borrow(),
-            vec![(1, OverlayEvent::MouseMove { at: Point::new(51, 20) })]
+            vec![(
+                1,
+                OverlayEvent::MouseMove {
+                    at: Point::new(51, 20)
+                }
+            )]
         );
     }
 
@@ -870,7 +924,12 @@ mod tests {
         input.flush_motion();
         assert_eq!(
             *log.borrow(),
-            vec![(1, OverlayEvent::MouseMove { at: Point::new(7, 8) })],
+            vec![(
+                1,
+                OverlayEvent::MouseMove {
+                    at: Point::new(7, 8)
+                }
+            )],
             "the enter move is the only survivor"
         );
     }
@@ -886,11 +945,14 @@ mod tests {
         input.flush_axis_frame();
         assert_eq!(
             *log.borrow(),
-            vec![(0, OverlayEvent::MouseWheel {
-                at: Point::new(100, 200),
-                delta: -120,
-                modifiers: Modifiers::NONE,
-            })],
+            vec![(
+                0,
+                OverlayEvent::MouseWheel {
+                    at: Point::new(100, 200),
+                    delta: -120,
+                    modifiers: Modifiers::NONE,
+                }
+            )],
             "the wheel uses the newest tracked position, not the last emitted one"
         );
         input.flush_motion();

@@ -585,7 +585,11 @@ mod tests {
             text_pixel[0] >= TEXT_INACTIVE.b - 1,
             "text pixel blended toward the text color: {text_pixel:?}"
         );
-        assert_ne!(text_pixel, px(&buf, text_x + 8, text_y), "set vs unset glyph pixel");
+        assert_ne!(
+            text_pixel,
+            px(&buf, text_x + 8, text_y),
+            "set vs unset glyph pixel"
+        );
     }
 
     #[test]
@@ -602,7 +606,10 @@ mod tests {
         let chip_px = (x0 + PILL_PAD_X + 4, y0 + CHIP_INSET_Y + 14);
         let [b_on, g_on, r_on, _] = px(&on, chip_px.0, chip_px.1);
         let [b_off, g_off, r_off, _] = px(&off, chip_px.0, chip_px.1);
-        assert!(b_on > b_off && g_on > g_off && r_on > r_off, "chip brightens");
+        assert!(
+            b_on > b_off && g_on > g_off && r_on > r_off,
+            "chip brightens"
+        );
         // The same probe under an inactive tab never brightens.
         let second_chip = x0 + PILL_PAD_X + legend.chip_widths[0] + TAB_GAP + 4;
         assert_eq!(

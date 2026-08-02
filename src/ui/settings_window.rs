@@ -43,15 +43,13 @@ use crate::settings::model::{AppSettings, HotkeySettings, Rgb};
 use anyhow::{Context, Result, anyhow};
 use std::sync::Once;
 use std::sync::atomic::{AtomicIsize, Ordering};
-use windows::Win32::Foundation::{
-    COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM,
-};
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CLEARTYPE_QUALITY, CreateFontIndirectW, CreatePen, CreateSolidBrush, DEFAULT_CHARSET,
-    DEFAULT_GUI_FONT, DeleteObject, DrawFocusRect, DrawTextW, DT_CENTER, DT_SINGLELINE,
-    DT_VCENTER, FF_SWISS, FW_NORMAL, FW_SEMIBOLD, GetStockObject, HBRUSH, HDC, HFONT,
-    InflateRect, InvalidateRect, LOGFONTW, PS_SOLID, RoundRect, SelectObject, SetBkColor,
-    SetBkMode, SetTextColor, TRANSPARENT, VARIABLE_PITCH, WHITE_BRUSH,
+    DEFAULT_GUI_FONT, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawFocusRect, DrawTextW,
+    FF_SWISS, FW_NORMAL, FW_SEMIBOLD, GetStockObject, HBRUSH, HDC, HFONT, InflateRect,
+    InvalidateRect, LOGFONTW, PS_SOLID, RoundRect, SelectObject, SetBkColor, SetBkMode,
+    SetTextColor, TRANSPARENT, VARIABLE_PITCH, WHITE_BRUSH,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::Dialogs::{CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW, ChooseColorW};
@@ -66,18 +64,18 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AdjustWindowRectEx, BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_OWNERDRAW,
-    CREATESTRUCTW, CW_USEDEFAULT, CallNextHookEx, CreateWindowExW, DefWindowProcW,
-    DestroyWindow, EN_CHANGE, EN_SETFOCUS, ES_AUTOHSCROLL, ES_CENTER, ES_NUMBER, ES_READONLY,
-    GWLP_USERDATA, GetClientRect, GetDlgCtrlID, GetWindowLongPtrW, GetWindowRect,
-    GetWindowTextLengthW, GetWindowTextW, HHOOK, HWND_BOTTOM, IDC_ARROW, IsWindow,
-    KBDLLHOOKSTRUCT, LoadCursorW, NONCLIENTMETRICSW, RegisterClassW, SPI_GETNONCLIENTMETRICS,
-    SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, SetWindowTextW, SetWindowsHookExW, ShowWindow, SystemParametersInfoW,
-    UnhookWindowsHookEx, WA_INACTIVE, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE,
-    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DRAWITEM, WM_KEYDOWN,
-    WM_NCCREATE, WM_NCDESTROY, WM_SETFONT, WM_SYSKEYDOWN, WNDCLASS_STYLES, WNDCLASSW, WS_CAPTION,
-    WS_CHILD, WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
+    CREATESTRUCTW, CW_USEDEFAULT, CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow,
+    EN_CHANGE, EN_SETFOCUS, ES_AUTOHSCROLL, ES_CENTER, ES_NUMBER, ES_READONLY, GWLP_USERDATA,
+    GetClientRect, GetDlgCtrlID, GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW,
+    GetWindowTextW, HHOOK, HWND_BOTTOM, IDC_ARROW, IsWindow, KBDLLHOOKSTRUCT, LoadCursorW,
+    NONCLIENTMETRICSW, RegisterClassW, SPI_GETNONCLIENTMETRICS, SW_SHOW, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, SetWindowsHookExW,
+    ShowWindow, SystemParametersInfoW, UnhookWindowsHookEx, WA_INACTIVE, WH_KEYBOARD_LL,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT,
+    WM_CTLCOLORSTATIC, WM_DRAWITEM, WM_KEYDOWN, WM_NCCREATE, WM_NCDESTROY, WM_SETFONT,
+    WM_SYSKEYDOWN, WNDCLASS_STYLES, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_OVERLAPPED, WS_SYSMENU,
+    WS_TABSTOP, WS_VISIBLE,
 };
 use windows::core::{PCWSTR, w};
 
@@ -553,13 +551,36 @@ fn parse_numeric_fields(numerics: &NumericDraft) -> Result<ParsedNumerics, Strin
         RADIUS_MIN,
         RADIUS_MAX,
     )?;
-    let zoom_step = parse_f32_field("Zoom step factor", &numerics.zoom_step, 1.0, true, ZOOM_STEP_MAX)?;
-    let zoom_min = parse_f32_field("Zoom minimum", &numerics.zoom_min, ZOOM_LIMIT_MIN, false, ZOOM_LIMIT_MAX)?;
-    let zoom_max = parse_f32_field("Zoom maximum", &numerics.zoom_max, ZOOM_LIMIT_MIN, false, ZOOM_LIMIT_MAX)?;
+    let zoom_step = parse_f32_field(
+        "Zoom step factor",
+        &numerics.zoom_step,
+        1.0,
+        true,
+        ZOOM_STEP_MAX,
+    )?;
+    let zoom_min = parse_f32_field(
+        "Zoom minimum",
+        &numerics.zoom_min,
+        ZOOM_LIMIT_MIN,
+        false,
+        ZOOM_LIMIT_MAX,
+    )?;
+    let zoom_max = parse_f32_field(
+        "Zoom maximum",
+        &numerics.zoom_max,
+        ZOOM_LIMIT_MIN,
+        false,
+        ZOOM_LIMIT_MAX,
+    )?;
     if zoom_min >= zoom_max {
         return Err("Zoom minimum must be smaller than zoom maximum".to_string());
     }
-    let dim_opacity = parse_u32_field("Overlay dim opacity", &numerics.dim_opacity, DIM_MIN, DIM_MAX)?;
+    let dim_opacity = parse_u32_field(
+        "Overlay dim opacity",
+        &numerics.dim_opacity,
+        DIM_MIN,
+        DIM_MAX,
+    )?;
     Ok(ParsedNumerics {
         spotlight_radius,
         zoom_step,
@@ -616,9 +637,7 @@ fn validate_draft(draft: &SettingsDraft) -> Result<ParsedDraft, String> {
         );
     }
     if draft.hotkeys.zoom_modifier.is_empty() {
-        return Err(
-            "Zoom modifier: tick at least one of Ctrl / Alt / Shift / Win".to_string(),
-        );
+        return Err("Zoom modifier: tick at least one of Ctrl / Alt / Shift / Win".to_string());
     }
     if draft.hotkeys.zoom_modifier == draft.hotkeys.spotlight_radius_modifier {
         return Err(format!(
@@ -631,10 +650,13 @@ fn validate_draft(draft: &SettingsDraft) -> Result<ParsedDraft, String> {
     let numerics = parse_numeric_fields(&draft.numerics)?;
 
     // 5. Overlay color hex field.
-    let overlay_color = Rgb::parse_hex(&draft.color_hex)
-        .map_err(|e| format!("Overlay color: {e}"))?;
+    let overlay_color =
+        Rgb::parse_hex(&draft.color_hex).map_err(|e| format!("Overlay color: {e}"))?;
 
-    Ok(ParsedDraft { numerics, overlay_color })
+    Ok(ParsedDraft {
+        numerics,
+        overlay_color,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -987,7 +1009,9 @@ fn ensure_window_class(hinst: HINSTANCE) -> Result<()> {
         // SAFETY: `class` is fully initialized; the class name is distinct.
         let atom = unsafe { RegisterClassW(&class) };
         if atom == 0 {
-            outcome = Err(anyhow!("RegisterClassW failed for SpotFreezeSettingsWindow"));
+            outcome = Err(anyhow!(
+                "RegisterClassW failed for SpotFreezeSettingsWindow"
+            ));
         }
     });
     outcome
@@ -1038,8 +1062,7 @@ unsafe extern "system" fn settings_wnd_proc(
             // first; this arm is the catch-all for every other deactivation.)
             // SAFETY: GWLP_USERDATA holds the state pointer.
             unsafe {
-                let state =
-                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindowState;
+                let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindowState;
                 if !state.is_null() && wm_activate_is_deactivation((wparam.0 & 0xFFFF) as u32) {
                     end_capture_restore(&mut *state);
                 }
@@ -1049,8 +1072,8 @@ unsafe extern "system" fn settings_wnd_proc(
         WM_CREATE => {
             // SAFETY: GWLP_USERDATA holds the state pointer (set in NCCREATE).
             unsafe {
-                let state = &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA)
-                    as *mut SettingsWindowState);
+                let state =
+                    &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindowState);
                 state.hwnd = hwnd;
                 match build_ui(state) {
                     Ok(()) => LRESULT(0),
@@ -1061,8 +1084,7 @@ unsafe extern "system" fn settings_wnd_proc(
         WM_COMMAND => {
             // SAFETY: GWLP_USERDATA holds the state pointer.
             unsafe {
-                let state =
-                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindowState;
+                let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindowState;
                 if !state.is_null() {
                     on_command(state, wparam);
                 }
@@ -1073,8 +1095,7 @@ unsafe extern "system" fn settings_wnd_proc(
             // SAFETY: GWLP_USERDATA holds the state pointer; with a control
             // ID in wParam, lParam points to a valid DRAWITEMSTRUCT.
             unsafe {
-                let state =
-                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindowState;
+                let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindowState;
                 let dis = lparam.0 as *const DRAWITEMSTRUCT;
                 if state.is_null() || dis.is_null() {
                     return DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -1121,8 +1142,7 @@ unsafe extern "system" fn settings_wnd_proc(
             // HDC of the static (or checkbox) control and lParam its HWND,
             // per Win32 docs.
             unsafe {
-                let state =
-                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindowState;
+                let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindowState;
                 if state.is_null() {
                     return DefWindowProcW(hwnd, msg, wparam, lparam);
                 }
@@ -1172,8 +1192,7 @@ unsafe extern "system" fn settings_wnd_proc(
             // SAFETY: reclaim the state box exactly once, then clear the
             // single-instance slot if it still points at this window.
             unsafe {
-                let ptr =
-                    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindowState;
+                let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWindowState;
                 if !ptr.is_null() {
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                     drop(Box::from_raw(ptr));
@@ -1207,394 +1226,392 @@ unsafe fn build_ui(state: &mut SettingsWindowState) -> Result<()> {
     // (valid during WM_CREATE) and stock objects; each step's preconditions
     // are documented at its call site.
     unsafe {
-    let dpi = GetDpiForWindow(state.hwnd).max(96);
-    state.dpi = dpi;
-    fixup_client_size(state, dpi);
+        let dpi = GetDpiForWindow(state.hwnd).max(96);
+        state.dpi = dpi;
+        fixup_client_size(state, dpi);
 
-    let hinst = module_handle()?;
-    state.fonts = UiFonts::create(dpi);
-    let base_font = state.fonts.base;
-    let parent = state.hwnd;
+        let hinst = module_handle()?;
+        state.fonts = UiFonts::create(dpi);
+        let base_font = state.fonts.base;
+        let parent = state.hwnd;
 
-    let edit_style = WS_CHILD.0 | WS_VISIBLE.0 | ES_AUTOHSCROLL as u32;
-    let button_style =
-        WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_OWNERDRAW as u32;
-    let checkbox_style =
-        WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_AUTOCHECKBOX as u32;
+        let edit_style = WS_CHILD.0 | WS_VISIBLE.0 | ES_AUTOHSCROLL as u32;
+        let button_style = WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_OWNERDRAW as u32;
+        let checkbox_style = WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_AUTOCHECKBOX as u32;
 
-    let mut y = MARGIN;
+        let mut y = MARGIN;
 
-    // --- Window title -------------------------------------------------------
-    create_label(
-        "Settings",
-        0,
-        px(dpi, MARGIN),
-        px(dpi, y),
-        px(dpi, CLIENT_W - 2 * MARGIN),
-        px(dpi, WINDOW_TITLE_H),
-        parent,
-        hinst,
-        state.fonts.title,
-    )?;
-    y += WINDOW_TITLE_H + WINDOW_TITLE_GAP;
-
-    // --- Card: Hotkeys ------------------------------------------------------
-    let card_top = y;
-    y += CARD_PAD_TOP;
-    create_label(
-        "Hotkeys",
-        ID_CARD_CONTENT,
-        px(dpi, CONTENT_X),
-        px(dpi, y),
-        px(dpi, CONTENT_W),
-        px(dpi, CARD_TITLE_H),
-        parent,
-        hinst,
-        state.fonts.section,
-    )?;
-    y += CARD_TITLE_H + CARD_TITLE_GAP;
-
-    for (row, field) in GestureField::ALL.iter().enumerate() {
-        let row_y = px(dpi, y);
+        // --- Window title -------------------------------------------------------
         create_label(
-            field.label(),
-            ID_CARD_CONTENT,
-            px(dpi, CONTENT_X),
-            row_y,
-            px(dpi, LABEL_W),
-            px(dpi, ROW_H),
-            parent,
-            hinst,
-            base_font,
-        )?;
-        let edit_x = CONTENT_X + LABEL_W + GAP;
-        state.gesture_edits[row] = create_child(
-            WC_EDITW,
-            "",
-            edit_style | ES_READONLY as u32 | ES_CENTER as u32,
-            px(dpi, edit_x),
-            row_y,
-            px(dpi, GESTURE_EDIT_W),
-            px(dpi, ROW_H),
+            "Settings",
             0,
+            px(dpi, MARGIN),
+            px(dpi, y),
+            px(dpi, CLIENT_W - 2 * MARGIN),
+            px(dpi, WINDOW_TITLE_H),
             parent,
             hinst,
-            base_font,
+            state.fonts.title,
         )?;
-        let btn_x = edit_x + GESTURE_EDIT_W + GAP;
-        state.rebind_buttons[row] = create_child(
-            WC_BUTTONW,
-            "Rebind",
-            button_style,
-            px(dpi, btn_x),
-            row_y,
-            px(dpi, REBIND_BTN_W),
-            px(dpi, ROW_H),
-            ID_REBIND_BASE + row as i32,
-            parent,
-            hinst,
-            base_font,
-        )?;
-        y += ROW_PITCH;
-    }
+        y += WINDOW_TITLE_H + WINDOW_TITLE_GAP;
 
-    y += SMALL_GAP;
-    create_label(
-        "Tip: S toggles the spotlight, F toggles zoom hold, C enters capture, Esc backs out.",
-        ID_CARD_SECONDARY,
-        px(dpi, CONTENT_X),
-        px(dpi, y),
-        px(dpi, CONTENT_W),
-        px(dpi, SECONDARY_H),
-        parent,
-        hinst,
-        base_font,
-    )?;
-    y += SECONDARY_H + CARD_PAD_BOTTOM;
-    create_card_frame(dpi, card_top, y, parent, hinst)?;
-    y += CARD_GAP;
-
-    // --- Card: Scroll-wheel modifiers ---------------------------------------
-    let card_top = y;
-    y += CARD_PAD_TOP;
-    create_label(
-        "Scroll-wheel modifiers",
-        ID_CARD_CONTENT,
-        px(dpi, CONTENT_X),
-        px(dpi, y),
-        px(dpi, CONTENT_W),
-        px(dpi, CARD_TITLE_H),
-        parent,
-        hinst,
-        state.fonts.section,
-    )?;
-    y += CARD_TITLE_H + CARD_TITLE_GAP;
-    create_label(
-        "Hold and scroll the wheel to resize the spotlight or zoom.",
-        ID_CARD_SECONDARY,
-        px(dpi, CONTENT_X),
-        px(dpi, y),
-        px(dpi, CONTENT_W),
-        px(dpi, SECONDARY_H),
-        parent,
-        hinst,
-        base_font,
-    )?;
-    y += SECONDARY_H + SMALL_GAP;
-
-    let row_y = px(dpi, y);
-    create_label(
-        "Spotlight radius",
-        ID_CARD_CONTENT,
-        px(dpi, CONTENT_X),
-        row_y,
-        px(dpi, MOD_LABEL_W),
-        px(dpi, ROW_H),
-        parent,
-        hinst,
-        base_font,
-    )?;
-    for (i, label) in MOD_CHECK_LABELS.iter().enumerate() {
-        state.radius_checks[i] = create_child(
-            WC_BUTTONW,
-            label,
-            checkbox_style,
-            px(dpi, CONTENT_X + MOD_LABEL_W + GAP + i as i32 * CHECK_PITCH),
-            row_y + px(dpi, (ROW_H - CHECK_H) / 2),
-            px(dpi, CHECK_W),
-            px(dpi, CHECK_H),
-            ID_RADIUS_CHECK_BASE + i as i32,
-            parent,
-            hinst,
-            base_font,
-        )?;
-    }
-    y += ROW_PITCH;
-
-    let row_y = px(dpi, y);
-    create_label(
-        "Zoom",
-        ID_CARD_CONTENT,
-        px(dpi, CONTENT_X),
-        row_y,
-        px(dpi, MOD_LABEL_W),
-        px(dpi, ROW_H),
-        parent,
-        hinst,
-        base_font,
-    )?;
-    for (i, label) in MOD_CHECK_LABELS.iter().enumerate() {
-        state.zoom_checks[i] = create_child(
-            WC_BUTTONW,
-            label,
-            checkbox_style,
-            px(dpi, CONTENT_X + MOD_LABEL_W + GAP + i as i32 * CHECK_PITCH),
-            row_y + px(dpi, (ROW_H - CHECK_H) / 2),
-            px(dpi, CHECK_W),
-            px(dpi, CHECK_H),
-            ID_ZOOM_CHECK_BASE + i as i32,
-            parent,
-            hinst,
-            base_font,
-        )?;
-    }
-    y += ROW_PITCH + CARD_PAD_BOTTOM;
-    create_card_frame(dpi, card_top, y, parent, hinst)?;
-    y += CARD_GAP;
-
-    // --- Card: Options ------------------------------------------------------
-    let card_top = y;
-    y += CARD_PAD_TOP;
-    create_label(
-        "Options",
-        ID_CARD_CONTENT,
-        px(dpi, CONTENT_X),
-        px(dpi, y),
-        px(dpi, CONTENT_W),
-        px(dpi, CARD_TITLE_H),
-        parent,
-        hinst,
-        state.fonts.section,
-    )?;
-    y += CARD_TITLE_H + CARD_TITLE_GAP;
-
-    for (i, field) in NumericField::ALL.iter().enumerate() {
-        // ZoomMax's edit rides on ZoomMin's "Zoom range" row (created just
-        // below), so it gets no row of its own.
-        if *field == NumericField::ZoomMax {
-            continue;
-        }
-        let row_y = px(dpi, y);
+        // --- Card: Hotkeys ------------------------------------------------------
+        let card_top = y;
+        y += CARD_PAD_TOP;
         create_label(
-            field.label(),
+            "Hotkeys",
             ID_CARD_CONTENT,
             px(dpi, CONTENT_X),
-            row_y,
-            px(dpi, NUMERIC_LABEL_W),
-            px(dpi, ROW_H),
+            px(dpi, y),
+            px(dpi, CONTENT_W),
+            px(dpi, CARD_TITLE_H),
             parent,
             hinst,
-            base_font,
+            state.fonts.section,
         )?;
-        let edit_x = CONTENT_X + NUMERIC_LABEL_W + GAP;
-        state.numeric_edits[i] = create_child(
-            WC_EDITW,
-            "",
-            edit_style | WS_TABSTOP.0 | ES_NUMBER as u32,
-            px(dpi, edit_x),
-            row_y,
-            px(dpi, NUMERIC_EDIT_W),
-            px(dpi, ROW_H),
-            ID_NUMERIC_BASE + i as i32,
-            parent,
-            hinst,
-            base_font,
-        )?;
-        if *field == NumericField::ZoomMin {
-            // ZoomMax is the 4th field (index 3) in NumericField::ALL.
-            state.numeric_edits[3] = create_child(
+        y += CARD_TITLE_H + CARD_TITLE_GAP;
+
+        for (row, field) in GestureField::ALL.iter().enumerate() {
+            let row_y = px(dpi, y);
+            create_label(
+                field.label(),
+                ID_CARD_CONTENT,
+                px(dpi, CONTENT_X),
+                row_y,
+                px(dpi, LABEL_W),
+                px(dpi, ROW_H),
+                parent,
+                hinst,
+                base_font,
+            )?;
+            let edit_x = CONTENT_X + LABEL_W + GAP;
+            state.gesture_edits[row] = create_child(
                 WC_EDITW,
                 "",
-                edit_style | WS_TABSTOP.0 | ES_NUMBER as u32,
-                px(dpi, edit_x + NUMERIC_EDIT_W + GAP),
+                edit_style | ES_READONLY as u32 | ES_CENTER as u32,
+                px(dpi, edit_x),
                 row_y,
-                px(dpi, NUMERIC_EDIT_W),
+                px(dpi, GESTURE_EDIT_W),
                 px(dpi, ROW_H),
-                ID_NUMERIC_BASE + 3,
+                0,
+                parent,
+                hinst,
+                base_font,
+            )?;
+            let btn_x = edit_x + GESTURE_EDIT_W + GAP;
+            state.rebind_buttons[row] = create_child(
+                WC_BUTTONW,
+                "Rebind",
+                button_style,
+                px(dpi, btn_x),
+                row_y,
+                px(dpi, REBIND_BTN_W),
+                px(dpi, ROW_H),
+                ID_REBIND_BASE + row as i32,
+                parent,
+                hinst,
+                base_font,
+            )?;
+            y += ROW_PITCH;
+        }
+
+        y += SMALL_GAP;
+        create_label(
+            "Tip: S toggles the spotlight, F toggles zoom hold, C enters capture, Esc backs out.",
+            ID_CARD_SECONDARY,
+            px(dpi, CONTENT_X),
+            px(dpi, y),
+            px(dpi, CONTENT_W),
+            px(dpi, SECONDARY_H),
+            parent,
+            hinst,
+            base_font,
+        )?;
+        y += SECONDARY_H + CARD_PAD_BOTTOM;
+        create_card_frame(dpi, card_top, y, parent, hinst)?;
+        y += CARD_GAP;
+
+        // --- Card: Scroll-wheel modifiers ---------------------------------------
+        let card_top = y;
+        y += CARD_PAD_TOP;
+        create_label(
+            "Scroll-wheel modifiers",
+            ID_CARD_CONTENT,
+            px(dpi, CONTENT_X),
+            px(dpi, y),
+            px(dpi, CONTENT_W),
+            px(dpi, CARD_TITLE_H),
+            parent,
+            hinst,
+            state.fonts.section,
+        )?;
+        y += CARD_TITLE_H + CARD_TITLE_GAP;
+        create_label(
+            "Hold and scroll the wheel to resize the spotlight or zoom.",
+            ID_CARD_SECONDARY,
+            px(dpi, CONTENT_X),
+            px(dpi, y),
+            px(dpi, CONTENT_W),
+            px(dpi, SECONDARY_H),
+            parent,
+            hinst,
+            base_font,
+        )?;
+        y += SECONDARY_H + SMALL_GAP;
+
+        let row_y = px(dpi, y);
+        create_label(
+            "Spotlight radius",
+            ID_CARD_CONTENT,
+            px(dpi, CONTENT_X),
+            row_y,
+            px(dpi, MOD_LABEL_W),
+            px(dpi, ROW_H),
+            parent,
+            hinst,
+            base_font,
+        )?;
+        for (i, label) in MOD_CHECK_LABELS.iter().enumerate() {
+            state.radius_checks[i] = create_child(
+                WC_BUTTONW,
+                label,
+                checkbox_style,
+                px(dpi, CONTENT_X + MOD_LABEL_W + GAP + i as i32 * CHECK_PITCH),
+                row_y + px(dpi, (ROW_H - CHECK_H) / 2),
+                px(dpi, CHECK_W),
+                px(dpi, CHECK_H),
+                ID_RADIUS_CHECK_BASE + i as i32,
                 parent,
                 hinst,
                 base_font,
             )?;
         }
         y += ROW_PITCH;
-    }
 
-    // --- Overlay color: swatch button + live-parsed hex field ---------------
-    {
         let row_y = px(dpi, y);
         create_label(
-            "Overlay color (#RRGGBB)",
+            "Zoom",
             ID_CARD_CONTENT,
             px(dpi, CONTENT_X),
             row_y,
-            px(dpi, NUMERIC_LABEL_W),
+            px(dpi, MOD_LABEL_W),
             px(dpi, ROW_H),
             parent,
             hinst,
             base_font,
         )?;
-        let swatch_x = CONTENT_X + NUMERIC_LABEL_W + GAP;
-        state.color_swatch = create_child(
+        for (i, label) in MOD_CHECK_LABELS.iter().enumerate() {
+            state.zoom_checks[i] = create_child(
+                WC_BUTTONW,
+                label,
+                checkbox_style,
+                px(dpi, CONTENT_X + MOD_LABEL_W + GAP + i as i32 * CHECK_PITCH),
+                row_y + px(dpi, (ROW_H - CHECK_H) / 2),
+                px(dpi, CHECK_W),
+                px(dpi, CHECK_H),
+                ID_ZOOM_CHECK_BASE + i as i32,
+                parent,
+                hinst,
+                base_font,
+            )?;
+        }
+        y += ROW_PITCH + CARD_PAD_BOTTOM;
+        create_card_frame(dpi, card_top, y, parent, hinst)?;
+        y += CARD_GAP;
+
+        // --- Card: Options ------------------------------------------------------
+        let card_top = y;
+        y += CARD_PAD_TOP;
+        create_label(
+            "Options",
+            ID_CARD_CONTENT,
+            px(dpi, CONTENT_X),
+            px(dpi, y),
+            px(dpi, CONTENT_W),
+            px(dpi, CARD_TITLE_H),
+            parent,
+            hinst,
+            state.fonts.section,
+        )?;
+        y += CARD_TITLE_H + CARD_TITLE_GAP;
+
+        for (i, field) in NumericField::ALL.iter().enumerate() {
+            // ZoomMax's edit rides on ZoomMin's "Zoom range" row (created just
+            // below), so it gets no row of its own.
+            if *field == NumericField::ZoomMax {
+                continue;
+            }
+            let row_y = px(dpi, y);
+            create_label(
+                field.label(),
+                ID_CARD_CONTENT,
+                px(dpi, CONTENT_X),
+                row_y,
+                px(dpi, NUMERIC_LABEL_W),
+                px(dpi, ROW_H),
+                parent,
+                hinst,
+                base_font,
+            )?;
+            let edit_x = CONTENT_X + NUMERIC_LABEL_W + GAP;
+            state.numeric_edits[i] = create_child(
+                WC_EDITW,
+                "",
+                edit_style | WS_TABSTOP.0 | ES_NUMBER as u32,
+                px(dpi, edit_x),
+                row_y,
+                px(dpi, NUMERIC_EDIT_W),
+                px(dpi, ROW_H),
+                ID_NUMERIC_BASE + i as i32,
+                parent,
+                hinst,
+                base_font,
+            )?;
+            if *field == NumericField::ZoomMin {
+                // ZoomMax is the 4th field (index 3) in NumericField::ALL.
+                state.numeric_edits[3] = create_child(
+                    WC_EDITW,
+                    "",
+                    edit_style | WS_TABSTOP.0 | ES_NUMBER as u32,
+                    px(dpi, edit_x + NUMERIC_EDIT_W + GAP),
+                    row_y,
+                    px(dpi, NUMERIC_EDIT_W),
+                    px(dpi, ROW_H),
+                    ID_NUMERIC_BASE + 3,
+                    parent,
+                    hinst,
+                    base_font,
+                )?;
+            }
+            y += ROW_PITCH;
+        }
+
+        // --- Overlay color: swatch button + live-parsed hex field ---------------
+        {
+            let row_y = px(dpi, y);
+            create_label(
+                "Overlay color (#RRGGBB)",
+                ID_CARD_CONTENT,
+                px(dpi, CONTENT_X),
+                row_y,
+                px(dpi, NUMERIC_LABEL_W),
+                px(dpi, ROW_H),
+                parent,
+                hinst,
+                base_font,
+            )?;
+            let swatch_x = CONTENT_X + NUMERIC_LABEL_W + GAP;
+            state.color_swatch = create_child(
+                WC_BUTTONW,
+                "",
+                button_style,
+                px(dpi, swatch_x),
+                row_y,
+                px(dpi, SWATCH_W),
+                px(dpi, ROW_H),
+                ID_COLOR_SWATCH,
+                parent,
+                hinst,
+                base_font,
+            )?;
+            state.color_hex_edit = create_child(
+                WC_EDITW,
+                "",
+                edit_style | WS_TABSTOP.0,
+                px(dpi, swatch_x + SWATCH_W + GAP),
+                row_y,
+                px(dpi, HEX_EDIT_W),
+                px(dpi, ROW_H),
+                ID_COLOR_HEX,
+                parent,
+                hinst,
+                base_font,
+            )?;
+            y += ROW_PITCH;
+        }
+
+        state.auto_start_check = create_child(
             WC_BUTTONW,
+            "Launch SpotFreeze at login (auto-start)",
+            checkbox_style,
+            px(dpi, CONTENT_X),
+            px(dpi, y) + px(dpi, (ROW_H - CHECK_H) / 2),
+            px(dpi, CONTENT_W),
+            px(dpi, CHECK_H),
+            ID_AUTO_START_CHECK,
+            parent,
+            hinst,
+            base_font,
+        )?;
+        y += ROW_PITCH + CARD_PAD_BOTTOM;
+        create_card_frame(dpi, card_top, y, parent, hinst)?;
+        y += CARD_GAP;
+
+        // --- Validation hint (red) ---------------------------------------------
+        state.hint_label = create_label(
             "",
+            0,
+            px(dpi, MARGIN),
+            px(dpi, y),
+            px(dpi, CLIENT_W - 2 * MARGIN),
+            px(dpi, HINT_H),
+            parent,
+            hinst,
+            base_font,
+        )?;
+        y += HINT_H + FOOTER_GAP;
+
+        // --- Footer: Exit subdued at the left, Cancel + the accent Save right ---
+        let buttons_y = px(dpi, y);
+        state.save_button = create_child(
+            WC_BUTTONW,
+            "Save",
             button_style,
-            px(dpi, swatch_x),
-            row_y,
-            px(dpi, SWATCH_W),
-            px(dpi, ROW_H),
-            ID_COLOR_SWATCH,
+            px(dpi, CLIENT_W - MARGIN - SAVE_W),
+            buttons_y,
+            px(dpi, SAVE_W),
+            px(dpi, BUTTON_H),
+            ID_SAVE,
             parent,
             hinst,
             base_font,
         )?;
-        state.color_hex_edit = create_child(
-            WC_EDITW,
-            "",
-            edit_style | WS_TABSTOP.0,
-            px(dpi, swatch_x + SWATCH_W + GAP),
-            row_y,
-            px(dpi, HEX_EDIT_W),
-            px(dpi, ROW_H),
-            ID_COLOR_HEX,
+        create_child(
+            WC_BUTTONW,
+            "Cancel",
+            button_style,
+            px(dpi, CLIENT_W - MARGIN - SAVE_W - GAP - CANCEL_W),
+            buttons_y,
+            px(dpi, CANCEL_W),
+            px(dpi, BUTTON_H),
+            ID_CANCEL,
             parent,
             hinst,
             base_font,
         )?;
-        y += ROW_PITCH;
-    }
+        create_child(
+            WC_BUTTONW,
+            "Exit SpotFreeze",
+            button_style,
+            px(dpi, MARGIN),
+            buttons_y,
+            px(dpi, EXIT_W),
+            px(dpi, BUTTON_H),
+            ID_EXIT,
+            parent,
+            hinst,
+            base_font,
+        )?;
 
-    state.auto_start_check = create_child(
-        WC_BUTTONW,
-        "Launch SpotFreeze at login (auto-start)",
-        checkbox_style,
-        px(dpi, CONTENT_X),
-        px(dpi, y) + px(dpi, (ROW_H - CHECK_H) / 2),
-        px(dpi, CONTENT_W),
-        px(dpi, CHECK_H),
-        ID_AUTO_START_CHECK,
-        parent,
-        hinst,
-        base_font,
-    )?;
-    y += ROW_PITCH + CARD_PAD_BOTTOM;
-    create_card_frame(dpi, card_top, y, parent, hinst)?;
-    y += CARD_GAP;
+        debug_assert_eq!(
+            y + BUTTON_H + BOTTOM_PAD,
+            CLIENT_H,
+            "the layout trace must fill the client area exactly"
+        );
 
-    // --- Validation hint (red) ---------------------------------------------
-    state.hint_label = create_label(
-        "",
-        0,
-        px(dpi, MARGIN),
-        px(dpi, y),
-        px(dpi, CLIENT_W - 2 * MARGIN),
-        px(dpi, HINT_H),
-        parent,
-        hinst,
-        base_font,
-    )?;
-    y += HINT_H + FOOTER_GAP;
-
-    // --- Footer: Exit subdued at the left, Cancel + the accent Save right ---
-    let buttons_y = px(dpi, y);
-    state.save_button = create_child(
-        WC_BUTTONW,
-        "Save",
-        button_style,
-        px(dpi, CLIENT_W - MARGIN - SAVE_W),
-        buttons_y,
-        px(dpi, SAVE_W),
-        px(dpi, BUTTON_H),
-        ID_SAVE,
-        parent,
-        hinst,
-        base_font,
-    )?;
-    create_child(
-        WC_BUTTONW,
-        "Cancel",
-        button_style,
-        px(dpi, CLIENT_W - MARGIN - SAVE_W - GAP - CANCEL_W),
-        buttons_y,
-        px(dpi, CANCEL_W),
-        px(dpi, BUTTON_H),
-        ID_CANCEL,
-        parent,
-        hinst,
-        base_font,
-    )?;
-    create_child(
-        WC_BUTTONW,
-        "Exit SpotFreeze",
-        button_style,
-        px(dpi, MARGIN),
-        buttons_y,
-        px(dpi, EXIT_W),
-        px(dpi, BUTTON_H),
-        ID_EXIT,
-        parent,
-        hinst,
-        base_font,
-    )?;
-
-    debug_assert_eq!(
-        y + BUTTON_H + BOTTOM_PAD,
-        CLIENT_H,
-        "the layout trace must fill the client area exactly"
-    );
-
-    seed_controls(state);
-    refresh_validation(state);
-    Ok(())
+        seed_controls(state);
+        refresh_validation(state);
+        Ok(())
     }
 }
 
@@ -1769,7 +1786,10 @@ fn seed_controls(state: &SettingsWindowState) {
             &field.get(&state.settings.hotkeys).to_display(),
         );
     }
-    seed_modifier_checks(&state.radius_checks, state.settings.hotkeys.spotlight_radius_modifier);
+    seed_modifier_checks(
+        &state.radius_checks,
+        state.settings.hotkeys.spotlight_radius_modifier,
+    );
     seed_modifier_checks(&state.zoom_checks, state.settings.hotkeys.zoom_modifier);
     for (i, field) in NumericField::ALL.iter().enumerate() {
         set_text(state.numeric_edits[i], &field.seed_text(&state.settings));
@@ -1810,12 +1830,7 @@ fn read_text(hwnd: HWND) -> String {
 fn set_checkbox(hwnd: HWND, checked: bool) {
     // SAFETY: hwnd is a live checkbox control.
     unsafe {
-        SendMessageW(
-            hwnd,
-            BM_SETCHECK,
-            Some(WPARAM(usize::from(checked))),
-            None,
-        );
+        SendMessageW(hwnd, BM_SETCHECK, Some(WPARAM(usize::from(checked))), None);
     }
 }
 
@@ -1945,8 +1960,10 @@ unsafe extern "system" fn capture_keyboard_proc(
         let state = if hwnd_raw != 0 {
             // SAFETY: `hwnd_raw` is our own settings window (it wrote the
             // slot); GWLP_USERDATA holds the state box for its lifetime.
-            unsafe { GetWindowLongPtrW(hwnd_from_raw(hwnd_raw), GWLP_USERDATA)
-                as *mut SettingsWindowState }
+            unsafe {
+                GetWindowLongPtrW(hwnd_from_raw(hwnd_raw), GWLP_USERDATA)
+                    as *mut SettingsWindowState
+            }
         } else {
             std::ptr::null_mut()
         };
@@ -1987,7 +2004,10 @@ fn begin_capture(state: &mut SettingsWindowState, row: usize) {
             state.capture_row = None;
             let gesture = GestureField::ALL[row].get(&state.settings.hotkeys);
             set_text(state.gesture_edits[row], &gesture.to_display());
-            set_text(state.hint_label, &format!("could not start key capture: {err:#}"));
+            set_text(
+                state.hint_label,
+                &format!("could not start key capture: {err:#}"),
+            );
             return;
         }
     };
@@ -2033,7 +2053,9 @@ unsafe fn on_command(state: *mut SettingsWindowState, wparam: WPARAM) {
     let state = unsafe { &mut *state };
 
     match notification {
-        EN_CHANGE if (ID_NUMERIC_BASE..ID_NUMERIC_BASE + NUMERIC_FIELD_COUNT as i32).contains(&id) => {
+        EN_CHANGE
+            if (ID_NUMERIC_BASE..ID_NUMERIC_BASE + NUMERIC_FIELD_COUNT as i32).contains(&id) =>
+        {
             refresh_validation(state);
         }
         EN_CHANGE if id == ID_COLOR_HEX => {
@@ -2042,7 +2064,9 @@ unsafe fn on_command(state: *mut SettingsWindowState, wparam: WPARAM) {
             repaint_swatch(state);
             refresh_validation(state);
         }
-        EN_SETFOCUS if (ID_NUMERIC_BASE..ID_NUMERIC_BASE + NUMERIC_FIELD_COUNT as i32).contains(&id) => {
+        EN_SETFOCUS
+            if (ID_NUMERIC_BASE..ID_NUMERIC_BASE + NUMERIC_FIELD_COUNT as i32).contains(&id) =>
+        {
             // Clicking into another field abandons an ongoing capture.
             end_capture_restore(state);
         }
@@ -2060,7 +2084,9 @@ unsafe fn on_command(state: *mut SettingsWindowState, wparam: WPARAM) {
                     begin_capture(state, row);
                 }
             }
-            i if (ID_RADIUS_CHECK_BASE..ID_RADIUS_CHECK_BASE + MOD_CHECK_COUNT as i32).contains(&i) => {
+            i if (ID_RADIUS_CHECK_BASE..ID_RADIUS_CHECK_BASE + MOD_CHECK_COUNT as i32)
+                .contains(&i) =>
+            {
                 end_capture_restore(state);
                 refresh_validation(state);
             }
@@ -2378,8 +2404,8 @@ mod tests {
     #[test]
     fn duplicate_pair_is_found() {
         let gestures = [
-            gesture(Modifiers::CTRL, 0x46),               // Ctrl+F
-            gesture(Modifiers::NONE, 0x31),               // 1
+            gesture(Modifiers::CTRL, 0x46),                   // Ctrl+F
+            gesture(Modifiers::NONE, 0x31),                   // 1
             gesture(Modifiers::CTRL | Modifiers::NONE, 0x46), // == gestures[0]
         ];
         assert_eq!(find_duplicate_gesture(&gestures), Some((0, 2)));
@@ -2388,9 +2414,9 @@ mod tests {
     #[test]
     fn same_key_with_different_modifiers_is_not_a_duplicate() {
         let gestures = [
-            gesture(Modifiers::CTRL, 0x43),                       // Ctrl+C
-            gesture(Modifiers::CTRL | Modifiers::SHIFT, 0x43),    // Ctrl+Shift+C
-            gesture(Modifiers::NONE, 0x43),                       // C
+            gesture(Modifiers::CTRL, 0x43),                    // Ctrl+C
+            gesture(Modifiers::CTRL | Modifiers::SHIFT, 0x43), // Ctrl+Shift+C
+            gesture(Modifiers::NONE, 0x43),                    // C
         ];
         assert_eq!(find_duplicate_gesture(&gestures), None);
     }
@@ -2485,7 +2511,10 @@ mod tests {
     #[test]
     fn dim_opacity_bounds_are_0_to_255() {
         assert_eq!(parse_u32_field("Overlay dim opacity", "0", 0, 255), Ok(0));
-        assert_eq!(parse_u32_field("Overlay dim opacity", "255", 0, 255), Ok(255));
+        assert_eq!(
+            parse_u32_field("Overlay dim opacity", "255", 0, 255),
+            Ok(255)
+        );
         assert!(parse_u32_field("Overlay dim opacity", "256", 0, 255).is_err());
     }
 
@@ -2493,8 +2522,14 @@ mod tests {
     fn f32_step_factor_min_is_exclusive() {
         assert!(parse_f32_field("Zoom step factor", "1.0", 1.0, true, 4.0).is_err());
         assert!(parse_f32_field("Zoom step factor", "0.99", 1.0, true, 4.0).is_err());
-        assert_eq!(parse_f32_field("Zoom step factor", "1.25", 1.0, true, 4.0), Ok(1.25));
-        assert_eq!(parse_f32_field("Zoom step factor", "4.0", 1.0, true, 4.0), Ok(4.0));
+        assert_eq!(
+            parse_f32_field("Zoom step factor", "1.25", 1.0, true, 4.0),
+            Ok(1.25)
+        );
+        assert_eq!(
+            parse_f32_field("Zoom step factor", "4.0", 1.0, true, 4.0),
+            Ok(4.0)
+        );
         assert!(parse_f32_field("Zoom step factor", "4.01", 1.0, true, 4.0).is_err());
     }
 
@@ -2678,7 +2713,14 @@ mod tests {
         let mut draft = default_like_draft();
         draft.color_hex = "#1A2B3C".to_string();
         let parsed = validate_draft(&draft).expect("valid hex must pass");
-        assert_eq!(parsed.overlay_color, Rgb { r: 0x1A, g: 0x2B, b: 0x3C });
+        assert_eq!(
+            parsed.overlay_color,
+            Rgb {
+                r: 0x1A,
+                g: 0x2B,
+                b: 0x3C
+            }
+        );
 
         // Lowercase is accepted too (Rgb::parse_hex is case-insensitive).
         draft.color_hex = "#1a2b3c".to_string();
@@ -2691,7 +2733,10 @@ mod tests {
             let mut draft = default_like_draft();
             draft.color_hex = bad.to_string();
             let err = validate_draft(&draft).unwrap_err();
-            assert!(err.contains("Overlay color"), "unexpected error for {bad:?}: {err}");
+            assert!(
+                err.contains("Overlay color"),
+                "unexpected error for {bad:?}: {err}"
+            );
         }
     }
 
@@ -2704,7 +2749,10 @@ mod tests {
             let mut draft = default_like_draft();
             draft.color_hex = bad.to_string();
             let err = validate_draft(&draft).unwrap_err();
-            assert!(err.contains("Overlay color"), "unexpected error for {bad:?}: {err}");
+            assert!(
+                err.contains("Overlay color"),
+                "unexpected error for {bad:?}: {err}"
+            );
         }
     }
 
@@ -2729,13 +2777,19 @@ mod tests {
         assert!(!settings.auto_start);
 
         apply_valid_draft(&mut settings, &checked, parsed);
-        assert!(settings.auto_start, "ticked checkbox reaches the settings copy");
+        assert!(
+            settings.auto_start,
+            "ticked checkbox reaches the settings copy"
+        );
         // Spot-check that the validated fields still transfer alongside.
         assert_eq!(settings.spotlight.default_radius, 150);
         assert_eq!(settings.overlay.color, Rgb::BLACK);
 
         apply_valid_draft(&mut settings, &default_like_draft(), parsed);
-        assert!(!settings.auto_start, "unticked writes false too (toggle off)");
+        assert!(
+            !settings.auto_start,
+            "unticked writes false too (toggle off)"
+        );
     }
 
     // --- capture decision state machine (pure, no hook installed) ----------
@@ -2755,7 +2809,9 @@ mod tests {
 
     #[test]
     fn bare_modifier_presses_keep_capturing() {
-        for vk in [0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5] {
+        for vk in [
+            0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5,
+        ] {
             assert_eq!(
                 decide_capture(true, vk, Modifiers::NONE),
                 CaptureDecision::KeepCapturing,
@@ -2822,8 +2878,14 @@ mod tests {
     fn only_wa_inactive_is_a_deactivation() {
         // wParam's low word: 0 = WA_INACTIVE, 1 = WA_ACTIVE, 2 = WA_CLICKACTIVE.
         assert!(wm_activate_is_deactivation(0), "WA_INACTIVE must disarm");
-        assert!(!wm_activate_is_deactivation(1), "WA_ACTIVE (gained focus) must not");
-        assert!(!wm_activate_is_deactivation(2), "WA_CLICKACTIVE (clicked) must not");
+        assert!(
+            !wm_activate_is_deactivation(1),
+            "WA_ACTIVE (gained focus) must not"
+        );
+        assert!(
+            !wm_activate_is_deactivation(2),
+            "WA_CLICKACTIVE (clicked) must not"
+        );
         // The named constant the wndproc matches against is 0.
         assert_eq!(WA_INACTIVE, 0);
     }
@@ -2966,13 +3028,29 @@ mod tests {
     fn colorref_round_trip_preserves_channels() {
         for c in [
             Rgb::BLACK,
-            Rgb { r: 255, g: 255, b: 255 },
-            Rgb { r: 0x1A, g: 0x2B, b: 0x3C },
+            Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+            Rgb {
+                r: 0x1A,
+                g: 0x2B,
+                b: 0x3C,
+            },
         ] {
             assert_eq!(colorref_to_rgb(rgb_to_colorref(c)), c);
         }
         // Spot-check the 0x00BBGGRR byte order.
-        assert_eq!(rgb_to_colorref(Rgb { r: 0x11, g: 0x22, b: 0x33 }).0, 0x0033_2211);
+        assert_eq!(
+            rgb_to_colorref(Rgb {
+                r: 0x11,
+                g: 0x22,
+                b: 0x33
+            })
+            .0,
+            0x0033_2211
+        );
     }
 
     // --- scale_font_height (signed GDI font heights) -------------------------

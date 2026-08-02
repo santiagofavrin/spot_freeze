@@ -152,11 +152,7 @@ mod tests {
             path,
             PathBuf::from("/Users/u/Library/LaunchAgents/com.spotfreeze.app.plist")
         );
-        assert_eq!(
-            launch_agent_plist_path(None),
-            None,
-            "no HOME => no path"
-        );
+        assert_eq!(launch_agent_plist_path(None), None, "no HOME => no path");
         assert_eq!(
             launch_agent_plist_path(Some("".into())),
             None,
@@ -168,7 +164,9 @@ mod tests {
 
     #[test]
     fn plist_is_a_runatload_agent_for_the_binary() {
-        let plist = launch_agent_plist(Path::new("/Applications/SpotFreeze.app/Contents/MacOS/spotfreeze"));
+        let plist = launch_agent_plist(Path::new(
+            "/Applications/SpotFreeze.app/Contents/MacOS/spotfreeze",
+        ));
         for needle in [
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
             "<plist version=\"1.0\">",

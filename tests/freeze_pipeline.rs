@@ -105,7 +105,11 @@ fn freeze_darken_then_spotlight_restores_exactly_inside_circle() {
     darken(&mut dark1, DIM, BLACK);
     assert_fully_darkened(&orig0, &dark0, DIM);
     assert_fully_darkened(&orig1, &dark1, DIM);
-    assert_eq!(orig0.pixel(3, 3).unwrap(), pattern_a(3, 3), "original intact");
+    assert_eq!(
+        orig0.pixel(3, 3).unwrap(),
+        pattern_a(3, 3),
+        "original intact"
+    );
 
     // Mouse move on monitor 0: cut the spotlight hole from the ORIGINAL.
     let center = Point::new(20, 24);
@@ -148,7 +152,11 @@ fn freeze_darken_then_spotlight_restores_exactly_inside_circle() {
     let mut frame1 = dark1.clone();
     spotlight_hole(&mut frame1, &orig1, Point::new(10, 10), 8);
     assert_eq!(frame1.pixel(10, 10).unwrap(), pattern_b(10, 10));
-    assert_eq!(frame1.pixel(18, 10).unwrap(), pattern_b(18, 10), "on-circle inclusive");
+    assert_eq!(
+        frame1.pixel(18, 10).unwrap(),
+        pattern_b(18, 10),
+        "on-circle inclusive"
+    );
     assert_eq!(
         frame1.pixel(40, 40).unwrap(),
         dark1.pixel(40, 40).unwrap(),
@@ -175,7 +183,11 @@ fn spotlight_hole_clips_when_center_is_outside_buffer() {
             } else {
                 dark.pixel(x, y).unwrap()
             };
-            assert_eq!(frame.pixel(x, y).unwrap(), want, "clipped hole at ({x}, {y})");
+            assert_eq!(
+                frame.pixel(x, y).unwrap(),
+                want,
+                "clipped hole at ({x}, {y})"
+            );
         }
     }
     // spot checks: (2, 0) is exactly on the clipped circle (dx=8, dy=6: 64+36=100);

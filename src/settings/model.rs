@@ -48,7 +48,9 @@ impl Rgb {
     /// required and the string must be exactly 7 characters long.
     pub fn parse_hex(s: &str) -> Result<Self, ParseRgbError> {
         let hex = s.strip_prefix('#').ok_or_else(|| {
-            ParseRgbError(format!("{s:?} is missing the leading '#' (expected \"#RRGGBB\")"))
+            ParseRgbError(format!(
+                "{s:?} is missing the leading '#' (expected \"#RRGGBB\")"
+            ))
         })?;
         // ASCII gate BEFORE any slicing: `str` indexing panics on non-char
         // boundaries, so a multi-byte UTF-8 input whose BYTE length happens to
@@ -170,7 +172,9 @@ pub struct SpotlightSettings {
 
 impl Default for SpotlightSettings {
     fn default() -> Self {
-        Self { default_radius: 150 }
+        Self {
+            default_radius: 150,
+        }
     }
 }
 
@@ -320,39 +324,65 @@ mod tests {
     fn rgb_to_hex_is_uppercase_rrggbb() {
         assert_eq!(Rgb::BLACK.to_hex(), "#000000");
         assert_eq!(
-            Rgb { r: 0x1A, g: 0x2B, b: 0x3C }.to_hex(),
+            Rgb {
+                r: 0x1A,
+                g: 0x2B,
+                b: 0x3C
+            }
+            .to_hex(),
             "#1A2B3C"
         );
         assert_eq!(
-            Rgb { r: 255, g: 255, b: 255 }.to_hex(),
+            Rgb {
+                r: 255,
+                g: 255,
+                b: 255
+            }
+            .to_hex(),
             "#FFFFFF"
         );
         // Single-nibble channels are zero-padded.
-        assert_eq!(Rgb { r: 0x0A, g: 0x00, b: 0x0F }.to_hex(), "#0A000F");
+        assert_eq!(
+            Rgb {
+                r: 0x0A,
+                g: 0x00,
+                b: 0x0F
+            }
+            .to_hex(),
+            "#0A000F"
+        );
     }
 
     #[test]
     fn rgb_parse_hex_accepts_mixed_case() {
-        let want = Rgb { r: 0x1A, g: 0x2B, b: 0x3C };
+        let want = Rgb {
+            r: 0x1A,
+            g: 0x2B,
+            b: 0x3C,
+        };
         assert_eq!(Rgb::parse_hex("#1A2B3C").unwrap(), want);
         assert_eq!(Rgb::parse_hex("#1a2b3c").unwrap(), want);
         assert_eq!(Rgb::parse_hex("#1a2B3c").unwrap(), want);
         assert_eq!(Rgb::parse_hex("#000000").unwrap(), Rgb::BLACK);
         assert_eq!(
             Rgb::parse_hex("#FfFfFf").unwrap(),
-            Rgb { r: 255, g: 255, b: 255 }
+            Rgb {
+                r: 255,
+                g: 255,
+                b: 255
+            }
         );
     }
 
     #[test]
     fn rgb_parse_hex_rejects_malformed_with_clear_error() {
         for bad in [
-            "",        // empty
-            "1A2B3C",  // missing '#'
-            "#1A2B3",  // too short
+            "",         // empty
+            "1A2B3C",   // missing '#'
+            "#1A2B3",   // too short
             "#1A2B3CD", // too long
-            "#GG0000", // non-hex digits
-            "#12 456", // whitespace inside
+            "#GG0000",  // non-hex digits
+            "#12 456",  // whitespace inside
             "##1A2B3C", // double '#'
             " #1A2B3C", // leading whitespace
             "#1A2B3C ", // trailing whitespace
@@ -370,12 +400,12 @@ mod tests {
         // boundary makes `hex.len() == 6` pass, then `&hex[0..2]` PANICS.
         // Every one of these must return a clear Err — never panic.
         for bad in [
-            "#aébcd",   // é straddles byte boundary 1..3, total 6 bytes
-            "#abécd",   // é straddles byte boundary 2..4
-            "#abcdé",   // é straddles byte boundary 4..6
-            "#ébcdef",  // non-ASCII AND 7 bytes (length check would catch it)
+            "#aébcd",        // é straddles byte boundary 1..3, total 6 bytes
+            "#abécd",        // é straddles byte boundary 2..4
+            "#abcdé",        // é straddles byte boundary 4..6
+            "#ébcdef",       // non-ASCII AND 7 bytes (length check would catch it)
             "#１２３４５６", // six fullwidth digits (18 bytes)
-            "#😀abcde", // emoji (4 bytes)
+            "#😀abcde",      // emoji (4 bytes)
         ] {
             let err = Rgb::parse_hex(bad).expect_err(bad);
             let msg = err.to_string();
@@ -390,8 +420,16 @@ mod tests {
     fn rgb_parse_display_round_trip_is_stable() {
         for c in [
             Rgb::BLACK,
-            Rgb { r: 255, g: 255, b: 255 },
-            Rgb { r: 0xDE, g: 0xAD, b: 0xBE },
+            Rgb {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
+            Rgb {
+                r: 0xDE,
+                g: 0xAD,
+                b: 0xBE,
+            },
             Rgb { r: 1, g: 2, b: 3 },
         ] {
             let hex = c.to_hex();
@@ -401,13 +439,20 @@ mod tests {
 
     #[test]
     fn rgb_serde_is_hex_string() {
-        let c = Rgb { r: 0x1A, g: 0x2B, b: 0x3C };
+        let c = Rgb {
+            r: 0x1A,
+            g: 0x2B,
+            b: 0x3C,
+        };
         let json = serde_json::to_string(&c).unwrap();
         assert_eq!(json, "\"#1A2B3C\"");
         assert_eq!(serde_json::from_str::<Rgb>(&json).unwrap(), c);
         // Deserialize accepts lowercase too.
         assert_eq!(serde_json::from_str::<Rgb>("\"#1a2b3c\"").unwrap(), c);
-        assert_eq!(serde_json::from_str::<Rgb>("\"#000000\"").unwrap(), Rgb::BLACK);
+        assert_eq!(
+            serde_json::from_str::<Rgb>("\"#000000\"").unwrap(),
+            Rgb::BLACK
+        );
         // Malformed values and wrong types error.
         assert!(serde_json::from_str::<Rgb>("\"black\"").is_err());
         assert!(serde_json::from_str::<Rgb>("\"#12345\"").is_err());
@@ -453,10 +498,17 @@ mod tests {
     #[test]
     fn full_settings_serde_round_trip() {
         let mut s = AppSettings::default();
-        s.overlay.color = Rgb { r: 0x12, g: 0x34, b: 0x56 };
+        s.overlay.color = Rgb {
+            r: 0x12,
+            g: 0x34,
+            b: 0x56,
+        };
         s.hotkeys.zoom_modifier = Modifiers::CTRL | Modifiers::SHIFT;
         let json = serde_json::to_string(&s).unwrap();
-        assert!(json.contains("\"#123456\""), "color serialized as hex: {json}");
+        assert!(
+            json.contains("\"#123456\""),
+            "color serialized as hex: {json}"
+        );
         assert!(
             json.contains("\"Ctrl+Shift\""),
             "zoom_modifier serialized as display string: {json}"

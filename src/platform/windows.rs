@@ -7,11 +7,11 @@ use crate::geometry::{Point, Rect};
 use crate::overlay::events::OverlayEventSink;
 use crate::overlay::window::OverlayWindow;
 use crate::platform::{OverlaySurface, PlatformServices};
-use anyhow::{Context, Result};
-use std::rc::Rc;
 use ::windows::Win32::Foundation::POINT;
 use ::windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 use ::windows::core::PCWSTR;
+use anyhow::{Context, Result};
+use std::rc::Rc;
 
 /// [`SurfaceFactory`](crate::platform::SurfaceFactory) implementation: one
 /// layered [`OverlayWindow`] per monitor.
@@ -95,8 +95,7 @@ const ERROR_FILE_NOT_FOUND: i32 = 2;
 pub fn apply_auto_start(auto_start: bool) -> Result<()> {
     match crate::autostart::reconcile_action(auto_start) {
         crate::autostart::ReconcileAction::Install => {
-            let exe =
-                std::env::current_exe().context("cannot determine the executable path")?;
+            let exe = std::env::current_exe().context("cannot determine the executable path")?;
             set_run_value(&crate::autostart::windows_run_value_payload(&exe))
         }
         crate::autostart::ReconcileAction::Remove => delete_run_value(),
@@ -110,7 +109,13 @@ fn with_run_key<R>(f: impl FnOnce(isize) -> Result<R>) -> Result<R> {
     // SAFETY: `subkey` is NUL-terminated and outlives the call; `key` is a
     // valid out-pointer.
     let status = unsafe {
-        RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(subkey.as_ptr()), 0, KEY_SET_VALUE, &mut key)
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            PCWSTR(subkey.as_ptr()),
+            0,
+            KEY_SET_VALUE,
+            &mut key,
+        )
     };
     if status != ERROR_SUCCESS {
         return Err(status_error("RegOpenKeyExW", status));

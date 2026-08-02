@@ -29,7 +29,9 @@
 //! All protocol glue (surfaces, capture, clipboard) lives in the sibling
 //! modules; this file is wiring.
 
-use crate::hotkeys::frozen::{FrozenAction, FrozenRegistration, match_frozen_key, plan_frozen_registrations};
+use crate::hotkeys::frozen::{
+    FrozenAction, FrozenRegistration, match_frozen_key, plan_frozen_registrations,
+};
 use crate::hotkeys::gesture::HotkeyGesture;
 use crate::overlay::controller::OverlayController;
 use crate::overlay::modes::ModeKind;
@@ -141,7 +143,8 @@ impl AppState {
     /// frozen, activate the spotlight layer (a no-op when it is already on).
     fn spotlight(&mut self) {
         if self.controller.is_frozen() {
-            self.controller.add_mode(ModeKind::Spotlight, &self.services);
+            self.controller
+                .add_mode(ModeKind::Spotlight, &self.services);
         } else {
             self.freeze_with_plan();
         }
@@ -342,7 +345,9 @@ pub fn run() -> Result<()> {
     let ipc_listener = match ipc::bind_listener() {
         Ok(listener) => Some(listener),
         Err(e) => {
-            eprintln!("spotfreeze: could not bind the IPC socket (`spotfreeze toggle` will not work): {e:#}");
+            eprintln!(
+                "spotfreeze: could not bind the IPC socket (`spotfreeze toggle` will not work): {e:#}"
+            );
             None
         }
     };
@@ -490,9 +495,9 @@ mod tests {
          -> Result<Box<dyn OverlaySurface>> { Ok(Box::new(FakeSurface)) };
         let factory: &SurfaceFactory = &factory;
         let mut controller =
-            OverlayController::with_fade_clock(crate::overlay::fade::FadeClock::manual(
-                Rc::new(std::cell::Cell::new(std::time::Duration::ZERO)),
-            ));
+            OverlayController::with_fade_clock(crate::overlay::fade::FadeClock::manual(Rc::new(
+                std::cell::Cell::new(std::time::Duration::ZERO),
+            )));
         controller
             .freeze(
                 &FakeCapturer {
@@ -509,9 +514,7 @@ mod tests {
     #[test]
     fn toggle_unfreeze_in_capture_keeps_the_plan_until_the_session_ends() {
         let mut controller = frozen_controller();
-        let plan = RefCell::new(plan_frozen_registrations(
-            &AppSettings::default().hotkeys,
-        ));
+        let plan = RefCell::new(plan_frozen_registrations(&AppSettings::default().hotkeys));
         assert!(!plan.borrow().is_empty());
 
         controller.set_mode(ModeKind::Snip, &FakeServices);
@@ -520,7 +523,10 @@ mod tests {
         // First toggle while in capture: only exits capture — the session
         // stays frozen, so the plan must stay live for its keys.
         unfreeze_syncing_plan(&mut controller, &plan);
-        assert!(controller.is_frozen(), "unfreeze in capture only exits capture");
+        assert!(
+            controller.is_frozen(),
+            "unfreeze in capture only exits capture"
+        );
         assert!(
             !plan.borrow().is_empty(),
             "the plan must survive while the session is frozen"

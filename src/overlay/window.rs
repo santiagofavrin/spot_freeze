@@ -59,22 +59,25 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::rc::Rc;
 use std::sync::OnceLock;
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{
+    COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{
     AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, BeginPaint,
-    CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint, HBITMAP,
-    HDC, HGDIOBJ, PAINTSTRUCT, SelectObject,
+    CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint,
+    HBITMAP, HDC, HGDIOBJ, PAINTSTRUCT, SelectObject,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW,
-    IDC_ARROW, LoadCursorW, RegisterClassExW, SW_SHOW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow,
-    ULW_ALPHA, UPDATELAYEREDWINDOWINFO, UpdateLayeredWindowIndirect, WM_ERASEBKGND,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE,
-    WM_NCDESTROY, WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA,
+    GetWindowLongPtrW, IDC_ARROW, LoadCursorW, RegisterClassExW, SW_SHOW, SetForegroundWindow,
+    SetWindowLongPtrW, ShowWindow, ULW_ALPHA, UPDATELAYEREDWINDOWINFO, UpdateLayeredWindowIndirect,
+    WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{Error, PCWSTR};
 
@@ -265,7 +268,9 @@ impl OverlayWindow {
             right: r.x + r.width as i32,
             bottom: r.y + r.height as i32,
         });
-        let prc_dirty = dirty_rect.as_ref().map_or(ptr::null(), |r| r as *const RECT);
+        let prc_dirty = dirty_rect
+            .as_ref()
+            .map_or(ptr::null(), |r| r as *const RECT);
         let info = UPDATELAYEREDWINDOWINFO {
             cbSize: size_of::<UPDATELAYEREDWINDOWINFO>() as u32,
             hdcDst: HDC::default(), // null → the screen DC
@@ -284,7 +289,8 @@ impl OverlayWindow {
         if ok.as_bool() {
             Ok(())
         } else {
-            Err(Error::from_thread()).context("overlay composite: UpdateLayeredWindowIndirect failed")
+            Err(Error::from_thread())
+                .context("overlay composite: UpdateLayeredWindowIndirect failed")
         }
     }
 
@@ -588,7 +594,8 @@ impl DibSection {
         let mut bits: *mut c_void = ptr::null_mut();
         // SAFETY: `bmi` describes a valid 32bpp BI_RGB bitmap; `bits` is a
         // valid out-pointer. `mem_dc`/`hbitmap` are cleaned up on every path.
-        let hbitmap = unsafe { CreateDIBSection(Some(mem_dc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) };
+        let hbitmap =
+            unsafe { CreateDIBSection(Some(mem_dc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) };
         let hbitmap = match hbitmap {
             Ok(h) if !bits.is_null() => h,
             Ok(_) => {
@@ -657,7 +664,10 @@ fn wheel_delta_raw(wparam: usize) -> i32 {
 fn wheel_target(cursor_screen: Point, monitors: &[Rect], fallback: usize) -> (usize, Point) {
     match monitor_index_at(cursor_screen, monitors) {
         Some(i) => (i, virtual_to_local(cursor_screen, monitors[i])),
-        None => (fallback, virtual_to_local(cursor_screen, monitors[fallback])),
+        None => (
+            fallback,
+            virtual_to_local(cursor_screen, monitors[fallback]),
+        ),
     }
 }
 
@@ -671,7 +681,12 @@ fn clip_to_frame(dirty: Rect, width: u32, height: u32) -> Option<Rect> {
     let x1 = (dirty.x as i64 + dirty.width as i64).min(width as i64);
     let y1 = (dirty.y as i64 + dirty.height as i64).min(height as i64);
     if x1 > x0 && y1 > y0 {
-        Some(Rect::new(x0 as i32, y0 as i32, (x1 - x0) as u32, (y1 - y0) as u32))
+        Some(Rect::new(
+            x0 as i32,
+            y0 as i32,
+            (x1 - x0) as u32,
+            (y1 - y0) as u32,
+        ))
     } else {
         None
     }
@@ -726,7 +741,10 @@ mod tests {
     fn lparam_point_decodes_positive_coords() {
         assert_eq!(lparam_point(pack_lparam(10, 20)), Point::new(10, 20));
         assert_eq!(lparam_point(pack_lparam(0, 0)), Point::new(0, 0));
-        assert_eq!(lparam_point(pack_lparam(1920, 1080)), Point::new(1920, 1080));
+        assert_eq!(
+            lparam_point(pack_lparam(1920, 1080)),
+            Point::new(1920, 1080)
+        );
     }
 
     #[test]
@@ -774,7 +792,10 @@ mod tests {
     fn wheel_target_converts_to_monitor_local_coords() {
         let mons = two_monitors();
         // Corners: top-left of each monitor maps to local (0, 0).
-        assert_eq!(wheel_target(Point::new(0, 0), &mons, 1), (0, Point::new(0, 0)));
+        assert_eq!(
+            wheel_target(Point::new(0, 0), &mons, 1),
+            (0, Point::new(0, 0))
+        );
         assert_eq!(
             wheel_target(Point::new(-2560, 0), &mons, 0),
             (1, Point::new(0, 0))
@@ -838,7 +859,10 @@ mod tests {
             clip_to_frame(Rect::new(0, 0, u32::MAX, u32::MAX), 4, 4),
             Some(Rect::new(0, 0, 4, 4))
         );
-        assert_eq!(clip_to_frame(Rect::new(i32::MIN, i32::MIN, 10, 10), 4, 4), None);
+        assert_eq!(
+            clip_to_frame(Rect::new(i32::MIN, i32::MIN, 10, 10), 4, 4),
+            None
+        );
     }
 
     /// 4×3 BGRA frame: byte value = linear offset, so every byte is unique.

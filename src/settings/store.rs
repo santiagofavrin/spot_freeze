@@ -37,10 +37,16 @@ const KEY_COMMENTS: &[(&str, &str)] = &[
         "default_radius",
         "physical pixels on the monitor under the cursor",
     ),
-    ("step_factor", "zoom multiplier per wheel notch (must be > 1.0)"),
+    (
+        "step_factor",
+        "zoom multiplier per wheel notch (must be > 1.0)",
+    ),
     ("dim_opacity", "0 = invisible veil, 255 = fully opaque"),
     ("color", "veil color as #RRGGBB hex"),
-    ("snip_dim_opacity", "capture-mode veil: 0 = invisible, 255 = fully opaque"),
+    (
+        "snip_dim_opacity",
+        "capture-mode veil: 0 = invisible, 255 = fully opaque",
+    ),
     ("snip_color", "capture-mode veil color as #RRGGBB hex"),
     ("auto_start", "launch at login (Windows/macOS only)"),
 ];
@@ -128,9 +134,7 @@ pub fn migrate_legacy_settings(path: &Path) {
     {
         return;
     }
-    if fs::rename(&legacy, path).is_err()
-        && fs::copy(&legacy, path).is_ok()
-    {
+    if fs::rename(&legacy, path).is_err() && fs::copy(&legacy, path).is_ok() {
         // Cross-filesystem fallback (e.g. exe and APPDATA on different drives).
         let _ = fs::remove_file(&legacy);
     }
@@ -261,8 +265,8 @@ fn tmp_path_for(path: &Path) -> PathBuf {
 /// hotkey bindings) get no comment.
 pub fn to_jsonc_template(settings: &AppSettings) -> String {
     // Serializing AppSettings is infallible (plain data + string gestures).
-    let json = serde_json::to_string_pretty(settings)
-        .expect("AppSettings serialization cannot fail");
+    let json =
+        serde_json::to_string_pretty(settings).expect("AppSettings serialization cannot fail");
 
     let mut out = String::with_capacity(json.len() + 256);
     for line in json.lines() {
@@ -467,7 +471,11 @@ mod tests {
             template.contains("\"freeze_toggle\": \"Win+F\""),
             "new freeze hotkey default: {template}"
         );
-        for (key, value) in [("mode_spotlight", "S"), ("mode_snip", "C"), ("zoom_hold", "F")] {
+        for (key, value) in [
+            ("mode_spotlight", "S"),
+            ("mode_snip", "C"),
+            ("zoom_hold", "F"),
+        ] {
             assert!(
                 template.contains(&format!("\"{key}\": \"{value}\"")),
                 "{key} default in template"
@@ -734,11 +742,7 @@ mod tests {
     #[test]
     fn wrong_value_type_errors() {
         let tmp = TempFile::new("wrong_type");
-        fs::write(
-            tmp.path(),
-            r#"{ "overlay": { "dim_opacity": "black" } }"#,
-        )
-        .unwrap();
+        fs::write(tmp.path(), r#"{ "overlay": { "dim_opacity": "black" } }"#).unwrap();
 
         let err = load(tmp.path()).expect_err("type mismatch must error");
         let shown = format!("{err:#}");
@@ -807,7 +811,10 @@ mod tests {
             let new_path = dir.join(SETTINGS_FILE_NAME);
             migrate_legacy_settings(&new_path);
 
-            assert!(new_path.is_file(), "legacy {legacy_name} moved onto the new path");
+            assert!(
+                new_path.is_file(),
+                "legacy {legacy_name} moved onto the new path"
+            );
             assert!(!legacy.exists(), "legacy file is gone after the move");
             let settings = load(&new_path).expect("migrated file loads");
             assert_eq!(settings.spotlight.default_radius, 42);
@@ -820,16 +827,25 @@ mod tests {
     fn migration_prefers_the_most_recent_legacy_name() {
         let dir = unique_temp_path("migrate_order");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("spotfreeze.json"), "{ \"spotlight\": { \"default_radius\": 42 } }")
-            .unwrap();
-        fs::write(dir.join("settings.json"), "{ \"spotlight\": { \"default_radius\": 7 } }")
-            .unwrap();
+        fs::write(
+            dir.join("spotfreeze.json"),
+            "{ \"spotlight\": { \"default_radius\": 42 } }",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("settings.json"),
+            "{ \"spotlight\": { \"default_radius\": 7 } }",
+        )
+        .unwrap();
 
         let new_path = dir.join(SETTINGS_FILE_NAME);
         migrate_legacy_settings(&new_path);
 
         let settings = load(&new_path).expect("migrated file loads");
-        assert_eq!(settings.spotlight.default_radius, 42, "spotfreeze.json wins");
+        assert_eq!(
+            settings.spotlight.default_radius, 42,
+            "spotfreeze.json wins"
+        );
         assert!(dir.join("settings.json").exists(), "older legacy untouched");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -858,14 +874,21 @@ mod tests {
         let new_path = dir.join(SETTINGS_FILE_NAME);
         migrate_legacy_settings(&new_path);
         assert!(!new_path.exists());
-        assert!(!dir.exists(), "no directories are created without a legacy file");
+        assert!(
+            !dir.exists(),
+            "no directories are created without a legacy file"
+        );
     }
 
     #[cfg(windows)]
     #[test]
     fn legacy_settings_paths_cover_the_exe_dir_and_both_names() {
         let paths = legacy_settings_paths(Path::new(r"C:\ignored\spotfreeze.jsonc"));
-        let exe_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        let exe_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
         assert_eq!(paths[0], Path::new(r"C:\ignored").join("spotfreeze.json"));
         assert_eq!(paths[1], Path::new(r"C:\ignored").join("settings.json"));
         assert!(paths.contains(&exe_dir.join("settings.json")));

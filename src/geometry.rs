@@ -140,8 +140,14 @@ mod tests {
         assert_eq!(Rect::from_points(a, b), want);
         assert_eq!(Rect::from_points(b, a), want, "reversed drag");
         // Mixed directions: a is right of / below b on one axis only.
-        assert_eq!(Rect::from_points(Point::new(30, 20), Point::new(10, 50)), want);
-        assert_eq!(Rect::from_points(Point::new(10, 50), Point::new(30, 20)), want);
+        assert_eq!(
+            Rect::from_points(Point::new(30, 20), Point::new(10, 50)),
+            want
+        );
+        assert_eq!(
+            Rect::from_points(Point::new(10, 50), Point::new(30, 20)),
+            want
+        );
     }
 
     #[test]
@@ -249,9 +255,21 @@ mod tests {
         assert_eq!(a.intersection(&Rect::new(20, 0, 5, 5)), None);
         assert_eq!(a.intersection(&Rect::new(0, 20, 5, 5)), None);
         // Touching edges count as empty overlap.
-        assert_eq!(a.intersection(&Rect::new(10, 0, 5, 5)), None, "touch right edge");
-        assert_eq!(a.intersection(&Rect::new(0, 10, 5, 5)), None, "touch bottom edge");
-        assert_eq!(a.intersection(&Rect::new(-5, 0, 5, 5)), None, "touch left edge");
+        assert_eq!(
+            a.intersection(&Rect::new(10, 0, 5, 5)),
+            None,
+            "touch right edge"
+        );
+        assert_eq!(
+            a.intersection(&Rect::new(0, 10, 5, 5)),
+            None,
+            "touch bottom edge"
+        );
+        assert_eq!(
+            a.intersection(&Rect::new(-5, 0, 5, 5)),
+            None,
+            "touch left edge"
+        );
         // Empty rects intersect with nothing.
         assert_eq!(a.intersection(&Rect::new(2, 2, 0, 0)), None);
         assert_eq!(Rect::new(2, 2, 0, 0).intersection(&a), None);
@@ -268,6 +286,10 @@ mod tests {
         );
         let fully_inside = Rect::new(-1000, 100, 50, 50);
         assert_eq!(mon.intersection(&fully_inside), Some(fully_inside));
-        assert_eq!(mon.intersection(&Rect::new(0, 0, 100, 100)), None, "touch at x=0");
+        assert_eq!(
+            mon.intersection(&Rect::new(0, 0, 100, 100)),
+            None,
+            "touch at x=0"
+        );
     }
 }

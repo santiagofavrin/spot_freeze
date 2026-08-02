@@ -28,8 +28,8 @@
 //! Headless tests cover the serial guard; the PNG encoding itself is tested
 //! in [`crate::capture::png`].
 
-use crate::capture::png::encode_png;
 use crate::capture::DibBuffer;
+use crate::capture::png::encode_png;
 use crate::geometry::Point;
 use crate::platform::PlatformServices;
 use crate::platform::wayland::shell::ShellState;
@@ -39,7 +39,9 @@ use std::io::Write;
 use std::rc::Rc;
 use std::sync::Arc;
 use wayland_client::backend::ObjectData;
-use wayland_client::protocol::{wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source};
+use wayland_client::protocol::{
+    wl_data_device, wl_data_device_manager, wl_data_offer, wl_data_source,
+};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 
 /// The only MIME type the source offers (PNG only, per the platform contract).
@@ -189,10 +191,7 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for ShellState {
         // ever OWN the selection, never read it.
     }
 
-    fn event_created_child(
-        _opcode: u16,
-        qhandle: &QueueHandle<Self>,
-    ) -> Arc<dyn ObjectData> {
+    fn event_created_child(_opcode: u16, qhandle: &QueueHandle<Self>) -> Arc<dyn ObjectData> {
         // data_offer is the only child-creating event.
         qhandle.make_data::<wl_data_offer::WlDataOffer, ()>(())
     }

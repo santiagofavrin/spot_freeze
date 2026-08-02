@@ -514,7 +514,12 @@ impl OverlayController {
 
         let copy_result = match plan {
             Some(CopyPlan::Snip { monitor, a, b }) => {
-                match copy_crop(&state.originals[monitor], state.modes.zoom_on(monitor), a, b) {
+                match copy_crop(
+                    &state.originals[monitor],
+                    state.modes.zoom_on(monitor),
+                    a,
+                    b,
+                ) {
                     Some(snip) => services.copy_image_to_clipboard(&snip),
                     // Unreachable — decide_copy_plan pre-validated the clipped
                     // rect. Keep the "Ctrl+C always copies something" invariant.
@@ -906,7 +911,13 @@ fn compose_frame_for(state: &mut FreezeState, m: usize) {
 /// gets the snip veil, other active layer sets the spotlight veil, and with
 /// NO active layer the veil is dropped entirely (the frozen screen shows the
 /// original capture).
-fn compose_frame_anim(state: &mut FreezeState, m: usize, dim: Option<u8>, radius_scale_pm: u32, legend_alpha: u8) {
+fn compose_frame_anim(
+    state: &mut FreezeState,
+    m: usize,
+    dim: Option<u8>,
+    radius_scale_pm: u32,
+    legend_alpha: u8,
+) {
     // Split borrows across disjoint fields: modes (read) builds the render
     // state, originals[m] (read) + frames[m] (write) are the pixel buffers,
     // settings (read) supplies the veil parameters, legend (read) the pill.
@@ -1007,7 +1018,9 @@ fn seed_cursor(state: &mut FreezeState, services: &dyn PlatformServices) {
     let Some(idx) = monitor_index_at(cursor, &rects) else {
         return; // cursor outside every monitor: leave the layers' default origin
     };
-    state.modes.seed_cursor(idx, virtual_to_local(cursor, rects[idx]));
+    state
+        .modes
+        .seed_cursor(idx, virtual_to_local(cursor, rects[idx]));
 }
 
 /// Clamp zoom settings to the `ZoomMode::new` contract (`step > 1.0`,
@@ -1430,7 +1443,10 @@ mod tests {
     fn pending_from_dirty_maps_full_and_region() {
         assert_eq!(PendingRepaint::from_dirty(None), PendingRepaint::Full);
         let r = Rect::new(1, 2, 3, 4);
-        assert_eq!(PendingRepaint::from_dirty(Some(r)), PendingRepaint::Region(r));
+        assert_eq!(
+            PendingRepaint::from_dirty(Some(r)),
+            PendingRepaint::Region(r)
+        );
     }
 
     #[test]
@@ -1635,27 +1651,63 @@ mod tests {
     #[test]
     fn snip_rect_copyable_for_forward_and_negative_drags() {
         let mon = Rect::new(0, 0, 1920, 1080);
-        assert!(snip_rect_is_copyable(Point::new(10, 10), Point::new(110, 60), mon));
-        assert!(snip_rect_is_copyable(Point::new(110, 60), Point::new(10, 10), mon));
-        assert!(snip_rect_is_copyable(Point::new(110, 10), Point::new(10, 60), mon));
+        assert!(snip_rect_is_copyable(
+            Point::new(10, 10),
+            Point::new(110, 60),
+            mon
+        ));
+        assert!(snip_rect_is_copyable(
+            Point::new(110, 60),
+            Point::new(10, 10),
+            mon
+        ));
+        assert!(snip_rect_is_copyable(
+            Point::new(110, 10),
+            Point::new(10, 60),
+            mon
+        ));
     }
 
     #[test]
     fn snip_rect_zero_area_is_not_copyable() {
         let mon = Rect::new(0, 0, 1920, 1080);
-        assert!(!snip_rect_is_copyable(Point::new(50, 50), Point::new(50, 50), mon));
-        assert!(!snip_rect_is_copyable(Point::new(50, 10), Point::new(50, 100), mon)); // w=0
-        assert!(!snip_rect_is_copyable(Point::new(10, 50), Point::new(100, 50), mon)); // h=0
+        assert!(!snip_rect_is_copyable(
+            Point::new(50, 50),
+            Point::new(50, 50),
+            mon
+        ));
+        assert!(!snip_rect_is_copyable(
+            Point::new(50, 10),
+            Point::new(50, 100),
+            mon
+        )); // w=0
+        assert!(!snip_rect_is_copyable(
+            Point::new(10, 50),
+            Point::new(100, 50),
+            mon
+        )); // h=0
     }
 
     #[test]
     fn snip_rect_clips_to_monitor_bounds() {
         let mon = Rect::new(0, 0, 1920, 1080);
         // Partially outside: clipped remainder is non-empty.
-        assert!(snip_rect_is_copyable(Point::new(-50, 10), Point::new(100, 60), mon));
+        assert!(snip_rect_is_copyable(
+            Point::new(-50, 10),
+            Point::new(100, 60),
+            mon
+        ));
         // Fully outside: clipped to nothing.
-        assert!(!snip_rect_is_copyable(Point::new(-500, 10), Point::new(-400, 60), mon));
-        assert!(!snip_rect_is_copyable(Point::new(0, 2000), Point::new(100, 2100), mon));
+        assert!(!snip_rect_is_copyable(
+            Point::new(-500, 10),
+            Point::new(-400, 60),
+            mon
+        ));
+        assert!(!snip_rect_is_copyable(
+            Point::new(0, 2000),
+            Point::new(100, 2100),
+            mon
+        ));
     }
 
     // ---- decide_copy_plan ----
@@ -1811,8 +1863,13 @@ mod tests {
         let src = make_buf(16, 16, coord_pattern);
         assert!(copy_crop(&src, None, Point::new(4, 4), Point::new(4, 4)).is_none());
         assert!(
-            copy_crop(&src, Some((2.0, Point::new(8, 8))), Point::new(4, 4), Point::new(4, 4))
-                .is_none()
+            copy_crop(
+                &src,
+                Some((2.0, Point::new(8, 8))),
+                Point::new(4, 4),
+                Point::new(4, 4)
+            )
+            .is_none()
         );
     }
 
@@ -1898,10 +1955,7 @@ mod tests {
         );
 
         f.controller.unfreeze(); // Esc: exit capture, stay frozen
-        assert!(
-            f.controller.is_frozen(),
-            "Esc in capture must NOT unfreeze"
-        );
+        assert!(f.controller.is_frozen(), "Esc in capture must NOT unfreeze");
         assert_eq!(f.controller.active_mode(), ModeKind::Spotlight);
         assert_eq!(
             last_present(&f.presents[0]).pixels,
@@ -1933,9 +1987,7 @@ mod tests {
         ] {
             f.controller.handle_overlay_event(0, event);
         }
-        f.controller
-            .snip_copy_and_close(&f.services)
-            .expect("copy");
+        f.controller.snip_copy_and_close(&f.services).expect("copy");
         assert!(!f.controller.is_frozen(), "Ctrl+C closes the session");
 
         let copied = f.copied.borrow();
@@ -1979,9 +2031,7 @@ mod tests {
         ] {
             f.controller.handle_overlay_event(1, event);
         }
-        f.controller
-            .snip_copy_and_close(&f.services)
-            .expect("copy");
+        f.controller.snip_copy_and_close(&f.services).expect("copy");
 
         let copied = f.copied.borrow();
         let crop = copied.last().expect("one clipboard write");
@@ -2014,9 +2064,7 @@ mod tests {
 
         f.controller.set_mode(ModeKind::Snip, &f.services);
         // No selection: the full-monitor copy is the re-frozen effected view.
-        f.controller
-            .snip_copy_and_close(&f.services)
-            .expect("copy");
+        f.controller.snip_copy_and_close(&f.services).expect("copy");
 
         let copied = f.copied.borrow();
         let frame = copied.last().expect("one clipboard write");
@@ -2052,9 +2100,7 @@ mod tests {
         }
         f.controller.set_mode(ModeKind::Snip, &f.services); // again: reset, no re-bake
         // Selection cleared: the copy falls back to the full-monitor base.
-        f.controller
-            .snip_copy_and_close(&f.services)
-            .expect("copy");
+        f.controller.snip_copy_and_close(&f.services).expect("copy");
 
         let copied = f.copied.borrow();
         let frame = copied.last().expect("one clipboard write");
@@ -2207,7 +2253,14 @@ mod tests {
             spotlight: Some((Point::new(16, 16), radius)),
             ..RenderState::default()
         };
-        compose_frame(&original, &mut out, Rect::new(0, 0, 32, 32), &state, dim, Rgb::BLACK);
+        compose_frame(
+            &original,
+            &mut out,
+            Rect::new(0, 0, 32, 32),
+            &state,
+            dim,
+            Rgb::BLACK,
+        );
         out
     }
 
@@ -2229,7 +2282,6 @@ mod tests {
         !buf.pixels.is_empty()
     }
 
-
     #[test]
     fn freeze_fades_in_from_the_original_capture() {
         let f = freeze_fake(Point::new(16, 16));
@@ -2248,7 +2300,10 @@ mod tests {
         // schedule's alpha.
         for k in 1..FADE_STEPS {
             let a = fade_alpha(k * FADE_STEP_MS, FadeDirection::In);
-            let expect = step_frame(lerp_u8(0, 160, a), scale_radius(10, spotlight_radius_scale(a)));
+            let expect = step_frame(
+                lerp_u8(0, 160, a),
+                scale_radius(10, spotlight_radius_scale(a)),
+            );
             assert_eq!(p[k as usize].pixels, expect.pixels, "fade step {k}");
         }
         // The endpoint is the settled frame (full veil, full radius).
@@ -2323,10 +2378,7 @@ mod tests {
         assert!(!f.controller.is_frozen());
         // One present per step (the shrinking circle is re-composed); no
         // endpoint present — the windows die right after.
-        assert_eq!(
-            f.presents[0].borrow().len() - before,
-            FADE_STEPS as usize
-        );
+        assert_eq!(f.presents[0].borrow().len() - before, FADE_STEPS as usize);
     }
 
     #[test]
@@ -2528,11 +2580,19 @@ mod tests {
 
     #[test]
     fn legend_is_painted_while_frozen_and_fades_in_with_the_veil() {
-        let f = freeze_fake_with(big_monitor(), Point::new(400, 100), false, manual_fade_clock());
+        let f = freeze_fake_with(
+            big_monitor(),
+            Point::new(400, 100),
+            false,
+            manual_fade_clock(),
+        );
         let p = f.presents[0].borrow();
         assert_eq!(p.len(), TRANSITION_PRESENTS);
         let original = make_buf(800, 160, coord_pattern);
-        assert_eq!(p[0].pixels, original.pixels, "step 0: no pill yet (alpha 0)");
+        assert_eq!(
+            p[0].pixels, original.pixels,
+            "step 0: no pill yet (alpha 0)"
+        );
         // Every step: veil ramp + growing circle + the pill at the step's
         // alpha (it fades in WITH the veil, never pops).
         let legend = Legend::from_hotkeys(&AppSettings::default().hotkeys);
@@ -2540,7 +2600,10 @@ mod tests {
             let a = fade_alpha(k * FADE_STEP_MS, FadeDirection::In);
             let mut expect = DibBuffer::new(800, 160);
             let state = RenderState {
-                spotlight: Some((Point::new(400, 100), scale_radius(10, spotlight_radius_scale(a)))),
+                spotlight: Some((
+                    Point::new(400, 100),
+                    scale_radius(10, spotlight_radius_scale(a)),
+                )),
                 ..RenderState::default()
             };
             compose_frame(
@@ -2574,7 +2637,12 @@ mod tests {
 
     #[test]
     fn legend_never_reaches_the_rebased_base_or_the_clipboard() {
-        let mut f = freeze_fake_with(big_monitor(), Point::new(400, 100), false, manual_fade_clock());
+        let mut f = freeze_fake_with(
+            big_monitor(),
+            Point::new(400, 100),
+            false,
+            manual_fade_clock(),
+        );
         f.controller.set_mode(ModeKind::Snip, &f.services);
         // Drag a selection over the pill zone (near the top-center).
         for event in [
@@ -2590,9 +2658,7 @@ mod tests {
         ] {
             f.controller.handle_overlay_event(0, event);
         }
-        f.controller
-            .snip_copy_and_close(&f.services)
-            .expect("copy");
+        f.controller.snip_copy_and_close(&f.services).expect("copy");
         let copied = f.copied.borrow();
         let crop = copied.last().expect("one clipboard write");
         // The crop comes from the re-frozen base, composed WITHOUT the

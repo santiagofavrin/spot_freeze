@@ -59,31 +59,27 @@ fn documented_default_gestures_are_exact() {
         HotkeyGesture::new(Modifiers::NONE, 'F' as u32),
         "zoom_hold = F (new field, mode-redesign update)"
     );
-    assert_eq!(
-        h.snip_copy,
-        HotkeyGesture::new(Modifiers::CTRL, 'C' as u32)
-    );
+    assert_eq!(h.snip_copy, HotkeyGesture::new(Modifiers::CTRL, 'C' as u32));
     assert_eq!(h.cancel, HotkeyGesture::new(Modifiers::NONE, 0x1B));
-    assert_eq!(h.reset_zoom, HotkeyGesture::new(Modifiers::NONE, '0' as u32));
-    assert_eq!(h.spotlight_radius_modifier, Modifiers::CTRL);
     assert_eq!(
-        h.zoom_modifier,
-        Modifiers::SHIFT,
-        "zoom_modifier = Shift"
+        h.reset_zoom,
+        HotkeyGesture::new(Modifiers::NONE, '0' as u32)
     );
+    assert_eq!(h.spotlight_radius_modifier, Modifiers::CTRL);
+    assert_eq!(h.zoom_modifier, Modifiers::SHIFT, "zoom_modifier = Shift");
 }
 
 #[test]
 fn default_display_strings_match_docs() {
     let h = HotkeySettings::default();
     let expected = [
-        "Win+F", // freeze_toggle
-        "S",     // mode_spotlight
-        "C",     // mode_snip
-        "F",     // zoom_hold
+        "Win+F",  // freeze_toggle
+        "S",      // mode_spotlight
+        "C",      // mode_snip
+        "F",      // zoom_hold
         "Ctrl+C", // snip_copy
-        "Esc",   // cancel
-        "0",     // reset_zoom
+        "Esc",    // cancel
+        "0",      // reset_zoom
     ];
     for ((name, g), want) in gesture_fields(&h).into_iter().zip(expected) {
         assert_eq!(g.to_display(), want, "{name} display string");
@@ -152,7 +148,10 @@ fn defaults_are_pairwise_non_conflicting() {
     let registered = gesture_fields(&h);
     let mut seen = HashSet::new();
     for (name, g) in &registered {
-        assert!(seen.insert(g), "duplicate registered hotkey at {name}: {g:?}");
+        assert!(
+            seen.insert(g),
+            "duplicate registered hotkey at {name}: {g:?}"
+        );
     }
     for (i, (name_a, a)) in registered.iter().enumerate() {
         for (name_b, b) in registered.iter().skip(i + 1) {
@@ -167,7 +166,10 @@ fn zoom_hold_shares_the_key_but_not_the_modifiers_with_freeze_toggle() {
     // box (different modifier sets, same vk).
     let h = HotkeySettings::default();
     assert_eq!(h.zoom_hold.vk, h.freeze_toggle.vk, "same key: F");
-    assert_ne!(h.zoom_hold, h.freeze_toggle, "modifiers differ: no conflict");
+    assert_ne!(
+        h.zoom_hold, h.freeze_toggle,
+        "modifiers differ: no conflict"
+    );
     assert_eq!(h.zoom_hold.modifiers, Modifiers::NONE);
     assert_eq!(h.freeze_toggle.modifiers, Modifiers::WIN);
 }

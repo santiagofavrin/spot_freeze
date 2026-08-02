@@ -117,7 +117,11 @@ fn zoom_resample_output_has_viewport_dimensions() {
     let viewport = Rect::new(7, 9, 32, 24); // x/y ignored per contract
     for filter in [ZoomFilter::Nearest, ZoomFilter::Bilinear] {
         let out = zoom_resample(&src, viewport, 2.0, Point::new(32, 32), filter);
-        assert_eq!((out.width, out.height), (32, 24), "{filter:?} viewport size");
+        assert_eq!(
+            (out.width, out.height),
+            (32, 24),
+            "{filter:?} viewport size"
+        );
         assert_eq!(out.stride, 32 * 4, "{filter:?} tight stride");
         assert_eq!(out.pixels.len(), (32 * 24 * 4) as usize);
     }
@@ -189,9 +193,9 @@ fn zoom_resample_magnifies_around_focus() {
     // outside any bilinear kernel's reach — so both filters must agree exactly.
     let quadrant = |x: u32, y: u32| -> [u8; 4] {
         match (x < 32, y < 32) {
-            (true, true) => [200, 10, 10, 255],    // top-left: blue-heavy (BGRA)
-            (false, true) => [10, 200, 10, 255],   // top-right: green
-            (true, false) => [10, 10, 200, 255],   // bottom-left: red
+            (true, true) => [200, 10, 10, 255], // top-left: blue-heavy (BGRA)
+            (false, true) => [10, 200, 10, 255], // top-right: green
+            (true, false) => [10, 10, 200, 255], // bottom-left: red
             (false, false) => [200, 200, 200, 255], // bottom-right: light gray
         }
     };
@@ -200,10 +204,26 @@ fn zoom_resample_magnifies_around_focus() {
 
     for filter in [ZoomFilter::Nearest, ZoomFilter::Bilinear] {
         let out = zoom_resample(&src, viewport, 2.0, Point::new(32, 32), filter);
-        assert_eq!(out.pixel(8, 8).unwrap(), [200, 10, 10, 255], "{filter:?} TL");
-        assert_eq!(out.pixel(55, 8).unwrap(), [10, 200, 10, 255], "{filter:?} TR");
-        assert_eq!(out.pixel(8, 55).unwrap(), [10, 10, 200, 255], "{filter:?} BL");
-        assert_eq!(out.pixel(55, 55).unwrap(), [200, 200, 200, 255], "{filter:?} BR");
+        assert_eq!(
+            out.pixel(8, 8).unwrap(),
+            [200, 10, 10, 255],
+            "{filter:?} TL"
+        );
+        assert_eq!(
+            out.pixel(55, 8).unwrap(),
+            [10, 200, 10, 255],
+            "{filter:?} TR"
+        );
+        assert_eq!(
+            out.pixel(8, 55).unwrap(),
+            [10, 10, 200, 255],
+            "{filter:?} BL"
+        );
+        assert_eq!(
+            out.pixel(55, 55).unwrap(),
+            [200, 200, 200, 255],
+            "{filter:?} BR"
+        );
     }
 }
 
@@ -220,7 +240,13 @@ fn controller_style_flow_zoom_state_feeds_resample() {
     assert!(zoom > 1.0 && zoom <= max, "clamped, resamplable zoom");
 
     let src = buffer_with(64, 64, |_, _| [50, 60, 70, 255]);
-    let out = zoom_resample(&src, Rect::new(0, 0, 64, 64), zoom, cursor, ZoomFilter::Nearest);
+    let out = zoom_resample(
+        &src,
+        Rect::new(0, 0, 64, 64),
+        zoom,
+        cursor,
+        ZoomFilter::Nearest,
+    );
     assert_eq!((out.width, out.height), (64, 64));
     // 64/1.25 = 51.2px region around (32,32) => fully inside the source.
     assert_uniform(&out, [50, 60, 70, 255], "zoomed uniform field");
@@ -242,12 +268,22 @@ fn render_state_carries_zoom_only_on_the_cursor_monitor() {
     assert!((zoom - 1.25).abs() < 1e-6);
 
     let rs0 = stack.render_state(0);
-    assert_eq!(rs0.zoom, Some((zoom, cursor)), "zoom layer on cursor monitor");
-    assert!(rs0.spotlight.is_none(), "set_mode dropped the spotlight layer");
+    assert_eq!(
+        rs0.zoom,
+        Some((zoom, cursor)),
+        "zoom layer on cursor monitor"
+    );
+    assert!(
+        rs0.spotlight.is_none(),
+        "set_mode dropped the spotlight layer"
+    );
     assert!(rs0.snip.is_none());
 
     let rs1 = stack.render_state(1);
-    assert_eq!(rs1.zoom, None, "no zoom contribution off the cursor monitor");
+    assert_eq!(
+        rs1.zoom, None,
+        "no zoom contribution off the cursor monitor"
+    );
     assert!(rs1.spotlight.is_none());
     assert!(rs1.snip.is_none());
 }

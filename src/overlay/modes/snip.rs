@@ -102,7 +102,10 @@ impl SnipMode {
         let old_rect = norm_rect(sel.a, sel.b);
         sel.b = at;
         let new_rect = norm_rect(sel.a, at);
-        ModeEffect::repaint(monitor, Some(selection_dirty(rect_union(old_rect, new_rect))))
+        ModeEffect::repaint(
+            monitor,
+            Some(selection_dirty(rect_union(old_rect, new_rect))),
+        )
     }
 
     /// Starts a new selection (replaces any existing one).
@@ -160,7 +163,10 @@ impl SnipMode {
                 ModeEffect::repaint(monitor, Some(selection_dirty(old_rect)))
             }
         } else {
-            ModeEffect::repaint(monitor, Some(selection_dirty(rect_union(old_rect, new_rect))))
+            ModeEffect::repaint(
+                monitor,
+                Some(selection_dirty(rect_union(old_rect, new_rect))),
+            )
         }
     }
 }

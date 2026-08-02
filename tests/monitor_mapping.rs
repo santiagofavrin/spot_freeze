@@ -78,11 +78,20 @@ fn virtual_to_local_subtracts_monitor_origin() {
     let mons = monitors();
     let m1 = mons[1];
     assert_eq!(virtual_to_local(Point::new(-1920, 0), m1), Point::new(0, 0));
-    assert_eq!(virtual_to_local(Point::new(-5, 10), m1), Point::new(1915, 10));
-    assert_eq!(virtual_to_local(Point::new(-1, 1079), m1), Point::new(1919, 1079));
+    assert_eq!(
+        virtual_to_local(Point::new(-5, 10), m1),
+        Point::new(1915, 10)
+    );
+    assert_eq!(
+        virtual_to_local(Point::new(-1, 1079), m1),
+        Point::new(1919, 1079)
+    );
 
     let m2 = mons[2];
-    assert_eq!(virtual_to_local(Point::new(100, -1080), m2), Point::new(100, 0));
+    assert_eq!(
+        virtual_to_local(Point::new(100, -1080), m2),
+        Point::new(100, 0)
+    );
     assert_eq!(virtual_to_local(Point::new(0, -1), m2), Point::new(0, 1079));
 }
 
@@ -91,11 +100,17 @@ fn local_to_virtual_adds_monitor_origin() {
     let mons = monitors();
     let m1 = mons[1];
     assert_eq!(local_to_virtual(Point::new(0, 0), m1), Point::new(-1920, 0));
-    assert_eq!(local_to_virtual(Point::new(1919, 1079), m1), Point::new(-1, 1079));
+    assert_eq!(
+        local_to_virtual(Point::new(1919, 1079), m1),
+        Point::new(-1, 1079)
+    );
 
     let m2 = mons[2];
     assert_eq!(local_to_virtual(Point::new(0, 0), m2), Point::new(0, -1080));
-    assert_eq!(local_to_virtual(Point::new(100, 1079), m2), Point::new(100, -1));
+    assert_eq!(
+        local_to_virtual(Point::new(100, 1079), m2),
+        Point::new(100, -1)
+    );
 
     let m0 = mons[0];
     assert_eq!(local_to_virtual(Point::new(7, 9), m0), Point::new(7, 9));
@@ -119,8 +134,8 @@ fn round_trips_across_all_monitors_including_negative_coords() {
         Point::new(1919, -1080),
     ];
     for v in samples {
-        let idx = monitor_index_at(v, &mons)
-            .unwrap_or_else(|| panic!("{v:?} must be on a monitor"));
+        let idx =
+            monitor_index_at(v, &mons).unwrap_or_else(|| panic!("{v:?} must be on a monitor"));
         let m = mons[idx];
 
         // virtual -> local: lands strictly inside the monitor-local frame.
@@ -131,7 +146,11 @@ fn round_trips_across_all_monitors_including_negative_coords() {
         );
 
         // local -> virtual: exact round-trip.
-        assert_eq!(local_to_virtual(local, m), v, "V->L->V round-trip for {v:?}");
+        assert_eq!(
+            local_to_virtual(local, m),
+            v,
+            "V->L->V round-trip for {v:?}"
+        );
 
         // and the reverse composition starting from the local point.
         assert_eq!(
@@ -141,7 +160,10 @@ fn round_trips_across_all_monitors_including_negative_coords() {
         );
 
         // The mapped local point maps back to the SAME monitor.
-        assert_eq!(monitor_index_at(local_to_virtual(local, m), &mons), Some(idx));
+        assert_eq!(
+            monitor_index_at(local_to_virtual(local, m), &mons),
+            Some(idx)
+        );
     }
 }
 
@@ -157,7 +179,11 @@ fn exhaustive_round_trip_on_strided_grid() {
                 let local = Point::new(lx, ly);
                 let v = local_to_virtual(local, m);
                 assert_eq!(virtual_to_local(v, m), local, "L->V->L at {local:?}");
-                assert_eq!(local_to_virtual(virtual_to_local(v, m), m), v, "V->L->V at {v:?}");
+                assert_eq!(
+                    local_to_virtual(virtual_to_local(v, m), m),
+                    v,
+                    "V->L->V at {v:?}"
+                );
                 ly += 255;
             }
             lx += 255;

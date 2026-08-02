@@ -181,7 +181,10 @@ mod tests {
     #[test]
     fn new_clamps_default_radius() {
         assert_eq!(SpotlightMode::new(5, Modifiers::CTRL).radius(), MIN_RADIUS);
-        assert_eq!(SpotlightMode::new(5000, Modifiers::CTRL).radius(), MAX_RADIUS);
+        assert_eq!(
+            SpotlightMode::new(5000, Modifiers::CTRL).radius(),
+            MAX_RADIUS
+        );
         assert_eq!(SpotlightMode::new(100, Modifiers::CTRL).radius(), 100);
     }
 
@@ -206,16 +209,10 @@ mod tests {
         // First move from the default (0,0) to (100,100): union of both
         // radius-50 circle bboxes = [-50,-50 .. 151,151).
         let e = m.on_mouse_move(0, Point::new(100, 100));
-        assert_eq!(
-            e.repaint,
-            vec![(0, Some(Rect::new(-50, -50, 201, 201)))],
-        );
+        assert_eq!(e.repaint, vec![(0, Some(Rect::new(-50, -50, 201, 201)))],);
         // Second move to (110,100): union of circles at (100,100) and (110,100).
         let e = m.on_mouse_move(0, Point::new(110, 100));
-        assert_eq!(
-            e.repaint,
-            vec![(0, Some(Rect::new(50, 50, 111, 101)))],
-        );
+        assert_eq!(e.repaint, vec![(0, Some(Rect::new(50, 50, 111, 101)))],);
     }
 
     #[test]
@@ -379,9 +376,6 @@ mod tests {
         let e = m.on_wheel(0, Point::new(100, 100), 120, Modifiers::CTRL);
         // Old: circle r=50 at (200,200); new: r=60 at (100,100).
         // Union: x/y from the new bbox (40,40), right/bottom from the old (251,251).
-        assert_eq!(
-            e.repaint,
-            vec![(0, Some(Rect::new(40, 40, 211, 211)))],
-        );
+        assert_eq!(e.repaint, vec![(0, Some(Rect::new(40, 40, 211, 211)))],);
     }
 }

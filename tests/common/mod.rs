@@ -7,6 +7,7 @@
 //! [`OverlayController`] over in-memory captures and recording surfaces.
 #![allow(dead_code)]
 
+use anyhow::Result;
 use spotfreeze::capture::{Capturer, DibBuffer, MonitorInfo};
 use spotfreeze::geometry::{Point, Rect};
 use spotfreeze::overlay::controller::OverlayController;
@@ -14,7 +15,6 @@ use spotfreeze::overlay::events::OverlayEventSink;
 use spotfreeze::overlay::fade::FadeClock;
 use spotfreeze::platform::{OverlaySurface, PlatformServices, SurfaceFactory};
 use spotfreeze::settings::model::{AppSettings, Rgb};
-use anyhow::Result;
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -216,9 +216,9 @@ impl FakeFreeze {
             .collect();
         let copied = Rc::new(RefCell::new(Vec::new()));
         let mut session = Self {
-            controller: OverlayController::with_fade_clock(FadeClock::manual(Rc::new(
-                Cell::new(Duration::ZERO),
-            ))),
+            controller: OverlayController::with_fade_clock(FadeClock::manual(Rc::new(Cell::new(
+                Duration::ZERO,
+            )))),
             services: FakeServices {
                 cursor,
                 copied: copied.clone(),

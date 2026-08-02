@@ -244,7 +244,10 @@ mod tests {
             FADE_DURATION_MS <= 240,
             "total duration must never exceed 240 ms"
         );
-        assert!(FADE_STEPS <= 8, "Wayland full-frame presents are capped at 8");
+        assert!(
+            FADE_STEPS <= 8,
+            "Wayland full-frame presents are capped at 8"
+        );
         assert_eq!(FADE_STEP_MS * FADE_STEPS, FADE_DURATION_MS);
     }
 
@@ -255,7 +258,11 @@ mod tests {
         assert_eq!(ease_out_cubic(0.0), 0.0);
         assert_eq!(ease_out_cubic(1.0), 1.0);
         // Deceleration: most of the distance is covered early.
-        assert!(ease_out_cubic(0.5) > 0.8, "half time covers >80%: {}", ease_out_cubic(0.5));
+        assert!(
+            ease_out_cubic(0.5) > 0.8,
+            "half time covers >80%: {}",
+            ease_out_cubic(0.5)
+        );
         // Monotonically increasing.
         let mut prev = 0.0;
         for i in 1..=100 {

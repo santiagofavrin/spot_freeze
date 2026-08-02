@@ -16,10 +16,38 @@ use spotfreeze::settings::model::Rgb;
 
 const SAMPLES: &[(&str, Rgb)] = &[
     ("#000000", Rgb { r: 0, g: 0, b: 0 }),
-    ("#FFFFFF", Rgb { r: 255, g: 255, b: 255 }),
-    ("#802020", Rgb { r: 0x80, g: 0x20, b: 0x20 }),
-    ("#A1B2C3", Rgb { r: 0xA1, g: 0xB2, b: 0xC3 }),
-    ("#0F1E2D", Rgb { r: 0x0F, g: 0x1E, b: 0x2D }),
+    (
+        "#FFFFFF",
+        Rgb {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
+    ),
+    (
+        "#802020",
+        Rgb {
+            r: 0x80,
+            g: 0x20,
+            b: 0x20,
+        },
+    ),
+    (
+        "#A1B2C3",
+        Rgb {
+            r: 0xA1,
+            g: 0xB2,
+            b: 0xC3,
+        },
+    ),
+    (
+        "#0F1E2D",
+        Rgb {
+            r: 0x0F,
+            g: 0x1E,
+            b: 0x2D,
+        },
+    ),
 ];
 
 #[test]
@@ -73,23 +101,23 @@ fn channel_positions_are_rgb_order() {
 #[test]
 fn malformed_hex_strings_are_rejected() {
     for bad in [
-        "\"802020\"",     // missing '#'
-        "\"#80202\"",     // too short (5 hex digits)
-        "\"#8020202\"",   // too long (7 hex digits)
-        "\"#\"",          // empty after '#'
-        "\"\"",           // empty string
-        "\"#GGGGGG\"",    // non-hex digits
-        "\"#80 20 20\"",  // spaces inside
-        "\" #802020\"",   // leading space (serialized form is exact)
-        "\"#-2020\"",     // sign is not hex
-        "\"0x802020\"",   // C-style prefix is not the serde form
-        "\"red\"",        // color names are not the serde form
-        "\"#aébcd\"",     // non-ASCII straddling an even byte boundary (D1: must
+        "\"802020\"",    // missing '#'
+        "\"#80202\"",    // too short (5 hex digits)
+        "\"#8020202\"",  // too long (7 hex digits)
+        "\"#\"",         // empty after '#'
+        "\"\"",          // empty string
+        "\"#GGGGGG\"",   // non-hex digits
+        "\"#80 20 20\"", // spaces inside
+        "\" #802020\"",  // leading space (serialized form is exact)
+        "\"#-2020\"",    // sign is not hex
+        "\"0x802020\"",  // C-style prefix is not the serde form
+        "\"red\"",       // color names are not the serde form
+        "\"#aébcd\"",    // non-ASCII straddling an even byte boundary (D1: must
         // error, never panic — this is the settings.json startup-load path)
         "\"#１２３４５６\"", // fullwidth digits are not ASCII hex
-        "123",            // non-string JSON
-        "null",           // null
-        "[128, 32, 32]",  // array form is not the serde form
+        "123",               // non-string JSON
+        "null",              // null
+        "[128, 32, 32]",     // array form is not the serde form
     ] {
         assert!(
             serde_json::from_str::<Rgb>(bad).is_err(),

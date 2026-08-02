@@ -13,12 +13,12 @@ use crate::overlay::events::OverlayEventSink;
 use anyhow::Result;
 use std::rc::Rc;
 
-#[cfg(target_os = "linux")]
-pub mod wayland;
 #[cfg(target_os = "macos")]
 pub mod macos;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub mod shared;
+#[cfg(target_os = "linux")]
+pub mod wayland;
 #[cfg(windows)]
 pub mod windows;
 

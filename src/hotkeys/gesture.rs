@@ -23,26 +23,26 @@ use std::fmt;
 /// `pub(crate)` so [`crate::hotkeys::keymap`] tests can prove they cover the
 /// parser's whole key vocabulary.
 pub(crate) const NAMED_KEYS: &[(&str, u32)] = &[
-    ("Esc", 0x1B),        // VK_ESCAPE
-    ("Space", 0x20),      // VK_SPACE
-    ("Enter", 0x0D),      // VK_RETURN
-    ("Tab", 0x09),        // VK_TAB
-    ("Backspace", 0x08),  // VK_BACK
-    ("Delete", 0x2E),     // VK_DELETE
-    ("Insert", 0x2D),     // VK_INSERT
-    ("Home", 0x24),       // VK_HOME
-    ("End", 0x23),        // VK_END
-    ("PageUp", 0x21),     // VK_PRIOR
-    ("PageDown", 0x22),   // VK_NEXT
-    ("Up", 0x26),         // VK_UP
-    ("Down", 0x28),       // VK_DOWN
-    ("Left", 0x25),       // VK_LEFT
-    ("Right", 0x27),      // VK_RIGHT
+    ("Esc", 0x1B),         // VK_ESCAPE
+    ("Space", 0x20),       // VK_SPACE
+    ("Enter", 0x0D),       // VK_RETURN
+    ("Tab", 0x09),         // VK_TAB
+    ("Backspace", 0x08),   // VK_BACK
+    ("Delete", 0x2E),      // VK_DELETE
+    ("Insert", 0x2D),      // VK_INSERT
+    ("Home", 0x24),        // VK_HOME
+    ("End", 0x23),         // VK_END
+    ("PageUp", 0x21),      // VK_PRIOR
+    ("PageDown", 0x22),    // VK_NEXT
+    ("Up", 0x26),          // VK_UP
+    ("Down", 0x28),        // VK_DOWN
+    ("Left", 0x25),        // VK_LEFT
+    ("Right", 0x27),       // VK_RIGHT
     ("PrintScreen", 0x2C), // VK_SNAPSHOT
-    ("OemPlus", 0xBB),    // VK_OEM_PLUS
-    ("OemMinus", 0xBD),   // VK_OEM_MINUS
-    ("OemComma", 0xBC),   // VK_OEM_COMMA
-    ("OemPeriod", 0xBE),  // VK_OEM_PERIOD
+    ("OemPlus", 0xBB),     // VK_OEM_PLUS
+    ("OemMinus", 0xBD),    // VK_OEM_MINUS
+    ("OemComma", 0xBC),    // VK_OEM_COMMA
+    ("OemPeriod", 0xBE),   // VK_OEM_PERIOD
 ];
 
 /// Win32 virtual-key codes of the modifier keys themselves (both the generic
@@ -79,7 +79,9 @@ fn key_vk_from_token(tok: &str) -> Option<u32> {
     // Single ASCII letter or digit: vk == uppercase ASCII code.
     if tok.len() == 1 {
         let b = tok.as_bytes()[0];
-        return b.is_ascii_alphanumeric().then(|| b.to_ascii_uppercase() as u32);
+        return b
+            .is_ascii_alphanumeric()
+            .then(|| b.to_ascii_uppercase() as u32);
     }
     // F1..F24 (VK_F1 == 0x70, contiguous).
     let (head, digits) = tok.split_at(1);
@@ -288,16 +290,12 @@ impl HotkeyGesture {
         for raw in &tokens[..tokens.len() - 1] {
             let tok = raw.trim();
             if tok.is_empty() {
-                return Err(ParseGestureError(format!(
-                    "empty token in \"{trimmed}\""
-                )));
+                return Err(ParseGestureError(format!("empty token in \"{trimmed}\"")));
             }
             match parse_modifier_token(tok) {
                 Some(flag) => {
                     if modifiers.contains(flag) {
-                        return Err(ParseGestureError(format!(
-                            "duplicate modifier \"{tok}\""
-                        )));
+                        return Err(ParseGestureError(format!("duplicate modifier \"{tok}\"")));
                     }
                     modifiers = modifiers | flag;
                 }
@@ -340,7 +338,11 @@ impl HotkeyGesture {
     pub fn to_display(self) -> String {
         let mods = self.modifiers.to_display();
         let key = vk_display_name(self.vk);
-        if mods.is_empty() { key } else { format!("{mods}+{key}") }
+        if mods.is_empty() {
+            key
+        } else {
+            format!("{mods}+{key}")
+        }
     }
 
     /// `true` when this gesture is acceptable for binding: the key is a real
@@ -409,7 +411,10 @@ mod tests {
             Modifiers::from_bits(0xFFFF),
             Modifiers::CTRL | Modifiers::ALT | Modifiers::SHIFT | Modifiers::WIN
         );
-        assert_eq!(Modifiers::from_bits(0x0003), Modifiers::ALT | Modifiers::CTRL);
+        assert_eq!(
+            Modifiers::from_bits(0x0003),
+            Modifiers::ALT | Modifiers::CTRL
+        );
         assert_eq!(Modifiers::from_bits(0x0010), Modifiers::NONE);
     }
 
@@ -438,7 +443,12 @@ mod tests {
 
     #[test]
     fn all_modifier_combos_round_trip() {
-        let parts = [Modifiers::CTRL, Modifiers::ALT, Modifiers::SHIFT, Modifiers::WIN];
+        let parts = [
+            Modifiers::CTRL,
+            Modifiers::ALT,
+            Modifiers::SHIFT,
+            Modifiers::WIN,
+        ];
         for mask in 0u32..16 {
             let mut m = Modifiers::NONE;
             for (i, part) in parts.iter().enumerate() {
@@ -484,15 +494,15 @@ mod tests {
     #[test]
     fn modifier_parse_rejects_bad_input() {
         for bad in [
-            "F",        // non-modifier key
-            "Esc",      // non-modifier key
-            "1",        // non-modifier key
-            "Ctrl+F",   // key mixed in
+            "F",      // non-modifier key
+            "Esc",    // non-modifier key
+            "1",      // non-modifier key
+            "Ctrl+F", // key mixed in
             "Ctrl+Ctrl",
             "Ctrl+Control", // duplicate through the alias
             "alt+ALT",
-            "Ctrl+",    // trailing separator
-            "+Ctrl",    // leading separator
+            "Ctrl+",     // trailing separator
+            "+Ctrl",     // leading separator
             "Ctrl++Alt", // empty token
             "Bogus",
             "Ct rl",
@@ -506,17 +516,35 @@ mod tests {
     #[test]
     fn vk_numbers_match_win32() {
         let cases: &[(&str, u32)] = &[
-            ("A", 0x41), ("Z", 0x5A), ("M", 0x4D),
-            ("0", 0x30), ("9", 0x39), ("1", 0x31),
-            ("F1", 0x70), ("F12", 0x7B), ("F24", 0x87),
-            ("Esc", 0x1B), ("Space", 0x20), ("Enter", 0x0D), ("Tab", 0x09),
-            ("Backspace", 0x08), ("Delete", 0x2E), ("Insert", 0x2D),
-            ("Home", 0x24), ("End", 0x23),
-            ("PageUp", 0x21), ("PageDown", 0x22),
-            ("Up", 0x26), ("Down", 0x28), ("Left", 0x25), ("Right", 0x27),
+            ("A", 0x41),
+            ("Z", 0x5A),
+            ("M", 0x4D),
+            ("0", 0x30),
+            ("9", 0x39),
+            ("1", 0x31),
+            ("F1", 0x70),
+            ("F12", 0x7B),
+            ("F24", 0x87),
+            ("Esc", 0x1B),
+            ("Space", 0x20),
+            ("Enter", 0x0D),
+            ("Tab", 0x09),
+            ("Backspace", 0x08),
+            ("Delete", 0x2E),
+            ("Insert", 0x2D),
+            ("Home", 0x24),
+            ("End", 0x23),
+            ("PageUp", 0x21),
+            ("PageDown", 0x22),
+            ("Up", 0x26),
+            ("Down", 0x28),
+            ("Left", 0x25),
+            ("Right", 0x27),
             ("PrintScreen", 0x2C),
-            ("OemPlus", 0xBB), ("OemMinus", 0xBD),
-            ("OemComma", 0xBC), ("OemPeriod", 0xBE),
+            ("OemPlus", 0xBB),
+            ("OemMinus", 0xBD),
+            ("OemComma", 0xBC),
+            ("OemPeriod", 0xBE),
         ];
         for (name, vk) in cases {
             let g = HotkeyGesture::parse(name).unwrap();
@@ -564,7 +592,12 @@ mod tests {
     #[test]
     fn gesture_parse_case_and_whitespace_tolerant() {
         let want = HotkeyGesture::new(Modifiers::CTRL | Modifiers::ALT, 'F' as u32);
-        for s in ["Ctrl+Alt+F", "ctrl+alt+f", " CTRL + ALT + F ", "Control+Alt+f"] {
+        for s in [
+            "Ctrl+Alt+F",
+            "ctrl+alt+f",
+            " CTRL + ALT + F ",
+            "Control+Alt+f",
+        ] {
             assert_eq!(HotkeyGesture::parse(s).unwrap(), want, "parse {s:?}");
         }
         assert_eq!(HotkeyGesture::parse(" esc ").unwrap().vk, 0x1B);
@@ -574,16 +607,26 @@ mod tests {
 
     #[test]
     fn gesture_display_canonical() {
-        assert_eq!(HotkeyGesture::parse("alt+ctrl+f").unwrap().to_display(), "Ctrl+Alt+F");
+        assert_eq!(
+            HotkeyGesture::parse("alt+ctrl+f").unwrap().to_display(),
+            "Ctrl+Alt+F"
+        );
         assert_eq!(HotkeyGesture::parse("esc").unwrap().to_display(), "Esc");
         assert_eq!(HotkeyGesture::parse("1").unwrap().to_display(), "1");
-        assert_eq!(HotkeyGesture::parse("control+c").unwrap().to_display(), "Ctrl+C");
         assert_eq!(
-            HotkeyGesture::parse("win+shift+ctrl+alt+a").unwrap().to_display(),
+            HotkeyGesture::parse("control+c").unwrap().to_display(),
+            "Ctrl+C"
+        );
+        assert_eq!(
+            HotkeyGesture::parse("win+shift+ctrl+alt+a")
+                .unwrap()
+                .to_display(),
             "Ctrl+Alt+Shift+Win+A"
         );
         assert_eq!(
-            HotkeyGesture::parse("shift+printscreen").unwrap().to_display(),
+            HotkeyGesture::parse("shift+printscreen")
+                .unwrap()
+                .to_display(),
             "Shift+PrintScreen"
         );
     }
@@ -593,26 +636,26 @@ mod tests {
         for bad in [
             "",
             "   ",
-            "Ctrl",          // bare modifier — use Modifiers::parse
-            "Alt+Shift",     // all modifiers, no key
-            "Ctrl+Win",      // trailing modifier
-            "Ctrl+",         // trailing separator
-            "Ctrl + ",       // trailing separator with whitespace
-            "+F",            // leading separator
-            "Ctrl++F",       // empty token
-            "Ctrl+Ctrl+F",   // duplicate modifier
-            "Ctrl+Control+F",// duplicate through the alias
-            "F+Ctrl",        // key before modifier
-            "Ctrl+F+Alt",    // key in modifier position
-            "Ctrl+Foo",      // unknown key
+            "Ctrl",           // bare modifier — use Modifiers::parse
+            "Alt+Shift",      // all modifiers, no key
+            "Ctrl+Win",       // trailing modifier
+            "Ctrl+",          // trailing separator
+            "Ctrl + ",        // trailing separator with whitespace
+            "+F",             // leading separator
+            "Ctrl++F",        // empty token
+            "Ctrl+Ctrl+F",    // duplicate modifier
+            "Ctrl+Control+F", // duplicate through the alias
+            "F+Ctrl",         // key before modifier
+            "Ctrl+F+Alt",     // key in modifier position
+            "Ctrl+Foo",       // unknown key
             "Foo",
             "F0",
             "F25",
             "F123",
-            "Ctrl+Shift",    // modifier-only chord
-            "0x11",          // VK_CONTROL through hex fallback
-            "0xA2",          // VK_LCONTROL through hex fallback
-            "0x0",           // vk 0 is invalid
+            "Ctrl+Shift", // modifier-only chord
+            "0x11",       // VK_CONTROL through hex fallback
+            "0xA2",       // VK_LCONTROL through hex fallback
+            "0x0",        // vk 0 is invalid
         ] {
             assert!(HotkeyGesture::parse(bad).is_err(), "{bad:?} should fail");
         }
@@ -621,12 +664,24 @@ mod tests {
     #[test]
     fn parse_display_parse_is_stable() {
         for s in [
-            "Ctrl+Alt+F", "Esc", "1", "0", "Ctrl+C", "Ctrl+Shift+F24",
-            "Alt+PageDown", "Shift+OemComma", "Ctrl+Alt+Shift+Win+Right",
-            "Win+PrintScreen", "Space",
+            "Ctrl+Alt+F",
+            "Esc",
+            "1",
+            "0",
+            "Ctrl+C",
+            "Ctrl+Shift+F24",
+            "Alt+PageDown",
+            "Shift+OemComma",
+            "Ctrl+Alt+Shift+Win+Right",
+            "Win+PrintScreen",
+            "Space",
         ] {
             let g = HotkeyGesture::parse(s).unwrap();
-            assert_eq!(HotkeyGesture::parse(&g.to_display()).unwrap(), g, "round-trip {s:?}");
+            assert_eq!(
+                HotkeyGesture::parse(&g.to_display()).unwrap(),
+                g,
+                "round-trip {s:?}"
+            );
             assert_eq!(g.to_display(), s, "display of {s:?} is already canonical");
         }
     }
@@ -644,7 +699,9 @@ mod tests {
     fn bare_modifier_vk_is_not_registerable() {
         // VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN,
         // VK_LSHIFT..VK_RMENU, and vk 0.
-        for vk in [0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0] {
+        for vk in [
+            0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0,
+        ] {
             assert!(
                 !HotkeyGesture::new(Modifiers::NONE, vk).is_registerable(),
                 "vk {vk:#04X} must not be registerable"
@@ -712,9 +769,15 @@ mod tests {
 
         // NONE round-trips through the empty string.
         assert_eq!(serde_json::to_string(&Modifiers::NONE).unwrap(), "\"\"");
-        assert_eq!(serde_json::from_str::<Modifiers>("\"\"").unwrap(), Modifiers::NONE);
+        assert_eq!(
+            serde_json::from_str::<Modifiers>("\"\"").unwrap(),
+            Modifiers::NONE
+        );
 
-        assert_eq!(serde_json::from_str::<Modifiers>("\"ctrl\"").unwrap(), Modifiers::CTRL);
+        assert_eq!(
+            serde_json::from_str::<Modifiers>("\"ctrl\"").unwrap(),
+            Modifiers::CTRL
+        );
         assert!(serde_json::from_str::<Modifiers>("\"Ctrl+F\"").is_err());
         assert!(serde_json::from_str::<Modifiers>("\"Bogus\"").is_err());
     }
