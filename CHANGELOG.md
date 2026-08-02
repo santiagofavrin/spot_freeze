@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.1](https://github.com/santiagofavrin/spotfreeze/compare/v1.13.0...v1.13.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* copy assets into Docker build for fonts ([d1cfd48](https://github.com/santiagofavrin/spotfreeze/commit/d1cfd485e2d13a825f6bede5130e7282c192135b))
+
 ## [1.13.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.12.0...v1.13.0) (2026-08-02)
 
 
