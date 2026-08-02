@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.12.0...v1.13.0) (2026-08-02)
+
+
+### Features
+
+* implicit zoom and modern legend redesign ([f72fe23](https://github.com/santiagofavrin/spotfreeze/commit/f72fe23d8cb67ceacda7fddfbfdbdd04b7787a11))
+
 ## [1.12.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.11.0...v1.12.0) (2026-08-02)
 
 
