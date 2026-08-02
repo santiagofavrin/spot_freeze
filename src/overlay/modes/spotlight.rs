@@ -122,8 +122,8 @@ impl SpotlightMode {
 
     /// Resizes the radius by the raw wheel delta.
     ///
-    /// `delta` is in RAW Win32 wheel units: `120` = `+10` px, proportionally
-    /// (`60` = `+5`), clamped to `10..=1000`. Sub-notch deltas from
+    /// `delta` is in RAW Win32 wheel units: `120` (wheel up) = `-10` px,
+    /// proportionally (`60` = `-5`), clamped to `10..=1000`. Sub-notch deltas from
     /// smooth-scroll hardware are NOT dropped: they accumulate in
     /// `wheel_accum` and each event consumes only the delta its whole-pixel
     /// step accounts for, so a stream of tiny deltas (e.g. precision-touchpad
@@ -138,7 +138,9 @@ impl SpotlightMode {
         // applied step accounts for and the remainder is always < 12 raw
         // units — the accumulator can never grow unbounded or drift.
         self.wheel_accum += delta as i64;
-        let step = (self.wheel_accum * RADIUS_STEP / WHEEL_DELTA) as i32;
+        // Positive wheel deltas mean wheel up, which makes the spotlight
+        // smaller. Negative deltas make it larger.
+        let step = -(self.wheel_accum * RADIUS_STEP / WHEEL_DELTA) as i32;
         if step != 0 {
             self.wheel_accum -= step as i64 * (WHEEL_DELTA / RADIUS_STEP);
         }
@@ -216,35 +218,35 @@ mod tests {
     #[test]
     fn wheel_resizes_120_delta_is_10px() {
         let mut m = SpotlightMode::new(100);
-        // Union of the r=100 and r=110 circle bboxes at (0,0).
+        // Union of the r=100 and r=90 circle bboxes at (0,0).
         let e = m.on_wheel(0, Point::new(0, 0), 120);
-        assert_eq!(m.radius(), 110);
-        assert_eq!(e.repaint, vec![(0, Some(Rect::new(-110, -110, 221, 221)))]);
+        assert_eq!(m.radius(), 90);
+        assert_eq!(e.repaint, vec![(0, Some(Rect::new(-100, -100, 201, 201)))]);
         let e = m.on_wheel(0, Point::new(0, 0), -120);
         assert_eq!(m.radius(), 100);
-        assert_eq!(e.repaint, vec![(0, Some(Rect::new(-110, -110, 221, 221)))]);
+        assert_eq!(e.repaint, vec![(0, Some(Rect::new(-100, -100, 201, 201)))]);
     }
 
     #[test]
     fn wheel_multi_notch_and_fine_delta_scale_proportionally() {
         let mut m = SpotlightMode::new(100);
         m.on_wheel(0, Point::new(0, 0), 240);
-        assert_eq!(m.radius(), 120);
+        assert_eq!(m.radius(), 80);
         m.on_wheel(0, Point::new(0, 0), 60);
-        assert_eq!(m.radius(), 125);
+        assert_eq!(m.radius(), 75);
         m.on_wheel(0, Point::new(0, 0), -60);
-        assert_eq!(m.radius(), 120);
+        assert_eq!(m.radius(), 80);
     }
 
     #[test]
     fn wheel_sub_notch_deltas_still_resize() {
         // D2 regression: precision touchpads send sub-notch deltas (|delta| <
-        // 120). Four +60 events MUST change the radius (+5 px each).
+        // 120). Four +60 events MUST change the radius (-5 px each).
         let mut m = SpotlightMode::new(100);
         for _ in 0..4 {
             m.on_wheel(0, Point::new(0, 0), 60);
         }
-        assert_eq!(m.radius(), 120, "four +60 deltas = half a notch each pair");
+        assert_eq!(m.radius(), 80, "four +60 deltas = half a notch each pair");
         // And downwards.
         for _ in 0..4 {
             m.on_wheel(0, Point::new(0, 0), -60);
@@ -260,12 +262,12 @@ mod tests {
         m.on_wheel(0, Point::new(0, 0), 6);
         assert_eq!(m.radius(), 100, "first +6 banks 0.5 px: no change yet");
         m.on_wheel(0, Point::new(0, 0), 6);
-        assert_eq!(m.radius(), 101, "two +6 events = one whole pixel");
-        // Twenty +6 events total = 120 raw = one notch = +10 px.
+        assert_eq!(m.radius(), 99, "two +6 events = one whole pixel smaller");
+        // Twenty +6 events total = 120 raw = one notch = -10 px.
         for _ in 0..18 {
             m.on_wheel(0, Point::new(0, 0), 6);
         }
-        assert_eq!(m.radius(), 110);
+        assert_eq!(m.radius(), 90);
     }
 
     #[test]
@@ -274,13 +276,13 @@ mod tests {
         // 21 px split 10 + 11 (the truncation remainder is never lost).
         let mut m = SpotlightMode::new(100);
         m.on_wheel(0, Point::new(0, 0), 130);
-        assert_eq!(m.radius(), 110);
+        assert_eq!(m.radius(), 90);
         m.on_wheel(0, Point::new(0, 0), 130);
-        assert_eq!(m.radius(), 121);
+        assert_eq!(m.radius(), 79);
         // A full notch immediately after still yields exactly +10 (no residue
         // distortion): 260 + 120 = 380 raw = 31.67 px → 131 total.
         m.on_wheel(0, Point::new(0, 0), 120);
-        assert_eq!(m.radius(), 131);
+        assert_eq!(m.radius(), 69);
         // Direction reversal is symmetric: ±60 cancel exactly.
         let mut m = SpotlightMode::new(100);
         m.on_wheel(0, Point::new(0, 0), 60);
@@ -291,20 +293,20 @@ mod tests {
     #[test]
     fn wheel_clamps_at_min_and_max() {
         let mut m = SpotlightMode::new(MIN_RADIUS);
-        let e = m.on_wheel(0, Point::new(0, 0), -120);
+        let e = m.on_wheel(0, Point::new(0, 0), 120);
         assert_eq!(m.radius(), MIN_RADIUS);
         assert_eq!(e, ModeEffect::none()); // clamped: nothing changed
 
         let mut m = SpotlightMode::new(MAX_RADIUS);
-        let e = m.on_wheel(0, Point::new(0, 0), 120);
+        let e = m.on_wheel(0, Point::new(0, 0), -120);
         assert_eq!(m.radius(), MAX_RADIUS);
         assert_eq!(e, ModeEffect::none());
 
         // A huge delta lands exactly on the clamp, not past it.
         let mut m = SpotlightMode::new(100);
-        m.on_wheel(0, Point::new(0, 0), 120 * 1000);
-        assert_eq!(m.radius(), MAX_RADIUS);
         m.on_wheel(0, Point::new(0, 0), -120 * 1000);
+        assert_eq!(m.radius(), MAX_RADIUS);
+        m.on_wheel(0, Point::new(0, 0), 120 * 1000);
         assert_eq!(m.radius(), MIN_RADIUS);
     }
 
@@ -314,8 +316,8 @@ mod tests {
         m.on_mouse_move(0, Point::new(200, 200));
         // Wheel at a different position: cursor follows the wheel event.
         let e = m.on_wheel(0, Point::new(100, 100), 120);
-        // Old: circle r=50 at (200,200); new: r=60 at (100,100).
-        // Union: x/y from the new bbox (40,40), right/bottom from the old (251,251).
-        assert_eq!(e.repaint, vec![(0, Some(Rect::new(40, 40, 211, 211)))],);
+        // Old: circle r=50 at (200,200); new: r=40 at (100,100).
+        // Union: x/y from the new bbox (60,60), right/bottom from the old (251,251).
+        assert_eq!(e.repaint, vec![(0, Some(Rect::new(60, 60, 191, 191)))],);
     }
 }

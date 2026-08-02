@@ -20,7 +20,8 @@ re-composited from reusable buffers — never a full repaint from scratch.
   are fully covered.
 - **Spotlight toggle** — a bright circle follows your cursor over the dimmed
   frozen screen; `S` turns it on and off (off = frozen but clear, no dim).
-  Scroll the mouse wheel to resize it — no modifier needed.
+  Scroll the mouse wheel to resize it — wheel up makes it smaller and wheel
+  down makes it bigger; no modifier is needed.
 - **Zoom hold** — `F` toggles a persistent zoom layer at the last-used level
   (1.0×–16.0×, ×1.25 per notch by default), on top of spotlight on or off.
   Magnify around the cursor with `Shift` + wheel from anywhere (it adds the
