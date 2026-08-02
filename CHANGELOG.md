@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.7.0...v1.8.0) (2026-08-02)
+
+
+### Features
+
+* improve spotlight toggle and legend ([a136e10](https://github.com/santiagofavrin/spotfreeze/commit/a136e10e929f19721379d5c38bbf4ff29a62c51d))
+
 ## [1.7.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.6.0...v1.7.0) (2026-07-31)
 
 
