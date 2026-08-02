@@ -140,9 +140,10 @@ impl SpotlightMode {
         self.wheel_accum += delta as i64;
         // Positive wheel deltas mean wheel up, which makes the spotlight
         // smaller. Negative deltas make it larger.
-        let step = -(self.wheel_accum * RADIUS_STEP / WHEEL_DELTA) as i32;
-        if step != 0 {
-            self.wheel_accum -= step as i64 * (WHEEL_DELTA / RADIUS_STEP);
+        let raw_step = (self.wheel_accum * RADIUS_STEP / WHEEL_DELTA) as i32;
+        let step = -raw_step;
+        if raw_step != 0 {
+            self.wheel_accum -= raw_step as i64 * (WHEEL_DELTA / RADIUS_STEP);
         }
         let new_radius =
             (self.radius as i32 + step).clamp(MIN_RADIUS as i32, MAX_RADIUS as i32) as u32;
