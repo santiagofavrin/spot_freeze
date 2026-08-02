@@ -103,7 +103,6 @@ fn old_schema_full_file_loads_with_new_key_defaults() {
         loaded.hotkeys.mode_snip,
         HotkeyGesture::new(Modifiers::NONE, '3' as u32)
     );
-    assert_eq!(loaded.hotkeys.spotlight_radius_modifier, Modifiers::CTRL);
     assert_eq!(loaded.spotlight.default_radius, 150);
     assert_eq!(loaded.zoom, AppSettings::default().zoom);
 }
@@ -156,7 +155,6 @@ fn old_schema_hotkeys_section_without_zoom_modifier_merges_shift() {
         Modifiers::SHIFT,
         "zoom_modifier default merges in"
     );
-    assert_eq!(loaded.hotkeys.spotlight_radius_modifier, Modifiers::CTRL);
 }
 
 #[test]

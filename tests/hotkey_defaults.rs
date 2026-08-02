@@ -7,7 +7,7 @@
 //! - NEW `zoom_hold` = **F** — toggles the zoom-hold LAYER (zoom is no
 //!   longer a mode; same key as `freeze_toggle`, modifiers differ)
 //! - `zoom_modifier` = **Shift** (wheel-zoom chord, modifier-only)
-//! - `spotlight_radius_modifier` stays **Ctrl**
+//! - the spotlight resizes on the PLAIN wheel (no modifier binding)
 //!
 //! Every default hotkey in `AppSettings` parses and re-serializes to an
 //! identical display string, and all registered bindings are pairwise
@@ -19,9 +19,8 @@ use spotfreeze::settings::model::{AppSettings, HotkeySettings};
 use std::collections::HashSet;
 
 /// All full-gesture fields of `HotkeySettings` (the modifier-only
-/// `spotlight_radius_modifier` / `zoom_modifier` are covered separately —
-/// they are `Modifiers`, not gestures, so they cannot "conflict" with key
-/// gestures).
+/// `zoom_modifier` is covered separately — it is `Modifiers`, not a gesture,
+/// so it cannot "conflict" with key gestures).
 fn gesture_fields(h: &HotkeySettings) -> [(&'static str, HotkeyGesture); 7] {
     [
         ("freeze_toggle", h.freeze_toggle),
@@ -65,7 +64,6 @@ fn documented_default_gestures_are_exact() {
         h.reset_zoom,
         HotkeyGesture::new(Modifiers::NONE, '0' as u32)
     );
-    assert_eq!(h.spotlight_radius_modifier, Modifiers::CTRL);
     assert_eq!(h.zoom_modifier, Modifiers::SHIFT, "zoom_modifier = Shift");
 }
 
@@ -84,7 +82,6 @@ fn default_display_strings_match_docs() {
     for ((name, g), want) in gesture_fields(&h).into_iter().zip(expected) {
         assert_eq!(g.to_display(), want, "{name} display string");
     }
-    assert_eq!(h.spotlight_radius_modifier.to_display(), "Ctrl");
     assert_eq!(h.zoom_modifier.to_display(), "Shift");
 }
 
@@ -116,11 +113,8 @@ fn every_default_parses_and_reserializes_to_identical_display_string() {
         );
     }
 
-    // Both modifier-only defaults get the same parse/serde round-trip treatment.
-    for (name, m) in [
-        ("spotlight_radius_modifier", h.spotlight_radius_modifier),
-        ("zoom_modifier", h.zoom_modifier),
-    ] {
+    // The modifier-only default gets the same parse/serde round-trip treatment.
+    for (name, m) in [("zoom_modifier", h.zoom_modifier)] {
         let display = m.to_display();
         assert_eq!(
             Modifiers::parse(&display).expect("parse modifier display"),

@@ -6,7 +6,8 @@
 //! REWORK NOTE (mode-redesign update): `ZoomMode` is now a pure LAYER (the
 //! "zoom hold", toggled by the `zoom_hold` binding) — the `ModeStack` routing
 //! matrix decides WHICH wheel events reach it (zoom modifier from any state,
-//! plain wheel whenever the layer is active), so the layer's `on_wheel` takes
+//! plain wheel when the layer is active and the spotlight layer is not), so
+//! the layer's `on_wheel` takes
 //! no `modifiers` argument and applies every wheel it receives. Rendering
 //! moved out of the layer: the controller reads
 //! [`ModeStack::render_state`] and hands the `RenderState` to
@@ -57,7 +58,6 @@ const DEFAULT_ZOOM: (f32, f32, f32) = (1.25, 1.0, 16.0);
 fn default_params() -> ModeParams {
     ModeParams {
         spotlight_radius: 150,
-        radius_modifier: Modifiers::CTRL,
         zoom_step: DEFAULT_ZOOM.0,
         zoom_min: DEFAULT_ZOOM.1,
         zoom_max: DEFAULT_ZOOM.2,

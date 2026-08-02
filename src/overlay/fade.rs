@@ -1,13 +1,15 @@
 //! PURE transition schedule: the step grid (progress over elapsed time), the
-//! easing, the spotlight radius curve, the duration/step caps, and the clock
-//! the controller's transition drivers run on. No pixel math here (the blend
-//! lives in [`crate::overlay::composite::blend_frames`]) and no OS calls — the
+//! easing, the duration/step caps, and the clock the controller's transition
+//! drivers run on. No pixel math here (the blend lives in
+//! [`crate::overlay::composite::blend_frames`]) and no OS calls — the
 //! controller turns these decisions into `set_alpha` calls, blended presents,
 //! or re-composed frames.
 //!
 //! The schedule drives the freeze/unfreeze fades. A single eased progress byte
-//! (`alpha`, 0..=255) parameterizes the veil strength, the whole-window alpha,
-//! and the spotlight circle scale, so one step grid drives the choreography.
+//! (`alpha`, 0..=255) parameterizes the veil strength and the whole-window
+//! alpha, so one step grid drives the whole fade. The spotlight circle takes
+//! no part in the choreography: it is at its settled radius from the first
+//! frame (no grow/shrink).
 //!
 //! # Motion design (researched: Material motion, Apple HIG)
 //!
@@ -20,12 +22,7 @@
 //! - **Duration**: [`FADE_DURATION_MS`] = 200 ms. Material places mobile
 //!   transitions at 200-300 ms (entering ~225 ms), Apple HIG asks for
 //!   animations of "a few tenths of a second" at most, and micro-transition
-//!   guidance clusters at 100-250 ms. The veil fade and the circle expansion
-//!   share the 200 ms grid.
-//! - **Spotlight circle**: enters at 60% of its settled radius and eases out
-//!   to 100% ([`spotlight_radius_scale`]); exits shrink it back. Starting at
-//!   60% (not 0%) keeps the hole readable from the first visible frame —
-//!   a from-zero circle reads as a dot popping, not a spotlight opening.
+//!   guidance clusters at 100-250 ms. The veil fade runs on the 200 ms grid.
 //!
 //! # Caps (product constraint: snappiness first)
 //!
@@ -33,9 +30,8 @@
 //!   margin under it): a transition must never hold the freeze hostage. The
 //!   driver ends EVERY transition with the exact endpoint (settled frame /
 //!   fully transparent / original pixels), so one can never leave a
-//!   half-shown overlay. (The earlier 180 ms cap pre-dated the radius
-//!   choreography; 200 ms is the smallest grid that fits an eased veil +
-//!   circle ramp without visible stepping, and stays within the revised cap.)
+//!   half-shown overlay. (200 ms is the smallest grid that fits an eased
+//!   veil ramp without visible stepping, and stays within the cap.)
 //! - [`FADE_STEPS`] steps: on Wayland each step is a FULL-FRAME present
 //!   through the normal present path, so the step count doubles as the frame
 //!   cap the present path can absorb; constant-alpha platforms (Windows,
@@ -48,8 +44,8 @@
 //! # Platform paths
 //!
 //! Constant-alpha surfaces (Windows, macOS) fade via `set_alpha` — a true
-//! crossfade against the LIVE desktop underneath — over frames re-composed
-//! with the step's circle scale. Surfaces without per-surface alpha (Wayland
+//! crossfade against the LIVE desktop underneath — over the settled frames.
+//! Surfaces without per-surface alpha (Wayland
 //! layer-shell shm) present re-composed frames whose veil ramps with the step
 //! alpha on entry, and blend pixels toward the freeze-time capture on exit
 //! (a veil ramp cannot crossfade a zoom base away): fade-IN starts on the
@@ -106,25 +102,21 @@ pub const FADE_STEPS: u64 = 8;
 /// Nominal time between steps (`FADE_DURATION_MS / FADE_STEPS`).
 pub const FADE_STEP_MS: u64 = FADE_DURATION_MS / FADE_STEPS;
 
-/// Spotlight circle scale at the START of an enter transition, in permille of
-/// the settled radius (exit transitions end on it): 60%.
-pub const SPOTLIGHT_SCALE_MIN_PM: u32 = 600;
-
 /// Which way a transition runs.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FadeDirection {
-    /// Enter (freeze, spotlight toggle-on): progress ramps 0 -> 255.
+    /// Enter (freeze): progress ramps 0 -> 255.
     In,
-    /// Exit (full unfreeze, spotlight toggle-off): progress ramps 255 -> 0,
-    /// the exact time-reverse of `In`.
+    /// Exit (full unfreeze): progress ramps 255 -> 0, the exact time-reverse
+    /// of `In`.
     Out,
 }
 
 /// One driver iteration: apply `alpha` (the eased progress byte — 0 =
-/// transparent/original/60% circle, 255 = opaque/composed/settled) to every
-/// monitor, then wait `wait` before re-sampling the clock. The endpoint itself
-/// is NOT a step — the driver applies it exactly after the last step (see
-/// module docs).
+/// transparent/original, 255 = opaque/composed/settled) to every monitor,
+/// then wait `wait` before re-sampling the clock. The endpoint itself is NOT
+/// a step — the driver applies it exactly after the last step (see module
+/// docs).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FadeStep {
     pub alpha: u8,
@@ -162,13 +154,6 @@ pub fn fade_alpha(elapsed_ms: u64, direction: FadeDirection) -> u8 {
     } as f32
         / FADE_DURATION_MS as f32;
     (ease_out_cubic(t) * 255.0).round() as u8
-}
-
-/// Spotlight radius scale in permille of the settled radius for the eased
-/// progress byte `alpha`: 60% ([`SPOTLIGHT_SCALE_MIN_PM`]) at alpha 0 up to
-/// 100% (1000) at alpha 255, linear in the (already eased) progress.
-pub fn spotlight_radius_scale(alpha: u8) -> u32 {
-    SPOTLIGHT_SCALE_MIN_PM + (u32::from(alpha) * (1000 - SPOTLIGHT_SCALE_MIN_PM) + 127) / 255
 }
 
 /// Ease-out cubic (`1 - (1-t)^3`): full initial velocity decelerating to a
@@ -323,33 +308,6 @@ mod tests {
             first > last * 2,
             "entry must be front-loaded: first quarter {first} vs last {last}"
         );
-    }
-
-    // ---- spotlight_radius_scale ----
-
-    #[test]
-    fn radius_scale_endpoints_are_exact() {
-        assert_eq!(spotlight_radius_scale(0), SPOTLIGHT_SCALE_MIN_PM);
-        assert_eq!(spotlight_radius_scale(255), 1000);
-    }
-
-    #[test]
-    fn radius_scale_is_monotonic_within_the_60_100_band() {
-        let mut prev = SPOTLIGHT_SCALE_MIN_PM;
-        for a in 1..=255u16 {
-            let s = spotlight_radius_scale(a as u8);
-            assert!(s >= prev, "scale regressed at alpha {a}");
-            assert!((SPOTLIGHT_SCALE_MIN_PM..=1000).contains(&s));
-            prev = s;
-        }
-    }
-
-    #[test]
-    fn radius_scale_midpoint_is_about_80_percent() {
-        // Eased midpoint alpha (~223 at half time) puts the circle near 95%;
-        // the linear-in-alpha midpoint (128) sits near 80%.
-        let s = spotlight_radius_scale(128);
-        assert!((795..=810).contains(&s), "alpha 128 scale: {s}");
     }
 
     // ---- fade_step ----

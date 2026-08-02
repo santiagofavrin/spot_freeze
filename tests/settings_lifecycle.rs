@@ -126,7 +126,7 @@ fn defaults_save_hand_edited_jsonc_loads_with_default_merge() {
     assert_eq!(loaded.hotkeys.cancel, dh.cancel);
     assert_eq!(loaded.hotkeys.reset_zoom, dh.reset_zoom);
     assert_eq!(
-        loaded.hotkeys.spotlight_radius_modifier, dh.spotlight_radius_modifier,
+        loaded.hotkeys.zoom_modifier, dh.zoom_modifier,
         "modifier-only binding merges from defaults"
     );
 

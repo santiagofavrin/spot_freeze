@@ -84,7 +84,7 @@ pub struct SettingsCallbacks {
     /// User pressed Save with a VALID, conflict-free settings copy. The window
     /// validates before calling: every gesture [`crate::hotkeys::gesture::HotkeyGesture::is_registerable`],
     /// no duplicate gestures across all rebindable entries (the modifier-only
-    /// spotlight radius modifier is checked separately against full gestures).
+    /// zoom modifier is checked separately against full gestures).
     ///
     /// The app MUST persist the copy ([`crate::settings::store::save`]) and
     /// re-register the global hotkeys.
@@ -103,10 +103,9 @@ pub struct SettingsCallbacks {
 /// * `parent`: the app's hidden message window (or `None`).
 /// * Rebindable entries: every field of [`crate::settings::model::HotkeySettings`]
 ///   — the full gestures (freeze toggle, mode keys, zoom hold, snip copy,
-///   cancel, reset zoom) as gesture rows and the two modifier-only chords
-///   (spotlight radius, zoom) as checkbox rows — plus the numeric
-///   radius/zoom/dim fields, the overlay color row, and the auto-start
-///   checkbox.
+///   cancel, reset zoom) as gesture rows and the modifier-only zoom chord as
+///   a checkbox row — plus the numeric radius/zoom/dim fields, the overlay
+///   color row, and the auto-start checkbox.
 ///
 /// Non-blocking: creates the window and returns immediately; the caller's
 /// message loop drives it. Must be called on the UI thread.
@@ -141,7 +140,6 @@ pub fn open(
         callbacks,
         gesture_edits: [HWND::default(); GESTURE_ROW_COUNT],
         rebind_buttons: [HWND::default(); GESTURE_ROW_COUNT],
-        radius_checks: [HWND::default(); MOD_CHECK_COUNT],
         zoom_checks: [HWND::default(); MOD_CHECK_COUNT],
         numeric_edits: [HWND::default(); NUMERIC_FIELD_COUNT],
         color_swatch: HWND::default(),
@@ -279,8 +277,8 @@ impl GestureField {
     }
 }
 
-/// The 4 modifier checkboxes of each modifier-only binding (spotlight radius
-/// modifier and zoom modifier), left to right.
+/// The 4 modifier checkboxes of the modifier-only zoom binding, left to
+/// right.
 const MOD_CHECK_COUNT: usize = 4;
 const MOD_CHECK_MODS: [Modifiers; MOD_CHECK_COUNT] = [
     Modifiers::CTRL,
@@ -622,28 +620,15 @@ fn validate_draft(draft: &SettingsDraft) -> Result<ParsedDraft, String> {
         ));
     }
 
-    // 3. The modifier-only bindings (spotlight radius, zoom) are checked
-    //    *separately* from full gestures: each must name at least one modifier,
-    //    and the two must differ from each other (holding the same chord would
-    //    resize the spotlight AND zoom on the same wheel scroll). Cross-domain
-    //    duplicates with full gestures are impossible by construction — a
-    //    `HotkeyGesture` always contains a non-modifier key, a bare `Modifiers`
-    //    never does — so no gesture/modifier pair can ever compare equal. (Note
-    //    this also means the out-of-box defaults `Ctrl` + `Ctrl+C` stay valid,
-    //    as intended.)
-    if draft.hotkeys.spotlight_radius_modifier.is_empty() {
-        return Err(
-            "Spotlight radius modifier: tick at least one of Ctrl / Alt / Shift / Win".to_string(),
-        );
-    }
+    // 3. The modifier-only binding (zoom) is checked *separately* from full
+    //    gestures: it must name at least one modifier — an EMPTY zoom
+    //    modifier would collide with the plain-wheel spotlight resize.
+    //    Cross-domain duplicates with full gestures are impossible by
+    //    construction — a `HotkeyGesture` always contains a non-modifier key,
+    //    a bare `Modifiers` never does — so no gesture/modifier pair can ever
+    //    compare equal.
     if draft.hotkeys.zoom_modifier.is_empty() {
         return Err("Zoom modifier: tick at least one of Ctrl / Alt / Shift / Win".to_string());
-    }
-    if draft.hotkeys.zoom_modifier == draft.hotkeys.spotlight_radius_modifier {
-        return Err(format!(
-            "Zoom modifier and spotlight radius modifier both use \"{}\"",
-            draft.hotkeys.zoom_modifier.to_display()
-        ));
     }
 
     // 4. Numeric fields.
@@ -688,7 +673,6 @@ fn card_brush() -> HBRUSH {
 
 // Child-control IDs (travel in the low word of WM_COMMAND's wParam).
 const ID_REBIND_BASE: i32 = 100; // + gesture row index
-const ID_RADIUS_CHECK_BASE: i32 = 300; // + modifier index
 const ID_ZOOM_CHECK_BASE: i32 = 340; // + modifier index
 const ID_NUMERIC_BASE: i32 = 400; // + numeric field index
 const ID_COLOR_HEX: i32 = 450;
@@ -708,7 +692,7 @@ const ID_CARD_SECONDARY: i32 = 602;
 // trace lives in `build_ui`; CLIENT_H is its final y + BOTTOM_PAD.
 const MARGIN: i32 = 20;
 const CLIENT_W: i32 = 640;
-const CLIENT_H: i32 = 754;
+const CLIENT_H: i32 = 724;
 const CARD_W: i32 = CLIENT_W - 2 * MARGIN;
 const CARD_PAD_X: i32 = 16;
 const CARD_PAD_TOP: i32 = 10;
@@ -788,7 +772,6 @@ struct SettingsWindowState {
     callbacks: SettingsCallbacks,
     gesture_edits: [HWND; GESTURE_ROW_COUNT],
     rebind_buttons: [HWND; GESTURE_ROW_COUNT],
-    radius_checks: [HWND; MOD_CHECK_COUNT],
     zoom_checks: [HWND; MOD_CHECK_COUNT],
     numeric_edits: [HWND; NUMERIC_FIELD_COUNT],
     color_swatch: HWND,
@@ -1159,8 +1142,6 @@ unsafe extern "system" fn settings_wnd_proc(
                 let id = GetDlgCtrlID(control);
                 let on_card = id == ID_CARD_CONTENT
                     || id == ID_CARD_SECONDARY
-                    || (ID_RADIUS_CHECK_BASE..ID_RADIUS_CHECK_BASE + MOD_CHECK_COUNT as i32)
-                        .contains(&id)
                     || (ID_ZOOM_CHECK_BASE..ID_ZOOM_CHECK_BASE + MOD_CHECK_COUNT as i32)
                         .contains(&id)
                     || id == ID_AUTO_START_CHECK;
@@ -1347,7 +1328,7 @@ unsafe fn build_ui(state: &mut SettingsWindowState) -> Result<()> {
         )?;
         y += CARD_TITLE_H + CARD_TITLE_GAP;
         create_label(
-            "Hold and scroll the wheel to resize the spotlight or zoom.",
+            "Hold and scroll the wheel to zoom. A plain scroll resizes the spotlight.",
             ID_CARD_SECONDARY,
             px(dpi, CONTENT_X),
             px(dpi, y),
@@ -1358,35 +1339,6 @@ unsafe fn build_ui(state: &mut SettingsWindowState) -> Result<()> {
             base_font,
         )?;
         y += SECONDARY_H + SMALL_GAP;
-
-        let row_y = px(dpi, y);
-        create_label(
-            "Spotlight radius",
-            ID_CARD_CONTENT,
-            px(dpi, CONTENT_X),
-            row_y,
-            px(dpi, MOD_LABEL_W),
-            px(dpi, ROW_H),
-            parent,
-            hinst,
-            base_font,
-        )?;
-        for (i, label) in MOD_CHECK_LABELS.iter().enumerate() {
-            state.radius_checks[i] = create_child(
-                WC_BUTTONW,
-                label,
-                checkbox_style,
-                px(dpi, CONTENT_X + MOD_LABEL_W + GAP + i as i32 * CHECK_PITCH),
-                row_y + px(dpi, (ROW_H - CHECK_H) / 2),
-                px(dpi, CHECK_W),
-                px(dpi, CHECK_H),
-                ID_RADIUS_CHECK_BASE + i as i32,
-                parent,
-                hinst,
-                base_font,
-            )?;
-        }
-        y += ROW_PITCH;
 
         let row_y = px(dpi, y);
         create_label(
@@ -1786,10 +1738,6 @@ fn seed_controls(state: &SettingsWindowState) {
             &field.get(&state.settings.hotkeys).to_display(),
         );
     }
-    seed_modifier_checks(
-        &state.radius_checks,
-        state.settings.hotkeys.spotlight_radius_modifier,
-    );
     seed_modifier_checks(&state.zoom_checks, state.settings.hotkeys.zoom_modifier);
     for (i, field) in NumericField::ALL.iter().enumerate() {
         set_text(state.numeric_edits[i], &field.seed_text(&state.settings));
@@ -1843,7 +1791,6 @@ fn checkbox_checked(hwnd: HWND) -> bool {
 fn collect_draft(state: &SettingsWindowState) -> SettingsDraft {
     let mut hotkeys = state.settings.hotkeys.clone();
 
-    hotkeys.spotlight_radius_modifier = read_modifier_checks(&state.radius_checks);
     hotkeys.zoom_modifier = read_modifier_checks(&state.zoom_checks);
 
     SettingsDraft {
@@ -2083,12 +2030,6 @@ unsafe fn on_command(state: *mut SettingsWindowState, wparam: WPARAM) {
                     end_capture_restore(state);
                     begin_capture(state, row);
                 }
-            }
-            i if (ID_RADIUS_CHECK_BASE..ID_RADIUS_CHECK_BASE + MOD_CHECK_COUNT as i32)
-                .contains(&i) =>
-            {
-                end_capture_restore(state);
-                refresh_validation(state);
             }
             i if (ID_ZOOM_CHECK_BASE..ID_ZOOM_CHECK_BASE + MOD_CHECK_COUNT as i32).contains(&i) => {
                 end_capture_restore(state);
@@ -2449,7 +2390,6 @@ mod tests {
             mode_spotlight: gesture(Modifiers::NONE, 0x71),
             mode_snip: gesture(Modifiers::NONE, 0x72),
             zoom_hold: gesture(Modifiers::NONE, 0x73),
-            spotlight_radius_modifier: Modifiers::CTRL,
             zoom_modifier: Modifiers::SHIFT,
             snip_copy: gesture(Modifiers::NONE, 0x74),
             cancel: gesture(Modifiers::NONE, 0x75),
@@ -2594,7 +2534,6 @@ mod tests {
                 mode_spotlight: gesture(Modifiers::NONE, 0x31),
                 mode_snip: gesture(Modifiers::NONE, 0x33),
                 zoom_hold: gesture(Modifiers::NONE, 0x32),
-                spotlight_radius_modifier: Modifiers::CTRL,
                 zoom_modifier: Modifiers::SHIFT,
                 snip_copy: gesture(Modifiers::CTRL, 0x43),
                 cancel: gesture(Modifiers::NONE, 0x1B),
@@ -2612,16 +2551,6 @@ mod tests {
     }
 
     #[test]
-    fn radius_modifier_may_share_modifiers_with_a_full_gesture() {
-        // Contract nuance: the modifier-only binding is checked *separately*;
-        // Ctrl (radius) + Ctrl+C (snip copy) are BOTH defaults and must pass.
-        let draft = default_like_draft();
-        assert_eq!(draft.hotkeys.spotlight_radius_modifier, Modifiers::CTRL);
-        assert_eq!(draft.hotkeys.snip_copy.modifiers, Modifiers::CTRL);
-        assert!(validate_draft(&draft).is_ok());
-    }
-
-    #[test]
     fn duplicate_full_gestures_are_rejected() {
         let mut draft = default_like_draft();
         draft.hotkeys.cancel = draft.hotkeys.freeze_toggle;
@@ -2636,21 +2565,6 @@ mod tests {
         let err = validate_draft(&draft).unwrap_err();
         assert!(err.contains("both use"), "unexpected error: {err}");
         assert!(err.contains("Zoom hold toggle"), "names the row: {err}");
-    }
-
-    #[test]
-    fn empty_radius_modifier_is_rejected() {
-        let mut draft = default_like_draft();
-        draft.hotkeys.spotlight_radius_modifier = Modifiers::NONE;
-        let err = validate_draft(&draft).unwrap_err();
-        assert!(err.contains("radius modifier"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn multi_modifier_radius_modifier_is_accepted() {
-        let mut draft = default_like_draft();
-        draft.hotkeys.spotlight_radius_modifier = Modifiers::CTRL | Modifiers::SHIFT;
-        assert!(validate_draft(&draft).is_ok());
     }
 
     #[test]
@@ -2672,32 +2586,10 @@ mod tests {
 
     #[test]
     fn zoom_modifier_may_share_modifiers_with_a_full_gesture() {
-        // Same contract nuance as the radius modifier: modifier-only bindings
-        // are checked separately from full gestures.
+        // Contract nuance: the modifier-only binding is checked separately
+        // from full gestures.
         let draft = default_like_draft();
         assert_eq!(draft.hotkeys.zoom_modifier, Modifiers::SHIFT);
-        assert!(validate_draft(&draft).is_ok());
-    }
-
-    #[test]
-    fn zoom_modifier_identical_to_radius_modifier_is_rejected() {
-        // The two modifier-only bindings must differ: the same chord would
-        // resize the spotlight AND zoom on one wheel scroll.
-        let mut draft = default_like_draft();
-        draft.hotkeys.zoom_modifier = draft.hotkeys.spotlight_radius_modifier;
-        let err = validate_draft(&draft).unwrap_err();
-        assert!(err.contains("both use"), "unexpected error: {err}");
-
-        // Multi-modifier sets compare as sets, not per-flag.
-        let mut draft = default_like_draft();
-        draft.hotkeys.spotlight_radius_modifier = Modifiers::CTRL | Modifiers::SHIFT;
-        draft.hotkeys.zoom_modifier = Modifiers::CTRL | Modifiers::SHIFT;
-        assert!(validate_draft(&draft).is_err());
-
-        // Overlapping but DISTINCT sets are fine.
-        let mut draft = default_like_draft();
-        draft.hotkeys.spotlight_radius_modifier = Modifiers::CTRL;
-        draft.hotkeys.zoom_modifier = Modifiers::CTRL | Modifiers::SHIFT;
         assert!(validate_draft(&draft).is_ok());
     }
 

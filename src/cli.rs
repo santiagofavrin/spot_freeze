@@ -2,7 +2,7 @@
 //! the terminal, nohup-style). Hand-rolled and dependency-free; the parser is
 //! pure and unit-tested. Any real work is dispatched back to `main`.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 /// What the invocation asks the process to do.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

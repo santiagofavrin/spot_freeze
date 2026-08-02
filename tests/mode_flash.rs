@@ -7,8 +7,8 @@
 //! seamless — no flash frames, no white repaint pops. What remains:
 //!
 //! - freeze entry runs the pure transition schedule (src/overlay/fade.rs:
-//!   8 steps + 1 settled endpoint, ease-out cubic, veil ramp + circle
-//!   60%<->100%);
+//!   8 steps + 1 settled endpoint, ease-out cubic, veil ramp over the
+//!   settled spotlight circle);
 //! - spotlight toggles, full mode switches (`set_mode`), capture entry (`C`),
 //!   and Esc from capture repaint exactly ONCE — instant by design;
 //! - NO frame presented on any monitor, at any point of the journey, ever

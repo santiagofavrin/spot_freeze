@@ -20,11 +20,11 @@ re-composited from reusable buffers — never a full repaint from scratch.
   are fully covered.
 - **Spotlight toggle** — a bright circle follows your cursor over the dimmed
   frozen screen; `S` turns it on and off (off = frozen but clear, no dim).
-  Hold `Ctrl` and scroll the mouse wheel to resize it.
+  Scroll the mouse wheel to resize it — no modifier needed.
 - **Zoom hold** — `F` toggles a persistent zoom layer at the last-used level
-  (1.0×–16.0×, ×1.25 per notch by default): magnify around the cursor with
-  the mouse wheel, on top of spotlight on or off. Zoom is also reachable from
-  anywhere: hold `Shift` and scroll.
+  (1.0×–16.0×, ×1.25 per notch by default), on top of spotlight on or off.
+  Magnify around the cursor with `Shift` + wheel from anywhere (it adds the
+  layer on the spot), or with the plain wheel while the spotlight is off.
 - **Capture mode** — `C` re-freezes the screen with the effects active at
   that moment (spotlight and/or zoom) baked in, then drag a rectangle and
   copy the *effected* pixels to the clipboard (see *Copying screenshots*
@@ -82,8 +82,8 @@ screen is frozen.
 | Capture mode | `C` | While frozen — re-freezes with the current effects baked in (persistent accent frame + lighter veil) |
 | Zoom hold toggle | `F` | While frozen — applies the last-used zoom level as a layer over spotlight on/off; toggle off to drop it |
 | Zoom in / out (from anywhere) | `Shift` + mouse wheel | While frozen — adds the zoom layer on the spot if it isn't active yet |
-| Zoom in / out (zoom hold active) | Mouse wheel | While frozen, whenever the zoom layer is on |
-| Resize spotlight circle | `Ctrl` + mouse wheel | While spotlight is active |
+| Zoom in / out (zoom hold active) | Mouse wheel | While frozen, when the zoom layer is on and spotlight is off |
+| Resize spotlight circle | Mouse wheel | While spotlight is active |
 | Reset zoom to 1.0× | `0` | While zoom is active |
 | Copy screenshot to clipboard | `Ctrl+C` | While frozen (see below) |
 | Unfreeze / exit capture | `Esc` | While frozen — see below |
@@ -98,8 +98,9 @@ pre-capture frozen view with its spotlight/zoom state restored (the capture
 re-freeze is dropped). `Ctrl+C` copies and closes from anywhere.
 
 Freezing and unfreezing play a quick ease-out animation (200 ms) instead of
-an abrupt cut: the dim veil and spotlight circle ramp in together over the
-live screen, and the exit is the exact time-reverse. On Wayland the unfreeze
+an abrupt cut: the dim veil ramps in over the live screen (the spotlight
+circle is at its full size from the first frame — it never grows or
+shrinks), and the exit is the exact time-reverse. On Wayland the unfreeze
 blends back to the freeze-time capture, so anything that changed on screen
 while frozen reappears with a small pop as the overlay closes. Exiting
 capture mode and copying with `Ctrl+C` stay instant — no transition there.
@@ -120,10 +121,11 @@ Spotlight and zoom are **layers**; capture is the only real mode switch:
   returns to the pre-capture view (spotlight on/off and zoom restored);
   pressing `C` again while in capture just clears the selection.
 
-The wheel follows the layers: `Ctrl`+wheel resizes the spotlight whenever it
+The wheel follows the layers: a plain wheel resizes the spotlight whenever it
 is active, `Shift`+wheel zooms from anywhere (implicitly adding the zoom
-layer when it isn't active yet), and a plain wheel zooms whenever the zoom
-layer is on.
+layer when it isn't active yet), and a plain wheel zooms when the zoom layer
+is on and the spotlight is off (with both layers on, the plain wheel resizes
+the spotlight and `Shift`+wheel zooms).
 
 **Transitions and legend:** mode changes are seamless and immediate — no
 animation, border flashes, or white pops when the spotlight turns on or off.
@@ -246,9 +248,8 @@ Example `spotfreeze.jsonc` (excerpt):
     "mode_spotlight": "S",
     "mode_snip": "C",
     // Modifier held + wheel to zoom from ANY mode (default: "Shift").
+    // A plain wheel (no modifier) resizes the spotlight while it is active.
     "zoom_modifier": "Shift",
-    // Modifier held + wheel to resize the spotlight (default: "Ctrl").
-    "spotlight_radius_modifier": "Ctrl",
   },
   "overlay": {
     "dim_opacity": 160,     // 0 = invisible veil, 255 = solid

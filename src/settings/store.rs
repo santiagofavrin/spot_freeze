@@ -26,10 +26,6 @@ const KEY_COMMENTS: &[(&str, &str)] = &[
         "global freeze hotkey (Windows/macOS); moot on Hyprland — bind `spotfreeze toggle` in hyprland.conf instead",
     ),
     (
-        "spotlight_radius_modifier",
-        "modifier-only binding: key HELD while scrolling the wheel to resize the circle (not a full hotkey)",
-    ),
-    (
         "zoom_modifier",
         "modifier-only binding: key HELD while scrolling the wheel to zoom from any mode (not a full hotkey)",
     ),

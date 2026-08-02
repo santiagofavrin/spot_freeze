@@ -15,12 +15,12 @@
 //!   Spotlight toggles and full mode switches repaint once, instantly.
 //! - **Transitions**: freeze/unfreeze runs on the pure step schedule in
 //!   [`crate::overlay::fade`] (200 ms, ease-out cubic, <= 240 ms hard cap).
-//!   Freeze fades the overlay IN while the spotlight circle expands from 60%
-//!   to 100% of its radius; a full unfreeze mirrors (veil lifts, circle
-//!   shrinks). Where the surface supports a constant window alpha
-//!   ([`OverlaySurface::supports_alpha`] — Windows layered windows, macOS)
-//!   the freeze/unfreeze fades are per-step alpha updates over frames
-//!   re-composed with the shrinking/growing circle; elsewhere (Wayland) the
+//!   Freeze fades the overlay IN with the spotlight circle already at its
+//!   settled radius; a full unfreeze mirrors (the veil lifts). The circle
+//!   never grows or shrinks. Where the surface supports a constant window
+//!   alpha ([`OverlaySurface::supports_alpha`] — Windows layered windows,
+//!   macOS) the freeze/unfreeze fades are per-step alpha updates over the
+//!   settled frames; elsewhere (Wayland) the
 //!   entry presents re-composed frames whose veil ramps with the step alpha,
 //!   and the exit blends toward the original capture
 //!   ([`crate::overlay::composite::blend_frames`]) into the preallocated
@@ -79,7 +79,7 @@ use crate::overlay::composite::{
     virtual_to_local, zoom_resample,
 };
 use crate::overlay::events::{OverlayEvent, OverlayEventSink};
-use crate::overlay::fade::{FadeClock, FadeDirection, fade_step, spotlight_radius_scale};
+use crate::overlay::fade::{FadeClock, FadeDirection, fade_step};
 use crate::overlay::legend::Legend;
 use crate::overlay::modes::{ModeEffect, ModeKind, ModeParams, ModeStack, SnipSelection};
 use crate::platform::{OverlaySurface, PlatformServices, SurfaceFactory};
@@ -217,9 +217,9 @@ impl OverlayController {
 
     /// Capture all monitors ONCE via `capturer`, create one overlay surface
     /// per monitor via `surfaces`, enter Spotlight mode, and run the entry
-    /// transition (see [`crate::overlay::fade`]): the veil eases in while the
-    /// spotlight circle expands from 60% to its full radius. Cursor seeding
-    /// and clipboard copies go through `services`.
+    /// transition (see [`crate::overlay::fade`]): the veil eases in with the
+    /// spotlight circle already at its full radius. Cursor seeding and
+    /// clipboard copies go through `services`.
     ///
     /// Settings are SNAPSHOT at freeze time: changing hotkeys/radius/zoom while
     /// frozen takes effect on the next freeze. No-op when already frozen.
@@ -290,8 +290,8 @@ impl OverlayController {
         };
 
         // Spotlight is the default mode (product spec). Seed the live cursor
-        // position, then run the entry transition: the veil eases in and the
-        // circle expands to its full radius (freeze == spotlight activation).
+        // position, then run the entry transition: the veil eases in over the
+        // settled circle (freeze == spotlight activation).
         seed_cursor(&mut state, services);
         fade_in(&mut state, &self.clock);
 
@@ -567,7 +567,6 @@ fn mode_params(settings: &AppSettings) -> ModeParams {
     );
     ModeParams {
         spotlight_radius: settings.spotlight.default_radius,
-        radius_modifier: settings.hotkeys.spotlight_radius_modifier,
         zoom_step,
         zoom_min,
         zoom_max,
@@ -710,9 +709,6 @@ struct TransitionPlan {
     /// Equal values = a constant veil (the window-alpha and blend carriers).
     dim_at_0: u8,
     dim_at_255: u8,
-    /// Scale the spotlight circle 60%<->100% with the step alpha
-    /// ([`spotlight_radius_scale`]).
-    animate_radius: bool,
     /// Scale the legend by the step alpha too (freeze entry on blend
     /// surfaces, so the pill fades in with the veil instead of popping).
     fade_legend: bool,
@@ -736,28 +732,23 @@ fn run_transition(
     while let Some(step) = fade_step(clock.now().saturating_sub(start), direction) {
         let a = step.alpha;
         let dim = lerp_u8(plan.dim_at_0, plan.dim_at_255, a);
-        let scale = if plan.animate_radius {
-            spotlight_radius_scale(a)
-        } else {
-            1000
-        };
         let legend_alpha = if plan.fade_legend { a } else { 255 };
         for m in 0..state.windows.len() {
             match plan.carrier {
                 Carrier::WindowAlpha => {
-                    compose_frame_anim(state, m, Some(dim), scale, legend_alpha);
+                    compose_frame_anim(state, m, Some(dim), legend_alpha);
                     let _ = state.windows[m].set_alpha(a);
                     present_or_defer(state, m, None);
                 }
                 Carrier::VeilRamp => {
                     if state.windows[m].can_present() {
-                        compose_frame_anim(state, m, Some(dim), scale, legend_alpha);
+                        compose_frame_anim(state, m, Some(dim), legend_alpha);
                         present_or_defer(state, m, None);
                     }
                 }
                 Carrier::BlendToOriginal => {
                     if state.windows[m].can_present() {
-                        compose_frame_anim(state, m, Some(dim), scale, legend_alpha);
+                        compose_frame_anim(state, m, Some(dim), legend_alpha);
                         blend_frames(
                             &state.originals[m],
                             &state.frames[m],
@@ -773,13 +764,12 @@ fn run_transition(
     }
 }
 
-/// Freeze entry transition: the veil eases in while the spotlight circle
-/// expands from 60% to 100% of its radius (freeze == spotlight activation).
-/// Constant-alpha surfaces start fully transparent and crossfade via
-/// `set_alpha` over frames re-composed with the growing circle; blend
-/// surfaces present re-composed frames whose veil ramps with the step alpha
-/// (at alpha 0 the frame IS the original capture — what the live screen just
-/// showed — so the overlay appears seamlessly either way).
+/// Freeze entry transition: the veil eases in with the spotlight circle
+/// already at its settled radius (it never grows). Constant-alpha surfaces
+/// start fully transparent and crossfade via `set_alpha` over the settled
+/// frames; blend surfaces present re-composed frames whose veil ramps with
+/// the step alpha (at alpha 0 the frame IS the original capture — what the
+/// live screen just showed — so the overlay appears seamlessly either way).
 fn fade_in(state: &mut FreezeState, clock: &FadeClock) {
     let use_alpha = state.windows.iter().all(|w| w.supports_alpha());
     let dim = state.settings.overlay.dim_opacity;
@@ -792,7 +782,6 @@ fn fade_in(state: &mut FreezeState, clock: &FadeClock) {
         TransitionPlan {
             dim_at_0: dim,
             dim_at_255: dim,
-            animate_radius: true,
             fade_legend: false,
             carrier: Carrier::WindowAlpha,
         }
@@ -800,7 +789,6 @@ fn fade_in(state: &mut FreezeState, clock: &FadeClock) {
         TransitionPlan {
             dim_at_0: 0,
             dim_at_255: dim,
-            animate_radius: true,
             fade_legend: true,
             carrier: Carrier::VeilRamp,
         }
@@ -819,13 +807,12 @@ fn fade_in(state: &mut FreezeState, clock: &FadeClock) {
 }
 
 /// Full-unfreeze fade-OUT on the taken state (the windows die right after):
-/// the mirror of [`fade_in`] — the veil lifts while the circle shrinks back
-/// to 60% — down to the exact transparent/original endpoint. The blend path's
-/// full-frame presents supersede every repaint deferred so far, so the
-/// pending slots are dropped up front.
+/// the mirror of [`fade_in`] — the veil lifts over the settled frame (the
+/// spotlight circle keeps its size) — down to the exact transparent/original
+/// endpoint. The blend path's full-frame presents supersede every repaint
+/// deferred so far, so the pending slots are dropped up front.
 fn fade_out(state: &mut FreezeState, clock: &FadeClock) {
     let use_alpha = state.windows.iter().all(|w| w.supports_alpha());
-    let animate_radius = state.modes.is_active(ModeKind::Spotlight);
     let (dim, _) = veil_for(
         state.modes.in_capture(),
         state.modes.any_active(),
@@ -834,7 +821,6 @@ fn fade_out(state: &mut FreezeState, clock: &FadeClock) {
     let plan = TransitionPlan {
         dim_at_0: dim,
         dim_at_255: dim,
-        animate_radius,
         fade_legend: false,
         carrier: if use_alpha {
             Carrier::WindowAlpha
@@ -888,36 +874,23 @@ fn lerp_u8(from: u8, to: u8, alpha: u8) -> u8 {
     ((from as u32 * (255 - alpha as u32) + to as u32 * alpha as u32 + 127) / 255) as u8
 }
 
-/// Spotlight radius at `scale_pm` permille of the settled radius, rounded to
-/// the nearest pixel.
-fn scale_radius(radius: u32, scale_pm: u32) -> u32 {
-    ((radius as u64 * scale_pm as u64 + 500) / 1000) as u32
-}
-
 /// Compose monitor `m`'s frame at its settled state (no transition
-/// overrides): [`compose_frame_anim`] with the current veil, full radius,
+/// overrides): [`compose_frame_anim`] with the current veil and a
 /// full-strength legend.
 fn compose_frame_for(state: &mut FreezeState, m: usize) {
-    compose_frame_anim(state, m, None, 1000, 255);
+    compose_frame_anim(state, m, None, 255);
 }
 
 /// Compose monitor `m`'s frame: build the
 /// [`crate::overlay::composite::RenderState`] from the active layers, apply
-/// the transition overrides (`dim` forces the veil alpha, `radius_scale_pm`
-/// scales the spotlight circle, `legend_alpha` scales the legend), run the
-/// shared pipeline (zoom base → colored darken → spotlight hole → snip
-/// selection → capture indicator) into the persistent frame buffer, and paint
-/// the mode legend on top. The veil comes from [`veil_for`]: capture mode
-/// gets the snip veil, other active layer sets the spotlight veil, and with
-/// NO active layer the veil is dropped entirely (the frozen screen shows the
-/// original capture).
-fn compose_frame_anim(
-    state: &mut FreezeState,
-    m: usize,
-    dim: Option<u8>,
-    radius_scale_pm: u32,
-    legend_alpha: u8,
-) {
+/// the transition overrides (`dim` forces the veil alpha, `legend_alpha`
+/// scales the legend), run the shared pipeline (zoom base → colored darken →
+/// spotlight hole → snip selection → capture indicator) into the persistent
+/// frame buffer, and paint the mode legend on top. The veil comes from
+/// [`veil_for`]: capture mode gets the snip veil, other active layer sets the
+/// spotlight veil, and with NO active layer the veil is dropped entirely (the
+/// frozen screen shows the original capture).
+fn compose_frame_anim(state: &mut FreezeState, m: usize, dim: Option<u8>, legend_alpha: u8) {
     // Split borrows across disjoint fields: modes (read) builds the render
     // state, originals[m] (read) + frames[m] (write) are the pixel buffers,
     // settings (read) supplies the veil parameters, legend (read) the pill.
@@ -929,12 +902,7 @@ fn compose_frame_anim(
         legend,
         ..
     } = state;
-    let mut render_state = modes.render_state(m);
-    if radius_scale_pm < 1000
-        && let Some((center, radius)) = render_state.spotlight
-    {
-        render_state.spotlight = Some((center, scale_radius(radius, radius_scale_pm)));
-    }
+    let render_state = modes.render_state(m);
     let viewport = Rect::new(0, 0, originals[m].width, originals[m].height);
     let (base_dim, veil_color) = veil_for(modes.in_capture(), modes.any_active(), settings);
     compose_frame(
@@ -1578,14 +1546,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn scale_radius_rounds_to_nearest_pixel() {
-        assert_eq!(scale_radius(150, 1000), 150);
-        assert_eq!(scale_radius(150, 600), 90);
-        assert_eq!(scale_radius(150, 0), 0);
-        assert_eq!(scale_radius(5, 500), 3, "2.5 rounds to nearest");
-    }
-
     // ---- mode_params ----
 
     #[test]
@@ -1593,7 +1553,6 @@ mod tests {
         let s = AppSettings::default();
         let p = mode_params(&s);
         assert_eq!(p.spotlight_radius, s.spotlight.default_radius);
-        assert_eq!(p.radius_modifier, s.hotkeys.spotlight_radius_modifier);
         assert_eq!(p.zoom_modifier, s.hotkeys.zoom_modifier);
         assert_eq!(p.zoom_step, s.zoom.step_factor);
         assert_eq!(p.zoom_min, s.zoom.min);
@@ -2296,17 +2255,14 @@ mod tests {
             p[0].pixels, original.pixels,
             "alpha 0 == the original capture (the live screen's pixels)"
         );
-        // Each step composes the veil ramp + growing circle for the
-        // schedule's alpha.
+        // Each step composes the veil ramp for the schedule's alpha; the
+        // spotlight circle is at its settled radius throughout.
         for k in 1..FADE_STEPS {
             let a = fade_alpha(k * FADE_STEP_MS, FadeDirection::In);
-            let expect = step_frame(
-                lerp_u8(0, 160, a),
-                scale_radius(10, spotlight_radius_scale(a)),
-            );
+            let expect = step_frame(lerp_u8(0, 160, a), 10);
             assert_eq!(p[k as usize].pixels, expect.pixels, "fade step {k}");
         }
-        // The endpoint is the settled frame (full veil, full radius).
+        // The endpoint is the settled frame (full veil).
         assert_eq!(p[p.len() - 1].pixels, settled_frame(10).pixels);
     }
 
@@ -2326,14 +2282,14 @@ mod tests {
             expect,
             "every monitor fades in lockstep"
         );
-        // The alpha path never blends pixels: one present per step (full
-        // veil, growing circle) plus the settled endpoint.
+        // The alpha path never blends pixels: one present per step (the
+        // settled frame) plus the settled endpoint.
         let p = f.presents[0].borrow();
         assert_eq!(p.len(), TRANSITION_PRESENTS);
         assert_eq!(
             p[0].pixels,
-            settled_frame(scale_radius(10, spotlight_radius_scale(0))).pixels,
-            "step 0: full veil, 60% circle"
+            settled_frame(10).pixels,
+            "step 0: full veil, settled circle"
         );
         assert_eq!(p[p.len() - 1].pixels, settled_frame(10).pixels);
     }
@@ -2348,11 +2304,11 @@ mod tests {
         let fade = &p[before..];
         assert_eq!(fade.len(), TRANSITION_PRESENTS, "steps + exact endpoint");
         let original = make_buf(32, 32, coord_pattern);
-        // Each step blends the original toward the frame composed with the
-        // shrinking circle at the schedule's alpha.
+        // Each step blends the original toward the settled frame at the
+        // schedule's alpha (the spotlight circle keeps its size).
         for k in 0..FADE_STEPS {
             let a = fade_alpha(k * FADE_STEP_MS, FadeDirection::Out);
-            let target = step_frame(160, scale_radius(10, spotlight_radius_scale(a)));
+            let target = step_frame(160, 10);
             let mut expect = DibBuffer::new(32, 32);
             blend_frames(&original, &target, &mut expect, a);
             assert_eq!(fade[k as usize].pixels, expect.pixels, "fade-out step {k}");
@@ -2376,7 +2332,7 @@ mod tests {
         expect.push(0); // exact transparent endpoint before teardown
         assert_eq!(*f.alphas[0].borrow(), expect);
         assert!(!f.controller.is_frozen());
-        // One present per step (the shrinking circle is re-composed); no
+        // One present per step (the settled frame is re-composed); no
         // endpoint present — the windows die right after.
         assert_eq!(f.presents[0].borrow().len() - before, FADE_STEPS as usize);
     }
@@ -2593,17 +2549,14 @@ mod tests {
             p[0].pixels, original.pixels,
             "step 0: no pill yet (alpha 0)"
         );
-        // Every step: veil ramp + growing circle + the pill at the step's
-        // alpha (it fades in WITH the veil, never pops).
+        // Every step: veil ramp + the pill at the step's alpha (it fades in
+        // WITH the veil, never pops); the circle stays at its settled radius.
         let legend = Legend::from_hotkeys(&AppSettings::default().hotkeys);
         for k in 1..FADE_STEPS {
             let a = fade_alpha(k * FADE_STEP_MS, FadeDirection::In);
             let mut expect = DibBuffer::new(800, 160);
             let state = RenderState {
-                spotlight: Some((
-                    Point::new(400, 100),
-                    scale_radius(10, spotlight_radius_scale(a)),
-                )),
+                spotlight: Some((Point::new(400, 100), 10)),
                 ..RenderState::default()
             };
             compose_frame(

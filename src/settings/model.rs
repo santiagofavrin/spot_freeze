@@ -126,10 +126,6 @@ pub struct HotkeySettings {
     /// While frozen: toggle the zoom-hold layer at the last-used zoom level.
     /// Default: `F`.
     pub zoom_hold: HotkeyGesture,
-    /// Modifier HELD while scrolling the mouse wheel to resize the spotlight
-    /// circle. This is a modifier-only binding (e.g. bare `Ctrl`), not a full
-    /// gesture. Default: `Ctrl`.
-    pub spotlight_radius_modifier: Modifiers,
     /// Modifier HELD while scrolling the mouse wheel to zoom from ANY state,
     /// implicitly activating the zoom-hold layer when it is inactive. This is
     /// a modifier-only binding (e.g. bare `Shift`), not a full gesture.
@@ -153,7 +149,6 @@ impl Default for HotkeySettings {
             mode_spotlight: HotkeyGesture::parse("S").unwrap(),
             mode_snip: HotkeyGesture::parse("C").unwrap(),
             zoom_hold: HotkeyGesture::parse("F").unwrap(),
-            spotlight_radius_modifier: Modifiers::CTRL,
             zoom_modifier: Modifiers::SHIFT,
             snip_copy: HotkeyGesture::parse("Ctrl+C").unwrap(),
             cancel: HotkeyGesture::parse("Esc").unwrap(),
@@ -253,7 +248,6 @@ mod tests {
         assert_eq!(d.mode_spotlight, gesture("S"));
         assert_eq!(d.mode_snip, gesture("C"));
         assert_eq!(d.zoom_hold, gesture("F"));
-        assert_eq!(d.spotlight_radius_modifier, Modifiers::CTRL);
         assert_eq!(d.zoom_modifier, Modifiers::SHIFT);
         assert_eq!(d.snip_copy, gesture("Ctrl+C"));
         assert_eq!(d.cancel, gesture("Esc"));

@@ -24,14 +24,17 @@
 //!   zoom factor ([`ModeStack::last_zoom`], synced whenever the layer is
 //!   toggled off); `0` ([`ModeStack::reset_view`]) returns the layer to 1.0.
 //! - **Wheel routing matrix** ([`ModeStack::on_wheel`]):
-//!   * spotlight is offered EVERY wheel event while active; the layer itself
-//!     enforces its radius-modifier gate (default Ctrl) and keeps the
-//!     sub-notch accumulator;
+//!   * the PLAIN wheel (no modifiers held) resizes the spotlight while its
+//!     layer is active — no modifier needed; the layer keeps the sub-notch
+//!     accumulator;
 //!   * the configured zoom-modifier chord (default Shift+wheel) zooms from ANY
 //!     state — IMPLICITLY ACTIVATING the zoom-hold layer at the last-used
 //!     factor (additive, no transition animation) when it isn't active yet;
-//!   * the PLAIN wheel (no modifiers) zooms whenever the zoom layer is active;
-//!   * both may respond to the same event (their effects merge).
+//!   * the PLAIN wheel zooms when the zoom layer is active and the spotlight
+//!     layer is NOT (an active spotlight owns the plain wheel; the zoom chord
+//!     still zooms);
+//!   * a chord matching several routes (possible only via a hand-edited empty
+//!     zoom modifier) reaches every matching layer; their effects merge.
 //! - **Mouse move** feeds every active cursor-tracking layer (spotlight hole
 //!   follows, zoom focus recenters, an in-progress snip drag extends).
 //! - **Left drag** feeds the snip layer when active.
@@ -110,9 +113,6 @@ pub struct SnipSelection {
 pub struct ModeParams {
     /// Spotlight circle radius at activation (settings: `spotlight.default_radius`).
     pub spotlight_radius: u32,
-    /// Modifier held while scrolling to resize the spotlight circle
-    /// (settings: `hotkeys.spotlight_radius_modifier`, default Ctrl).
-    pub radius_modifier: Modifiers,
     /// Zoom wheel step factor (> 1.0; settings: `zoom.step_factor`).
     pub zoom_step: f32,
     /// Minimum zoom (>= 1.0; settings: `zoom.min`).
@@ -159,10 +159,7 @@ impl ModeStack {
     /// spec) and the zoom hold starts at 1.0.
     pub fn new(params: ModeParams) -> Self {
         Self {
-            spotlight: Some(SpotlightMode::new(
-                params.spotlight_radius,
-                params.radius_modifier,
-            )),
+            spotlight: Some(SpotlightMode::new(params.spotlight_radius)),
             zoom: None,
             snip: None,
             last_zoom: 1.0,
@@ -269,10 +266,7 @@ impl ModeStack {
     fn activate(&mut self, kind: ModeKind) {
         match kind {
             ModeKind::Spotlight => {
-                self.spotlight = Some(SpotlightMode::new(
-                    self.params.spotlight_radius,
-                    self.params.radius_modifier,
-                ));
+                self.spotlight = Some(SpotlightMode::new(self.params.spotlight_radius));
             }
             ModeKind::Zoom => {
                 self.zoom = Some(ZoomMode::with_zoom(
@@ -349,17 +343,19 @@ impl ModeStack {
 
     /// Wheel routing matrix (see module docs):
     ///
-    /// - spotlight is offered every wheel event while active — the layer
-    ///   enforces the radius-modifier gate itself (and only banks sub-notch
-    ///   deltas while the modifier is held);
+    /// - the PLAIN wheel (no modifiers held) resizes the spotlight while its
+    ///   layer is active — the spotlight OWNS the plain wheel, so with both
+    ///   layers active the zoom hold is driven by the zoom chord instead;
     /// - the configured zoom-modifier chord (default Shift+wheel) reaches the
     ///   zoom-hold layer from ANY state — IMPLICITLY ACTIVATING it at the
-    ///   last-used factor when it isn't active yet;
-    /// - the PLAIN wheel (no modifiers) reaches the zoom layer whenever it is
-    ///   active.
+    ///   last-used factor when it isn't active yet — and never resizes the
+    ///   spotlight;
+    /// - the PLAIN wheel reaches the zoom layer when it is active and the
+    ///   spotlight layer is not.
     ///
-    /// Both layers may answer the same event (e.g. Ctrl+Shift with default
-    /// bindings); their repaint effects merge.
+    /// Several layers may answer the same event only when the zoom chord
+    /// matches the plain wheel (a hand-edited empty zoom modifier); their
+    /// repaint effects merge.
     pub fn on_wheel(
         &mut self,
         monitor: usize,
@@ -368,8 +364,10 @@ impl ModeStack {
         modifiers: Modifiers,
     ) -> ModeEffect {
         let mut effect = ModeEffect::none();
-        if let Some(spot) = self.spotlight.as_mut() {
-            effect.absorb(spot.on_wheel(monitor, at, delta, modifiers));
+        let plain = modifiers.is_empty();
+        let spotlight_resize = plain && self.spotlight.is_some();
+        if plain && let Some(spot) = self.spotlight.as_mut() {
+            effect.absorb(spot.on_wheel(monitor, at, delta));
         }
         let zoom_chord = modifiers.contains(self.params.zoom_modifier);
         // Implicit activation: the zoom-modifier chord adds the zoom-hold
@@ -382,7 +380,7 @@ impl ModeStack {
         if zoom_chord && self.zoom.is_none() {
             self.add_mode(ModeKind::Zoom);
         }
-        let plain_zoom = modifiers.is_empty() && self.zoom.is_some();
+        let plain_zoom = plain && !spotlight_resize && self.zoom.is_some();
         if let Some(zoom) = self.zoom.as_mut()
             && (zoom_chord || plain_zoom)
         {
@@ -465,12 +463,11 @@ impl ModeStack {
 mod tests {
     use super::*;
 
-    /// Default-like params: radius 100, Ctrl radius modifier, Shift zoom
-    /// modifier, zoom step 1.25 in [1.0, 100.0].
+    /// Default-like params: radius 100, Shift zoom modifier, zoom step 1.25
+    /// in [1.0, 100.0].
     fn params() -> ModeParams {
         ModeParams {
             spotlight_radius: 100,
-            radius_modifier: Modifiers::CTRL,
             zoom_step: 1.25,
             zoom_min: 1.0,
             zoom_max: 100.0,
@@ -546,7 +543,7 @@ mod tests {
     fn set_mode_resets_all_layers_and_makes_kind_the_only_active_one() {
         let mut stack = ModeStack::new(params());
         // Dirty every layer: radius changed, zoom engaged, selection drawn.
-        stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE); // radius 110
         stack.add_mode(ModeKind::Zoom);
         stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT); // zoom 1.25
         stack.set_mode(ModeKind::Snip); // capture: spotlight/zoom stashed
@@ -578,7 +575,7 @@ mod tests {
     fn set_mode_same_kind_still_resets_state() {
         // Spec: a plain press is a FULL SWITCH — no same-kind exemption.
         let mut stack = ModeStack::new(params());
-        stack.on_wheel(0, pt(0, 0), 120, Modifiers::CTRL); // radius 110
+        stack.on_wheel(0, pt(0, 0), 120, Modifiers::NONE); // radius 110
         stack.set_mode(ModeKind::Spotlight);
         assert_eq!(stack.spotlight().unwrap().radius(), 100, "radius reset");
     }
@@ -586,7 +583,7 @@ mod tests {
     #[test]
     fn add_mode_preserves_existing_layers() {
         let mut stack = ModeStack::new(params());
-        stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE); // radius 110
 
         stack.add_mode(ModeKind::Zoom);
         assert_eq!(
@@ -631,7 +628,7 @@ mod tests {
     #[test]
     fn toggle_on_reactivates_spotlight_with_fresh_state() {
         let mut stack = ModeStack::new(params());
-        stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE); // radius 110
         stack.toggle_mode(ModeKind::Spotlight);
         stack.toggle_mode(ModeKind::Spotlight);
         assert!(stack.is_active(ModeKind::Spotlight));
@@ -701,19 +698,21 @@ mod tests {
     // (active layers) x (held modifiers) -> which layer responds.
 
     #[test]
-    fn wheel_spotlight_only_ctrl_resizes_plain_wheel_stays_inert() {
+    fn wheel_spotlight_only_plain_wheel_resizes_modifier_chords_stay_inert() {
         let mut stack = ModeStack::new(params());
-        let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL);
+        let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE);
         assert_eq!(stack.spotlight().unwrap().radius(), 110);
         assert!(!e.repaint.is_empty(), "resize reports a repaint");
-
-        let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE);
-        assert_eq!(e, ModeEffect::none(), "plain wheel does not resize");
-        assert_eq!(stack.spotlight().unwrap().radius(), 110);
         assert!(
             !stack.is_active(ModeKind::Zoom),
-            "plain wheel must NOT activate the zoom layer"
+            "the plain wheel must NOT activate the zoom layer"
         );
+
+        // A chord that is neither plain nor the zoom modifier does nothing.
+        let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL);
+        assert_eq!(e, ModeEffect::none(), "Ctrl+wheel does not resize");
+        assert_eq!(stack.spotlight().unwrap().radius(), 110);
+        assert!(!stack.is_active(ModeKind::Zoom));
     }
 
     #[test]
@@ -724,7 +723,7 @@ mod tests {
         // press needed first. (No transition animation is involved at this
         // level: animations live in the controller's key-driven paths.)
         let mut stack = ModeStack::new(params());
-        stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110 first
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE); // radius 110 first
         assert!(!stack.is_active(ModeKind::Zoom), "pristine: no zoom layer");
 
         let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT);
@@ -737,7 +736,7 @@ mod tests {
         assert_eq!(
             stack.spotlight().unwrap().radius(),
             110,
-            "additive: spotlight preserved (Shift is not the radius modifier)"
+            "additive: spotlight preserved (the chord bypasses the resize)"
         );
         // The wheel event's position becomes the fresh layer's focus.
         let zoom = stack.zoom().unwrap();
@@ -745,75 +744,69 @@ mod tests {
     }
 
     #[test]
-    fn wheel_implicit_zoom_activation_then_plain_wheel_zooms() {
-        // Follow-up of the implicit-activation rule: once the zoom layer is
-        // active, the plain wheel zooms.
+    fn wheel_after_implicit_zoom_activation_plain_wheel_resizes_the_spotlight() {
+        // Once the chord implicitly added the zoom layer, BOTH layers are
+        // active: the plain wheel belongs to the spotlight, the chord keeps
+        // zooming.
         let mut stack = ModeStack::new(params());
         stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT); // activates + 1.25
         let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE);
-        assert!(!e.repaint.is_empty(), "plain wheel now reaches zoom");
-        assert_zoom_near(&stack, 1.5625);
-        // ...and Ctrl+wheel still drives the spotlight radius only.
-        let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL);
+        assert!(!e.repaint.is_empty(), "plain wheel reaches the spotlight");
         assert_eq!(stack.spotlight().unwrap().radius(), 110);
+        assert_zoom_near(&stack, 1.25);
+        let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT);
+        assert!(!e.repaint.is_empty(), "zoom chord keeps zooming");
         assert_zoom_near(&stack, 1.5625);
-        assert!(!e.repaint.is_empty());
+        assert_eq!(stack.spotlight().unwrap().radius(), 110);
     }
 
     #[test]
-    fn wheel_zoom_active_plain_wheel_and_chord_both_zoom() {
+    fn wheel_zoom_only_plain_wheel_and_chord_both_zoom() {
         let mut stack = ModeStack::new(params());
-        stack.add_mode(ModeKind::Zoom); // zoom hold active
+        stack.set_mode(ModeKind::Zoom); // zoom only: no spotlight layer
         let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE);
         assert!(
             !e.repaint.is_empty(),
-            "plain wheel reaches the active zoom layer"
+            "plain wheel reaches the active zoom layer (spotlight off)"
         );
         assert_zoom_near(&stack, 1.25);
         // ...and the zoom chord reaches it too, from the same state.
         let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT);
         assert!(!e.repaint.is_empty(), "zoom chord always reaches zoom");
         assert_zoom_near(&stack, 1.5625);
-        assert_eq!(
-            stack.spotlight().unwrap().radius(),
-            100,
-            "spotlight untouched by both wheels"
-        );
     }
 
     #[test]
-    fn wheel_ctrl_with_zoom_active_only_resizes_spotlight() {
+    fn wheel_both_layers_active_plain_wheel_resizes_spotlight_only() {
         let mut stack = ModeStack::new(params());
         stack.add_mode(ModeKind::Zoom); // both layers active
-        let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL);
+        let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE);
         assert_eq!(stack.spotlight().unwrap().radius(), 110);
         assert_eq!(
             stack.zoom().unwrap().zoom(),
             1.0,
-            "Ctrl is not the zoom modifier"
+            "an active spotlight owns the plain wheel"
         );
         assert!(!e.repaint.is_empty());
     }
 
     #[test]
-    fn wheel_ctrl_shift_reaches_both_layers() {
+    fn wheel_chord_with_extra_modifiers_zooms_and_never_resizes() {
         let mut stack = ModeStack::new(params());
         stack.add_mode(ModeKind::Zoom);
         let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL | Modifiers::SHIFT);
-        assert_eq!(stack.spotlight().unwrap().radius(), 110, "Ctrl gate passed");
+        assert_eq!(stack.spotlight().unwrap().radius(), 100, "no resize");
         assert_zoom_near(&stack, 1.25);
-        // Spotlight's circle repaint (dirty) then zoom's full repaint, merged.
-        assert_eq!(e.repaint.len(), 2, "both layers answered the same event");
-        assert!(e.repaint[0].1.is_some(), "spotlight dirty region first");
-        assert_eq!(e.repaint[1], (0, None), "zoom full repaint second");
+        // Only the zoom layer answered: one full repaint.
+        assert_eq!(e.repaint, vec![(0, None)], "zoom full repaint only");
     }
 
     #[test]
-    fn wheel_zoom_only_switch_ctrl_does_nothing() {
+    fn wheel_zoom_only_unbound_chord_does_nothing() {
         let mut stack = ModeStack::new(params());
         stack.set_mode(ModeKind::Zoom); // zoom only
         let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL);
-        assert_eq!(e, ModeEffect::none(), "no spotlight layer to resize");
+        assert_eq!(e, ModeEffect::none(), "Ctrl matches no route");
         assert_eq!(stack.zoom().unwrap().zoom(), 1.0);
         let e = stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT);
         assert!(
@@ -825,23 +818,22 @@ mod tests {
 
     #[test]
     fn wheel_sub_notch_accumulators_survive_routing() {
-        // D2 regression at stack level: four +60 Ctrl events resize by +20 in
-        // total (spotlight accumulator), four +60 Shift events zoom by step^2
-        // (zoom fractional exponent).
+        // D2 regression at stack level: four +60 plain events resize by +20
+        // in total (spotlight accumulator), four +60 Shift events zoom by
+        // step^2 (zoom fractional exponent).
         let mut stack = ModeStack::new(params());
         stack.add_mode(ModeKind::Zoom);
         for _ in 0..4 {
-            stack.on_wheel(0, pt(10, 10), 60, Modifiers::CTRL);
+            stack.on_wheel(0, pt(10, 10), 60, Modifiers::NONE);
         }
         assert_eq!(stack.spotlight().unwrap().radius(), 120);
         for _ in 0..4 {
             stack.on_wheel(0, pt(10, 10), 60, Modifiers::SHIFT);
         }
         assert_zoom_near(&stack, 1.5625);
-        // Unheld deltas must NOT bank into the spotlight accumulator.
-        stack.on_wheel(0, pt(10, 10), 60, Modifiers::NONE);
+        // Chord deltas must NOT bank into the spotlight accumulator.
         stack.on_wheel(0, pt(10, 10), 60, Modifiers::SHIFT); // (zooms, not banking radius)
-        stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL);
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE);
         assert_eq!(stack.spotlight().unwrap().radius(), 130);
     }
 
@@ -903,7 +895,7 @@ mod tests {
     #[test]
     fn set_mode_snip_enters_capture_stashing_spotlight_and_zoom() {
         let mut stack = ModeStack::new(params());
-        stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE); // radius 110
         stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT); // zoom hold on, 1.25
 
         stack.set_mode(ModeKind::Snip);
@@ -921,7 +913,7 @@ mod tests {
     fn exit_capture_restores_the_stashed_layers_exactly() {
         let mut stack = ModeStack::new(params());
         stack.seed_cursor(0, pt(30, 40));
-        stack.on_wheel(0, pt(30, 40), 120, Modifiers::CTRL); // radius 110
+        stack.on_wheel(0, pt(30, 40), 120, Modifiers::NONE); // radius 110
         stack.on_wheel(0, pt(30, 40), 120, Modifiers::SHIFT); // zoom 1.25 at (30,40)
         stack.set_mode(ModeKind::Snip);
         stack.on_left_button_down(0, pt(2, 2));
@@ -986,7 +978,7 @@ mod tests {
     #[test]
     fn add_mode_snip_enters_capture_and_exit_restores_the_stash() {
         let mut stack = ModeStack::new(params());
-        stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE); // radius 110
         stack.on_wheel(0, pt(10, 10), 120, Modifiers::SHIFT); // zoom hold on, 1.25
 
         stack.add_mode(ModeKind::Snip);
@@ -1005,7 +997,7 @@ mod tests {
     #[test]
     fn toggle_mode_snip_toggles_capture_in_and_out() {
         let mut stack = ModeStack::new(params());
-        stack.on_wheel(0, pt(10, 10), 120, Modifiers::CTRL); // radius 110
+        stack.on_wheel(0, pt(10, 10), 120, Modifiers::NONE); // radius 110
 
         stack.toggle_mode(ModeKind::Snip); // ON: enter capture
         assert!(stack.in_capture());

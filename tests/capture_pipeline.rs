@@ -31,7 +31,6 @@ fn viewport() -> Rect {
 fn params() -> ModeParams {
     ModeParams {
         spotlight_radius: 5,
-        radius_modifier: Modifiers::CTRL,
         zoom_step: 1.25,
         zoom_min: 1.0,
         zoom_max: 16.0,
@@ -173,12 +172,14 @@ fn zoom_hold_layers_over_spotlight_and_restores_the_last_used_factor() {
     stack.seed_cursor(0, Point::new(12, 12));
 
     // `F` toggles the hold on (1.0 initially), the wheel takes it to 1.5625.
+    // The zoom chord is required here: with the spotlight layer also active,
+    // the plain wheel resizes the spotlight instead (routing matrix).
     stack.toggle_mode(ModeKind::Zoom);
-    stack.on_wheel(0, Point::new(12, 12), 240, Modifiers::NONE); // plain wheel, layer active
+    stack.on_wheel(0, Point::new(12, 12), 240, Modifiers::SHIFT);
     let z = stack.zoom().expect("zoom hold active").zoom();
     assert!(
         (z - 1.5625).abs() < 1e-6,
-        "plain wheel zooms the active hold"
+        "the zoom chord zooms the active hold"
     );
 
     // Off and on again: the last-used factor is back (not a fresh 1.0).
