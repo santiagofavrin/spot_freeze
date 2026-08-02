@@ -1,6 +1,7 @@
-//! Command-line interface: `--help`, `--version`, and `--daemon` (detach from
-//! the terminal, nohup-style). Hand-rolled and dependency-free; the parser is
-//! pure and unit-tested. Any real work is dispatched back to `main`.
+//! Command-line interface: `--help`, `--version`, `--daemon` (detach from the
+//! terminal, nohup-style), and mode commands. Hand-rolled and dependency-free;
+//! the parser is pure and unit-tested. Any real work is dispatched back to
+//! `main`.
 
 use anyhow::{Context, Result};
 
@@ -11,8 +12,10 @@ pub enum CliAction {
     Run,
     /// Re-spawn detached from the terminal and exit immediately.
     Daemon,
-    /// Ask the running instance to toggle the freeze (compositor keybinds).
-    Toggle,
+    /// Ask the running instance to enter or activate spotlight mode.
+    Spotlight,
+    /// Ask the running instance to enter capture mode.
+    Capture,
     /// Print [`HELP`] to stdout and exit 0.
     Help,
     /// Print [`version_string`] to stdout and exit 0.
@@ -23,14 +26,13 @@ pub enum CliAction {
 pub const HELP: &str = "\
 SpotFreeze — freeze the screen, then spotlight / zoom / snip to clipboard.
 
-Usage: spotfreeze [OPTIONS] [COMMAND]
-
-Commands:
-  toggle       Ask the running SpotFreeze instance to toggle the freeze
-               (Linux only; for compositor keybinds, e.g. in hyprland.conf:
-                bind = SUPER, F, exec, spotfreeze toggle)
+Usage: spotfreeze [OPTIONS]
 
 Options:
+      --spotlight  Toggle the running SpotFreeze instance in spotlight mode
+                   (Linux only; useful for global hotkey bindings)
+      --capture    Toggle the running SpotFreeze instance in capture mode
+                   (Linux only; useful for global hotkey bindings)
       --daemon     Start detached from the terminal (nohup-style): the
                    process survives the terminal being closed afterwards
                    (Linux/macOS only)
@@ -56,7 +58,8 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<CliAction, String
             "--daemon" => CliAction::Daemon,
             "-h" | "--help" => CliAction::Help,
             "-V" | "--version" => CliAction::Version,
-            "toggle" => CliAction::Toggle,
+            "--spotlight" => CliAction::Spotlight,
+            "--capture" => CliAction::Capture,
             other => return Err(format!("unknown argument '{other}'; try --help")),
         };
         if let Some(previous) = action {
@@ -75,7 +78,8 @@ fn flag_name(action: CliAction) -> &'static str {
     match action {
         CliAction::Run => "(run)",
         CliAction::Daemon => "--daemon",
-        CliAction::Toggle => "toggle",
+        CliAction::Spotlight => "--spotlight",
+        CliAction::Capture => "--capture",
         CliAction::Help => "--help",
         CliAction::Version => "--version",
     }
@@ -139,7 +143,8 @@ mod tests {
         assert_eq!(parse_args(&["-h"]), Ok(CliAction::Help));
         assert_eq!(parse_args(&["--version"]), Ok(CliAction::Version));
         assert_eq!(parse_args(&["-V"]), Ok(CliAction::Version));
-        assert_eq!(parse_args(&["toggle"]), Ok(CliAction::Toggle));
+        assert_eq!(parse_args(&["--spotlight"]), Ok(CliAction::Spotlight));
+        assert_eq!(parse_args(&["--capture"]), Ok(CliAction::Capture));
     }
 
     #[test]
@@ -161,13 +166,19 @@ mod tests {
 
     #[test]
     fn help_documents_every_flag() {
-        for flag in ["--daemon", "--help", "--version", "toggle"] {
+        for flag in [
+            "--spotlight",
+            "--capture",
+            "--daemon",
+            "--help",
+            "--version",
+        ] {
             assert!(HELP.contains(flag), "help mentions {flag}");
         }
         assert!(HELP.contains("nohup"), "the daemon flag explains itself");
         assert!(
-            HELP.contains("hyprland.conf"),
-            "toggle shows the compositor bind"
+            HELP.contains("global hotkey"),
+            "mode flags explain global hotkey use"
         );
     }
 

@@ -21,7 +21,8 @@ fn main() -> ExitCode {
             Ok(())
         }
         CliAction::Daemon => cli::spawn_detached(),
-        CliAction::Toggle => toggle_running_instance(),
+        CliAction::Spotlight => send_mode_command("spotlight"),
+        CliAction::Capture => send_mode_command("capture"),
         CliAction::Run => run_app(),
     };
     match result {
@@ -33,11 +34,11 @@ fn main() -> ExitCode {
     }
 }
 
-fn toggle_running_instance() -> anyhow::Result<()> {
+fn send_mode_command(command: &str) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
-    return spotfreeze::platform::wayland::ipc::toggle_running_instance();
+    return spotfreeze::platform::wayland::ipc::send_mode_command(command);
     #[cfg(not(target_os = "linux"))]
-    anyhow::bail!("toggle is only supported on Linux (Wayland)")
+    anyhow::bail!("{command} is only supported on Linux (Wayland)")
 }
 
 fn run_app() -> anyhow::Result<()> {

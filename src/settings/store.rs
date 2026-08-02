@@ -23,7 +23,7 @@ const LEGACY_SETTINGS_FILE_NAMES: &[&str] = &["spotfreeze.json", "settings.json"
 const KEY_COMMENTS: &[(&str, &str)] = &[
     (
         "freeze_toggle",
-        "global freeze hotkey (Windows/macOS); moot on Hyprland — bind `spotfreeze toggle` in hyprland.conf instead",
+        "global freeze hotkey (Windows/macOS); on Hyprland bind `spotfreeze --spotlight` or `spotfreeze --capture` instead",
     ),
     (
         "zoom_modifier",

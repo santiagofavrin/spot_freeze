@@ -341,13 +341,13 @@ pub fn run() -> Result<()> {
         ),
     }
 
-    // IPC listener for `spotfreeze toggle` (compositor keybinds; works
-    // regardless of the portal).
+    // IPC listener for `spotfreeze --spotlight` and `spotfreeze --capture`
+    // (compositor keybinds; works regardless of the portal).
     let ipc_listener = match ipc::bind_listener() {
         Ok(listener) => Some(listener),
         Err(e) => {
             eprintln!(
-                "spotfreeze: could not bind the IPC socket (`spotfreeze toggle` will not work): {e:#}"
+                "spotfreeze: could not bind the IPC socket (CLI mode flags will not work): {e:#}"
             );
             None
         }
@@ -382,8 +382,11 @@ pub fn run() -> Result<()> {
                     .insert_source(
                         Generic::new(poll_listener, Interest::READ, Mode::Level),
                         move |_, _, state| {
-                            if ipc::drain_toggle(&listener) {
-                                state.toggle_freeze();
+                            if let Some(command) = ipc::drain_mode_command(&listener) {
+                                match command {
+                                    ipc::ModeCommand::Spotlight => state.spotlight(),
+                                    ipc::ModeCommand::Capture => state.screenshot(),
+                                }
                             }
                             Ok(PostAction::Continue)
                         },
@@ -391,7 +394,7 @@ pub fn run() -> Result<()> {
                     .map_err(|e| anyhow!("registering the IPC source: {}", e.error))?;
             }
             Err(e) => eprintln!(
-                "spotfreeze: could not poll the IPC socket (`spotfreeze toggle` will not work): {e:#}"
+                "spotfreeze: could not poll the IPC socket (CLI mode flags will not work): {e:#}"
             ),
         }
     }

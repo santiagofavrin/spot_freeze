@@ -56,8 +56,8 @@ re-composited from reusable buffers — never a full repaint from scratch.
   *Reload settings* (*Reload Settings* on macOS) — that also re-registers a
   changed freeze binding on the spot. There is no graphical settings window on
   these platforms.
-- **Linux (Wayland)** — on Hyprland, bind the freeze hotkey in `hyprland.conf`
-  (see *Install*): `bind = SUPER, F, exec, spotfreeze toggle`. On KDE/GNOME the
+- **Linux (Wayland)** — on Hyprland, bind a mode hotkey in `hyprland.conf`
+  (see *Install*): `bind = SUPER, F, exec, spotfreeze --spotlight`. On KDE/GNOME the
   XDG GlobalShortcuts portal is used instead (Hyprland also supports the portal,
   but only with a manual `global` bind in `hyprland.conf`). The tray icon needs
   a StatusNotifierWatcher host (waybar, KDE Plasma, GNOME with an AppIndicator
@@ -156,13 +156,13 @@ standard on any Wayland desktop, so there is usually nothing to install.
 add to `~/.config/hypr/hyprland.conf` and reload Hyprland:
 
 ```
-bind = SUPER, F, exec, spotfreeze toggle
+bind = SUPER, F, exec, spotfreeze --spotlight
 ```
 
 (Pick any combo you like — it does not have to match `freeze_toggle` in
-`spotfreeze.jsonc`; the CLI toggles the running instance directly. The XDG
-GlobalShortcuts portal is also supported for desktops that auto-bind it, like
-KDE and GNOME.)
+`spotfreeze.jsonc`; the CLI activates the requested mode in the running
+instance directly. Bind `spotfreeze --capture` to another global hotkey for
+the screenshot flow.)
 
 ### macOS
 
@@ -178,11 +178,15 @@ KDE and GNOME.)
 ## Command line
 
 ```
-spotfreeze [toggle] [--daemon] [--help] [--version]
+spotfreeze [--spotlight | --capture | --daemon | --help | --version]
 ```
 
-- `toggle` — ask the running instance to toggle the freeze and exit. Linux
-  only; this is what compositor keybinds call (see *Install*).
+- `--spotlight` — ask the running instance to freeze into spotlight mode, or
+  activate spotlight when already frozen. Linux only; useful for global
+  hotkey bindings.
+- `--capture` — ask the running instance to freeze and enter capture mode, or
+  enter capture mode when already frozen. Linux only; useful for global hotkey
+  bindings.
 - `--daemon` — start detached from the terminal (nohup-style): the process
   survives the terminal being closed afterwards. Linux/macOS only.
 - `--help` — print usage and exit.

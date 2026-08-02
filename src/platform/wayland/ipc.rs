@@ -1,8 +1,7 @@
 //! Single-instance IPC over a unix socket
-//! (`$XDG_RUNTIME_DIR/spotfreeze.sock`): `spotfreeze toggle` asks the running
-//! instance to toggle the freeze. This is the compositor-keybind path
-//! (Hyprland: `bind = SUPER, F, exec, spotfreeze toggle`) — independent of
-//! the XDG GlobalShortcuts portal, which needs no socket.
+//! (`$XDG_RUNTIME_DIR/spotfreeze.sock`): `spotfreeze --spotlight` and
+//! `spotfreeze --capture` ask the running instance to activate a mode. This is
+//! the compositor-keybind path, independent of the XDG GlobalShortcuts portal.
 //!
 //! The single-instance lock ([`crate::platform::wayland::shell`]) is always
 //! taken first, so a live socket always has exactly one owner and a stale
@@ -14,8 +13,29 @@ use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
-/// The one command the daemon understands (newline-free, trimmed on receive).
-pub const TOGGLE_COMMAND: &str = "toggle";
+/// Mode commands the daemon understands (newline-free, trimmed on receive).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModeCommand {
+    Spotlight,
+    Capture,
+}
+
+impl ModeCommand {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Spotlight => "spotlight",
+            Self::Capture => "capture",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "spotlight" => Some(Self::Spotlight),
+            "capture" => Some(Self::Capture),
+            _ => None,
+        }
+    }
+}
 
 /// Socket file name inside `$XDG_RUNTIME_DIR`.
 const SOCKET_FILE_NAME: &str = "spotfreeze.sock";
@@ -33,11 +53,13 @@ fn socket_path_from(xdg_runtime_dir: Option<OsString>) -> Option<PathBuf> {
         .map(|dir| PathBuf::from(dir).join(SOCKET_FILE_NAME))
 }
 
-/// CLI client (`spotfreeze toggle`): forward the request to the running
-/// instance. Errors when no instance is listening.
-pub fn toggle_running_instance() -> Result<()> {
+/// CLI client: forward a mode request to the running instance. Errors when no
+/// instance is listening.
+pub fn send_mode_command(command: &str) -> Result<()> {
+    let command = ModeCommand::parse(command)
+        .with_context(|| format!("unknown IPC mode command '{command}'"))?;
     let path = socket_path()?;
-    send_toggle_at(&path).with_context(|| {
+    send_mode_command_at(&path, command).with_context(|| {
         format!(
             "could not reach the running SpotFreeze instance ({})",
             path.display()
@@ -52,25 +74,25 @@ pub fn bind_listener() -> Result<UnixListener> {
     bind_listener_at(&path)
 }
 
-/// Drain every pending command; `true` when at least one toggle was requested.
+/// Drain every pending command; returns the last recognized mode request.
 /// Unknown payloads are ignored (forward-compatible with future commands).
-pub fn drain_toggle(listener: &UnixListener) -> bool {
-    let mut toggle = false;
+pub fn drain_mode_command(listener: &UnixListener) -> Option<ModeCommand> {
+    let mut command = None;
     loop {
         match listener.accept() {
             Ok((mut stream, _)) => {
                 let mut buf = [0u8; 64];
                 if let Ok(n) = stream.read(&mut buf)
-                    && std::str::from_utf8(&buf[..n]).map(str::trim) == Ok(TOGGLE_COMMAND)
+                    && let Ok(payload) = std::str::from_utf8(&buf[..n])
                 {
-                    toggle = true;
+                    command = ModeCommand::parse(payload.trim()).or(command);
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
             Err(_) => break,
         }
     }
-    toggle
+    command
 }
 
 /// Path-parametrized bind (the testable core of [`bind_listener`]).
@@ -84,12 +106,12 @@ fn bind_listener_at(path: &Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
-/// Path-parametrized send (the testable core of [`toggle_running_instance`]).
-fn send_toggle_at(path: &Path) -> Result<()> {
+/// Path-parametrized send (the testable core of [`send_mode_command`]).
+fn send_mode_command_at(path: &Path, command: ModeCommand) -> Result<()> {
     let mut stream = UnixStream::connect(path).context("connecting to the IPC socket")?;
     stream
-        .write_all(TOGGLE_COMMAND.as_bytes())
-        .context("sending the toggle command")
+        .write_all(command.as_str().as_bytes())
+        .context("sending the mode command")
 }
 
 #[cfg(test)]
@@ -111,12 +133,20 @@ mod tests {
     }
 
     #[test]
-    fn toggle_command_round_trip() {
+    fn mode_command_round_trip() {
         let path = temp_path("roundtrip");
         let listener = bind_listener_at(&path).expect("bind");
-        send_toggle_at(&path).expect("send");
-        assert!(drain_toggle(&listener), "the toggle command is received");
-        assert!(!drain_toggle(&listener), "no command is replayed");
+        send_mode_command_at(&path, ModeCommand::Capture).expect("send");
+        assert_eq!(
+            drain_mode_command(&listener),
+            Some(ModeCommand::Capture),
+            "the capture command is received"
+        );
+        assert_eq!(
+            drain_mode_command(&listener),
+            None,
+            "no command is replayed"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -126,14 +156,14 @@ mod tests {
         let listener = bind_listener_at(&path).expect("bind");
         let mut stream = UnixStream::connect(&path).expect("connect");
         stream.write_all(b"explode\n").unwrap();
-        assert!(!drain_toggle(&listener));
+        assert_eq!(drain_mode_command(&listener), None);
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn send_to_missing_socket_errors() {
         let path = temp_path("absent");
-        assert!(send_toggle_at(&path).is_err());
+        assert!(send_mode_command_at(&path, ModeCommand::Spotlight).is_err());
     }
 
     #[test]
