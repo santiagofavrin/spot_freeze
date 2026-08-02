@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.10.0...v1.11.0) (2026-08-02)
+
+
+### Features
+
+* add spotlight capture flags ([727002f](https://github.com/santiagofavrin/spotfreeze/commit/727002f885c170e353228b16f847ceb99e5c460a))
+
 ## [1.10.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.9.2...v1.10.0) (2026-08-02)
 
 
