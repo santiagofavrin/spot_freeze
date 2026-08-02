@@ -1,17 +1,17 @@
-//! Scenario (new): the mode/hotkey legend pill.
+//! Scenario: the mode/hotkey legend pill.
 //!
-//! While frozen, every monitor shows a large translucent rounded pill near
+//! While frozen, every monitor shows a modern translucent rounded pill near
 //! its top-center: the modes as TABS (active highlighted), each labelled with
-//! the hotkey that reaches it, read from the freeze-time bindings. Rendering
-//! is pure pixel math in `src/overlay/legend.rs` over the embedded
-//! public-domain 8x8 bitmap font — driven here through the public API:
+//! the hotkey that reaches it, read from the freeze-time bindings. Text is
+//! anti-aliased vector typography from the embedded Inter typeface
+//! (rasterized by `fontdue`) — driven here through the public API:
 //! settings -> [`Legend::from_hotkeys`] -> painted frames.
 //!
-//! Covered: tab text and width from default + custom bindings, per-monitor
-//! centering, translucency, the active-tab highlight, and the controller
-//! painting the pill into presented frames while keeping it out of the
-//! clipboard (the last point is pinned end-to-end in the controller's own
-//! tests).
+//! Covered: tab labels from default + custom bindings, the ZOOM tab reflecting
+//! the zoom-modifier wheel chord, per-monitor centering, translucency, the
+//! active-tab highlight, and the controller painting the pill into presented
+//! frames while keeping it out of the clipboard (the last point is pinned
+//! end-to-end in the controller's own tests).
 
 mod common;
 
@@ -26,44 +26,66 @@ fn dark_frame(w: u32, h: u32) -> DibBuffer {
     buffer_with(w, h, |x, y| [(x & 0xFF) as u8, (y & 0xFF) as u8, 60, 255])
 }
 
-/// First differing pixel between two frames, if any.
-fn first_diff(a: &DibBuffer, b: &DibBuffer) -> Option<(u32, u32)> {
-    (0..a.height)
-        .flat_map(|y| (0..a.width).map(move |x| (x, y)))
-        .find(|&(x, y)| a.pixel(x, y) != b.pixel(x, y))
+/// Sum of the BGRA color channels over a rectangle (a robust luminance proxy
+/// that doesn't depend on exact anti-aliased pixel values).
+fn region_sum(buf: &DibBuffer, x0: u32, y0: u32, w: u32, h: u32) -> u64 {
+    let mut s = 0u64;
+    for y in y0..y0 + h {
+        for x in x0..x0 + w {
+            if let Some(p) = buf.pixel(x, y) {
+                s += p[0] as u64 + p[1] as u64 + p[2] as u64;
+            }
+        }
+    }
+    s
 }
 
 #[test]
 fn default_bindings_render_mode_tabs_with_their_hotkeys() {
     let legend = Legend::from_hotkeys(&HotkeySettings::default());
-    let (w, h) = legend.size();
-    // "SPOTLIGHT (S)" (13 chars), "ZOOM (F)" / "SNIP (C)" (8 chars each)
-    // at 16 px per char + per-tab padding, plus pill padding and gaps.
-    assert_eq!(h, 40, "16 px text + 2 * 12 px vertical padding");
-    // The pill also carries the app version ("v<version>") after a 24 px gap.
-    let version_chars = format!("v{}", env!("CARGO_PKG_VERSION")).chars().count() as u32;
-    assert_eq!(w, 48 + (240 + 160 + 160) + 16 + 24 + version_chars * 16);
-}
-
-#[test]
-fn custom_bindings_change_tab_text_and_pill_width() {
-    let mut hotkeys = HotkeySettings::default();
-    hotkeys.zoom_hold = spotfreeze::hotkeys::gesture::HotkeyGesture::parse("Ctrl+Shift+Z").unwrap();
-    let default_w = Legend::from_hotkeys(&HotkeySettings::default()).size().0;
-    let wider = Legend::from_hotkeys(&hotkeys).size().0;
-    assert!(
-        wider > default_w,
-        "a longer binding widens the pill: {wider} vs {default_w}"
+    // The ZOOM tab is labelled with the zoom-modifier wheel chord — zoom is
+    // implicit in every mode (no dedicated zoom hotkey).
+    assert_eq!(
+        legend.tab_labels(),
+        vec![
+            "SPOTLIGHT (S)".to_string(),
+            "ZOOM (Shift+Wheel)".to_string(),
+            "SNIP (C)".to_string(),
+        ]
     );
     assert_eq!(
-        wider - default_w,
-        11 * 16,
-        "eleven extra characters at 16 px"
+        legend.version_label(),
+        &format!("v{}", env!("CARGO_PKG_VERSION")),
+        "the legend carries the app version"
+    );
+    let (w, h) = legend.size();
+    assert!(w > 200, "pill width is sizable: {w}");
+    assert!(h > 0, "pill has a positive height");
+}
+
+#[test]
+fn custom_zoom_modifier_changes_the_zoom_tab_label_and_pill_width() {
+    let mut hotkeys = HotkeySettings::default();
+    hotkeys.zoom_modifier = spotfreeze::hotkeys::gesture::Modifiers::CTRL
+        | spotfreeze::hotkeys::gesture::Modifiers::ALT
+        | spotfreeze::hotkeys::gesture::Modifiers::SHIFT
+        | spotfreeze::hotkeys::gesture::Modifiers::WIN;
+    let legend = Legend::from_hotkeys(&hotkeys);
+    assert_eq!(
+        legend.tab_labels()[1],
+        "ZOOM (Ctrl+Alt+Shift+Win+Wheel)",
+        "the zoom tab follows the configured zoom modifier"
+    );
+    let default_w = Legend::from_hotkeys(&HotkeySettings::default()).size().0;
+    let wider = legend.size().0;
+    assert!(
+        wider > default_w,
+        "a longer zoom-modifier chord widens the pill: {wider} vs {default_w}"
     );
 }
 
 #[test]
-fn pill_is_top_centered_inset_translucent_and_highlights_the_active_tab() {
+fn pill_is_top_centered_translucent_and_highlights_the_active_tab() {
     let legend = Legend::new(&[LegendTab {
         name: "SPOTLIGHT".into(),
         hotkey: "S".into(),
@@ -80,39 +102,36 @@ fn pill_is_top_centered_inset_translucent_and_highlights_the_active_tab() {
 
     let x0 = (frame_w - pw) / 2;
     let y0 = 48;
-    // The pill is painted in the top-center band with a generous inset: the first
-    // painted pixel is the top edge at the corner radius (the rounded corner
-    // leaves the bbox corner itself untouched).
-    let diff = first_diff(&inactive, &plain).expect("pill changes pixels");
+    // The pill is painted in the top-center band and is translucent: the pill
+    // center is dimmer than the plain frame (blended toward near-black) but
+    // not solid black.
+    let center = inactive.pixel(x0 + pw / 2, y0 + ph / 2).unwrap();
+    let plain_center = plain.pixel(x0 + pw / 2, y0 + ph / 2).unwrap();
+    assert!(
+        center[..3].iter().map(|&c| u16::from(c)).sum::<u16>()
+            < plain_center[..3].iter().map(|&c| u16::from(c)).sum::<u16>(),
+        "the pill darkens: {center:?} vs {plain_center:?}"
+    );
+    // The rounded corner pixel (bbox corner) is untouched by the pill body.
     assert_eq!(
-        diff,
-        (x0 + 20, y0),
-        "first pill pixel (top edge at the radius)"
-    );
-    // ...it is translucent: in the padding between the pill edge and the
-    // chip (off-text), the frame reads through the dark pill (blended toward
-    // near-black, not replaced).
-    let pad_probe = inactive.pixel(x0 + 8, y0 + ph / 2).unwrap();
-    let plain_probe = plain.pixel(x0 + 8, y0 + ph / 2).unwrap();
-    assert!(
-        pad_probe[..3].iter().map(|&c| u16::from(c)).sum::<u16>()
-            < plain_probe[..3].iter().map(|&c| u16::from(c)).sum::<u16>(),
-        "the pill darkens: {pad_probe:?} vs {plain_probe:?}"
-    );
-    assert_ne!(pad_probe, [0x12, 0x12, 0x16, 255], "translucent, not solid");
-    // ...and the active tab's chip brightens its area versus the inactive one.
-    let chip = (x0 + 24 + 8, y0 + 20);
-    let [b_on, g_on, r_on, _] = active.pixel(chip.0, chip.1).unwrap();
-    let [b_off, g_off, r_off, _] = inactive.pixel(chip.0, chip.1).unwrap();
-    assert!(
-        b_on > b_off && g_on > g_off && r_on > r_off,
-        "active tab highlighted: on={b_on},{g_on},{r_on} off={b_off},{g_off},{r_off}"
+        inactive.pixel(x0, y0).unwrap(),
+        plain.pixel(x0, y0).unwrap(),
+        "the rounded corner leaves the bbox corner untouched"
     );
     // Nothing outside the pill area changes.
     assert_eq!(inactive.pixel(0, 0).unwrap(), plain.pixel(0, 0).unwrap());
     assert_eq!(
         inactive.pixel(frame_w - 1, frame_h - 1).unwrap(),
         plain.pixel(frame_w - 1, frame_h - 1).unwrap()
+    );
+    // The active tab's chip area is brighter overall than the inactive one
+    // (chip fill + brighter text).
+    let chip_w = pw - 2 * 20; // pill padding on each side; one tab fills the inner width
+    let on_sum = region_sum(&active, x0 + 20, y0, chip_w, ph);
+    let off_sum = region_sum(&inactive, x0 + 20, y0, chip_w, ph);
+    assert!(
+        on_sum > off_sum,
+        "active tab highlighted: on={on_sum} off={off_sum}"
     );
 }
 

@@ -22,6 +22,8 @@ mod common;
 use common::{FakeFreeze, buffer_with, has_white_border_band, monitor_info};
 use spotfreeze::capture::DibBuffer;
 use spotfreeze::geometry::{Point, Rect};
+use spotfreeze::hotkeys::gesture::Modifiers;
+use spotfreeze::overlay::events::OverlayEvent;
 use spotfreeze::overlay::modes::ModeKind;
 use spotfreeze::settings::model::AppSettings;
 
@@ -129,17 +131,17 @@ fn full_mode_switches_repaint_exactly_once_without_flashing() {
     let before = f.presents[0].borrow().len();
     f.controller.set_mode(ModeKind::Snip, &f.services);
     assert_eq!(f.presents[0].borrow().len(), before + 1, "capture entry");
-    f.controller.set_mode(ModeKind::Zoom, &f.services);
+    f.controller.set_mode(ModeKind::Spotlight, &f.services);
     assert_eq!(
         f.presents[0].borrow().len(),
         before + 2,
         "switch out of capture"
     );
-    f.controller.set_mode(ModeKind::Spotlight, &f.services);
+    f.controller.set_mode(ModeKind::Snip, &f.services);
     assert_eq!(
         f.presents[0].borrow().len(),
         before + 3,
-        "switch to spotlight"
+        "switch back to capture"
     );
     assert_flash_free(&f, "mode switches");
 }
@@ -172,8 +174,17 @@ fn the_whole_key_driven_journey_is_flash_free() {
     let mut f = freeze(Point::new(16, 16));
     f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
     f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
-    f.controller.add_mode(ModeKind::Zoom, &f.services);
-    f.controller.toggle_mode(ModeKind::Zoom, &f.services);
+    // Zoom in via the implicit Shift+wheel chord, then dismiss it with the
+    // `0`-key path (reset_view).
+    f.controller.handle_overlay_event(
+        0,
+        OverlayEvent::MouseWheel {
+            at: Point::new(16, 16),
+            delta: 120,
+            modifiers: Modifiers::SHIFT,
+        },
+    );
+    f.controller.reset_view();
     f.controller.set_mode(ModeKind::Snip, &f.services);
     f.controller.unfreeze(); // exit capture
     f.controller.set_mode(ModeKind::Spotlight, &f.services);

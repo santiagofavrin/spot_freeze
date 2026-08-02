@@ -84,13 +84,12 @@ struct AppState {
 ///    * `freeze_toggle` (always active) → freeze/unfreeze;
 ///    * while frozen only: `mode_spotlight` → `OverlayController::toggle_mode`
 ///      (spotlight on/off), `mode_snip` → `OverlayController::set_mode`
-///      (enter capture mode, re-basing the freeze), `zoom_hold` →
-///      `OverlayController::toggle_mode` (zoom layer at the last-used
-///      factor), plus `cancel` → unfreeze (in capture mode: exit capture
-///      back to the pre-capture view), `snip_copy` →
-///      `OverlayController::snip_copy_and_close`, `reset_zoom` →
-///      `OverlayController::reset_view`: six registrations (see
-///      [`plan_frozen_registrations`]).
+///      (enter capture mode, re-basing the freeze), plus `cancel` → unfreeze
+///      (in capture mode: exit capture back to the pre-capture view),
+///      `snip_copy` → `OverlayController::snip_copy_and_close`, `reset_zoom`
+///      → `OverlayController::reset_view`: five registrations (see
+///      [`plan_frozen_registrations`]). Zoom has no hotkey — it is the
+///      implicit zoom-modifier wheel chord.
 /// 6. **Message loop**: standard `GetMessage`/`DispatchMessage`, routing
 ///    `WM_HOTKEY`, tray callbacks, and overlay events to the controller.
 /// 7. **Exit** (tray menu AND settings window Exit button): ALWAYS confirm via
@@ -372,8 +371,9 @@ fn rebind_freeze_hotkey(state: &mut AppState, hwnd: HWND) -> bool {
 }
 
 /// Register the frozen-mode hotkeys planned from the CURRENT settings:
-/// spotlight toggle, capture-mode switch, zoom-hold toggle, plus
-/// `reset_zoom`, `snip_copy`, `cancel` — six registrations. Individual
+/// spotlight toggle, capture-mode switch, plus `reset_zoom`, `snip_copy`,
+/// `cancel` — five registrations (zoom has no hotkey: it is the implicit
+/// zoom-modifier wheel chord). Individual
 /// failures (e.g. a combo owned by another app, or a duplicate in a
 /// hand-edited settings file) are collected into one message box; whatever
 /// registered stays active.

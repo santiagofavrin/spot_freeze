@@ -14,10 +14,12 @@ const DEFAULT_STEP_FACTOR: f32 = 1.25;
 /// Zoom layer state: cursor position + current magnification.
 ///
 /// Wheel events multiply/divide the zoom by `step_factor` (settings:
-/// `zoom.step_factor`), clamped to `[min, max]`. The reset-view hotkey restores
-/// 1.0. WHICH wheel events reach the layer is decided by the
-/// [`super::ModeStack`] routing matrix (zoom modifier whenever active, plain
-/// wheel when zoom is primary) — the layer itself applies every wheel it gets.
+/// `zoom.step_factor`), clamped to `[min, max]`. WHICH wheel events reach the
+/// layer is decided by the [`super::ModeStack`] routing (only the
+/// zoom-modifier chord — the plain wheel never zooms) — the layer itself
+/// applies every wheel it gets. The layer is purely implicit: the stack
+/// activates it on a zoom-in chord and drops it when the zoom returns to the
+/// minimum (or via the reset-view hotkey).
 pub struct ZoomMode {
     cursor: Point,
     cursor_monitor: usize,
@@ -71,9 +73,9 @@ impl ZoomMode {
         self.zoom
     }
 
-    /// [`ZoomMode::new`] starting at `zoom` instead of 1.0: the zoom-hold
-    /// layer re-activates at the last-used factor (clamped into the
-    /// normalized [min, max] range).
+    /// [`ZoomMode::new`] starting at `zoom` instead of 1.0: the zoom layer
+    /// re-activates at the last-used factor (clamped into the normalized
+    /// [min, max] range).
     pub fn with_zoom(zoom: f32, step_factor: f32, min: f32, max: f32) -> Self {
         let mut mode = Self::new(step_factor, min, max);
         mode.zoom = zoom.clamp(mode.min, mode.max);
@@ -123,7 +125,10 @@ impl ZoomMode {
         full_repaint(old_monitor, monitor)
     }
 
-    /// Reset-view hotkey: zoom = 1.0 again; repaints the cursor monitor.
+    /// Layer-level reset primitive: zoom = 1.0 again; repaints the cursor
+    /// monitor. (The reset-view hotkey path lives in
+    /// [`super::ModeStack::reset_view`], which DROPS the layer instead of
+    /// calling this — zoom is implicit, so "reset" means "dismiss".)
     pub fn reset_view(&mut self) -> ModeEffect {
         self.zoom = 1.0;
         ModeEffect::repaint(self.cursor_monitor, None)

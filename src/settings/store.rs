@@ -428,7 +428,6 @@ mod tests {
         for hotkey_key in [
             "mode_spotlight",
             "mode_snip",
-            "zoom_hold",
             "snip_copy",
             "cancel",
             "reset_zoom",
@@ -467,11 +466,7 @@ mod tests {
             template.contains("\"freeze_toggle\": \"Win+F\""),
             "new freeze hotkey default: {template}"
         );
-        for (key, value) in [
-            ("mode_spotlight", "S"),
-            ("mode_snip", "C"),
-            ("zoom_hold", "F"),
-        ] {
+        for (key, value) in [("mode_spotlight", "S"), ("mode_snip", "C")] {
             assert!(
                 template.contains(&format!("\"{key}\": \"{value}\"")),
                 "{key} default in template"
@@ -612,10 +607,6 @@ mod tests {
             crate::hotkeys::gesture::Modifiers::SHIFT
         );
         assert_eq!(loaded.overlay.color, crate::settings::model::Rgb::BLACK);
-        assert_eq!(
-            loaded.hotkeys.zoom_hold,
-            crate::hotkeys::gesture::HotkeyGesture::parse("F").unwrap()
-        );
         assert!(!loaded.auto_start);
     }
 

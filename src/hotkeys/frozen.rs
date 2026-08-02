@@ -17,9 +17,8 @@ pub enum FrozenAction {
     /// selection cleared, spotlight radius back to default) and activate only
     /// this mode.
     SetMode(ModeKind),
-    /// Toggle key (spotlight's `S`, zoom hold's `F`): REMOVE the layer when
-    /// active (the screen stays frozen, unveiled when nothing is left), add
-    /// it otherwise — the zoom hold returns at the last-used factor.
+    /// Toggle key (spotlight's `S`): REMOVE the layer when active (the
+    /// screen stays frozen, unveiled when nothing is left), add it otherwise.
     ToggleMode(ModeKind),
     /// ADD this mode as a layer WITHOUT touching the existing layers. Not
     /// emitted by the current plan; kept for the platform shells, which
@@ -39,10 +38,9 @@ pub struct FrozenRegistration {
 
 /// The ordered frozen-mode registration list derived from the CURRENT
 /// settings: spotlight toggle (`mode_spotlight`), capture-mode switch
-/// (`mode_snip`), zoom-hold toggle (`zoom_hold`), then `reset_zoom`,
-/// `snip_copy`, `cancel` — six registrations. The bound keys are just data
-/// living in the settings model — nothing here hardcodes a key name; only
-/// the iteration order is fixed.
+/// (`mode_snip`), then `reset_zoom`, `snip_copy`, `cancel` — five
+/// registrations. The bound keys are just data living in the settings model —
+/// nothing here hardcodes a key name; only the iteration order is fixed.
 ///
 /// Collisions BETWEEN user-configured bindings are NOT resolved here: they
 /// stay in the plan, so the registration layer's duplicate error names the
@@ -56,7 +54,6 @@ pub fn plan_frozen_registrations(hotkeys: &HotkeySettings) -> Vec<FrozenRegistra
             FrozenAction::ToggleMode(ModeKind::Spotlight),
         ),
         (hotkeys.mode_snip, FrozenAction::SetMode(ModeKind::Snip)),
-        (hotkeys.zoom_hold, FrozenAction::ToggleMode(ModeKind::Zoom)),
         (hotkeys.reset_zoom, FrozenAction::ResetZoom),
         (hotkeys.snip_copy, FrozenAction::Copy),
         (hotkeys.cancel, FrozenAction::Cancel),
@@ -93,7 +90,6 @@ mod tests {
             freeze_toggle: gesture("Ctrl+Alt+Q"),
             mode_spotlight: gesture("F5"),
             mode_snip: gesture("F7"),
-            zoom_hold: gesture("F9"),
             snip_copy: gesture("Ctrl+Enter"),
             cancel: gesture("Ctrl+Backspace"),
             reset_zoom: gesture("Ctrl+F8"),
@@ -110,14 +106,13 @@ mod tests {
     }
 
     #[test]
-    fn plan_is_spotlight_capture_zoom_hold_then_reset_copy_cancel() {
+    fn plan_is_spotlight_capture_then_reset_copy_cancel() {
         let plan = plan_frozen_registrations(&custom_hotkeys());
         let actual: Vec<(HotkeyGesture, FrozenAction)> =
             plan.iter().map(|r| (r.gesture, r.action)).collect();
         let expected = vec![
             (gesture("F5"), FrozenAction::ToggleMode(ModeKind::Spotlight)),
             (gesture("F7"), FrozenAction::SetMode(ModeKind::Snip)),
-            (gesture("F9"), FrozenAction::ToggleMode(ModeKind::Zoom)),
             (gesture("Ctrl+F8"), FrozenAction::ResetZoom),
             (gesture("Ctrl+Enter"), FrozenAction::Copy),
             (gesture("Ctrl+Backspace"), FrozenAction::Cancel),
@@ -137,33 +132,30 @@ mod tests {
             planned(&plan, h.mode_snip),
             vec![FrozenAction::SetMode(ModeKind::Snip)]
         );
-        assert_eq!(
-            planned(&plan, h.zoom_hold),
-            vec![FrozenAction::ToggleMode(ModeKind::Zoom)]
-        );
     }
 
     #[test]
-    fn default_settings_plan_has_all_six_registrations() {
+    fn default_settings_plan_has_all_five_registrations() {
         // Structural smoke test over the shipped defaults, whatever keys they
-        // bind: spotlight toggle, capture switch, zoom-hold toggle, and the
-        // reset/copy/cancel bindings.
+        // bind: spotlight toggle, capture switch, and the reset/copy/cancel
+        // bindings. Zoom is NOT a hotkey — it is the implicit zoom-modifier
+        // wheel chord, so no `ToggleMode(ModeKind::Zoom)` is registered.
         let plan = plan_frozen_registrations(&HotkeySettings::default());
-        assert_eq!(plan.len(), 6);
+        assert_eq!(plan.len(), 5);
         for action in [
             FrozenAction::ToggleMode(ModeKind::Spotlight),
             FrozenAction::SetMode(ModeKind::Snip),
-            FrozenAction::ToggleMode(ModeKind::Zoom),
             FrozenAction::ResetZoom,
             FrozenAction::Copy,
             FrozenAction::Cancel,
         ] {
             assert!(plan.iter().any(|r| r.action == action), "{action:?}");
         }
-        // The zoom-hold default is a bare F, toggling the zoom LAYER.
-        assert_eq!(
-            planned(&plan, gesture("F")),
-            vec![FrozenAction::ToggleMode(ModeKind::Zoom)]
+        assert!(
+            !plan
+                .iter()
+                .any(|r| r.action == FrozenAction::ToggleMode(ModeKind::Zoom)),
+            "no zoom toggle registration"
         );
     }
 
@@ -174,7 +166,7 @@ mod tests {
         // offender; matching fires the FIRST entry, mirroring the
         // registration layer, which rejects the later duplicate.
         let h = HotkeySettings {
-            zoom_hold: gesture("F5"), // duplicates mode_spotlight
+            reset_zoom: gesture("F5"), // duplicates mode_spotlight
             ..custom_hotkeys()
         };
         let plan = plan_frozen_registrations(&h);
@@ -182,7 +174,7 @@ mod tests {
             planned(&plan, gesture("F5")),
             vec![
                 FrozenAction::ToggleMode(ModeKind::Spotlight),
-                FrozenAction::ToggleMode(ModeKind::Zoom),
+                FrozenAction::ResetZoom,
             ]
         );
         assert_eq!(
@@ -197,13 +189,13 @@ mod tests {
         // does not guard against duplicating it either — the duplicate error
         // names the offender there too.
         let h = HotkeySettings {
-            zoom_hold: gesture("Ctrl+Alt+Q"), // duplicates freeze_toggle
+            reset_zoom: gesture("Ctrl+Alt+Q"), // duplicates freeze_toggle
             ..custom_hotkeys()
         };
         let plan = plan_frozen_registrations(&h);
         assert_eq!(
             planned(&plan, gesture("Ctrl+Alt+Q")),
-            vec![FrozenAction::ToggleMode(ModeKind::Zoom)]
+            vec![FrozenAction::ResetZoom]
         );
     }
 

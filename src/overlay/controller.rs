@@ -7,11 +7,13 @@
 //! Implementation notes (contract clarifications — public API kept):
 //! - **Default mode**: `freeze` enters Spotlight (product spec default).
 //! - **Mode model**: Spotlight is a TOGGLE (`S`: layer on/off — with every
-//!   layer off the screen stays frozen but UNVEILED); the zoom hold (`F` or
-//!   the zoom-modifier wheel chord) is an effect LAYER re-activating at the
-//!   last-used factor; Capture (`C`) RE-BASES the freeze (see below). Every
-//!   key-driven mode change is SEAMLESS: no flash frames, no border rings.
-//!   Spotlight toggles and full mode switches repaint once, instantly.
+//!   layer off the screen stays frozen but UNVEILED); zoom is an IMPLICIT
+//!   effect LAYER driven only by the zoom-modifier wheel chord (default
+//!   Shift+wheel) — activated on zoom-in, auto-dismissed back at the 1.0
+//!   baseline, and dropped outright by the reset-view hotkey; Capture (`C`)
+//!   RE-BASES the freeze (see below). Every key-driven mode change is
+//!   SEAMLESS: no flash frames, no border rings. Spotlight toggles and full
+//!   mode switches repaint once, instantly.
 //! - **No transitions**: freeze and unfreeze are INSTANT. Freeze presents
 //!   each monitor's settled frame once — veil at full strength, spotlight
 //!   circle at its settled radius, legend at full strength; unfreeze simply
@@ -133,7 +135,7 @@ struct FreezeState {
     /// Drained by [`OverlayController::process_pending_repaints`], always
     /// presenting the freshest composed frame.
     pending_repaint: Vec<Option<PendingRepaint>>,
-    /// Mode state (spotlight/zoom-hold/snip layers + the capture stash);
+    /// Mode state (spotlight/zoom/snip layers + the capture stash);
     /// layers are rebuilt from the freeze-time [`ModeParams`] on activation.
     modes: ModeStack,
     /// Freeze-time settings snapshot (veil parameters + mode params + the
@@ -328,7 +330,7 @@ impl OverlayController {
         self.active = kind;
     }
 
-    /// ADD `kind`'s layer WITHOUT resetting the existing ones — the zoom-hold
+    /// ADD `kind`'s layer WITHOUT resetting the existing ones — the zoom
     /// layer resumes at the last-used factor. `Snip` is capture mode, not an
     /// additive layer: entering it RE-BASES the freeze exactly like
     /// [`set_mode`](Self::set_mode). Every kind repaints once. No-op when the
@@ -354,12 +356,12 @@ impl OverlayController {
         self.active = kind;
     }
 
-    /// TOGGLE key (spotlight's `S`, zoom hold's `F`): remove the layer when
-    /// active (with no layers left the screen stays frozen but the overlay is
-    /// UNVEILED), add it otherwise — the spotlight fresh, the zoom hold at
-    /// the last-used factor. `Snip` toggles capture mode: ON re-bases the
-    /// freeze like [`set_mode`](Self::set_mode), OFF exits capture, restoring
-    /// the pre-capture originals and the stashed layers. Every toggle repaints
+    /// TOGGLE key (spotlight's `S`): remove the layer when active (with no
+    /// layers left the screen stays frozen but the overlay is UNVEILED), add
+    /// it otherwise — the spotlight fresh, the zoom layer at the last-used
+    /// factor. `Snip` toggles capture mode: ON re-bases the freeze like
+    /// [`set_mode`](Self::set_mode), OFF exits capture, restoring the
+    /// pre-capture originals and the stashed layers. Every toggle repaints
     /// once, instantly. No-op when not frozen.
     pub fn toggle_mode(&mut self, kind: ModeKind, services: &dyn PlatformServices) {
         let mut slot = self.inner.borrow_mut();
@@ -413,9 +415,9 @@ impl OverlayController {
         dispatch_event(&self.inner, monitor, event);
     }
 
-    /// Reset-view hotkey path (default binding `0`): zoom back to 1.0 when the
-    /// zoom layer is active and apply the repaint; a cheap no-op otherwise
-    /// (and whenever not frozen).
+    /// Reset-view hotkey path (default binding `0`): DISMISS the zoom layer
+    /// (back to the un-zoomed view) and apply the repaint; a cheap no-op when
+    /// no zoom layer is active (and whenever not frozen).
     ///
     /// This is a DEDICATED entry point, deliberately not routed through
     /// [`handle_overlay_event`](Self::handle_overlay_event): layers never see
@@ -700,23 +702,23 @@ fn rebase_freeze(state: &mut FreezeState) {
         0
     };
     let mut pre = Vec::with_capacity(originals.len());
-    for m in 0..originals.len() {
+    for (m, original) in originals.iter_mut().enumerate() {
         let render_state = RenderState {
             snip: None,
             capture: false,
             ..modes.render_state(m)
         };
-        let viewport = Rect::new(0, 0, originals[m].width, originals[m].height);
-        let mut base = DibBuffer::new(originals[m].width, originals[m].height);
+        let viewport = Rect::new(0, 0, original.width, original.height);
+        let mut base = DibBuffer::new(original.width, original.height);
         compose_frame(
-            &originals[m],
+            original,
             &mut base,
             viewport,
             &render_state,
             dim_opacity,
             settings.overlay.color,
         );
-        pre.push(std::mem::replace(&mut originals[m], base));
+        pre.push(std::mem::replace(original, base));
     }
     *capture = Some(pre);
 }
@@ -1023,12 +1025,12 @@ mod tests {
         .collect()
     }
 
-    /// One 800x160 monitor at the origin — big enough for the legend pill
+    /// One 1024x160 monitor at the origin — big enough for the legend pill
     /// (the 32x32 monitors of [`two_small_monitors`] skip it).
     fn big_monitor() -> Vec<(MonitorInfo, DibBuffer)> {
         vec![(
-            monitor_info(Rect::new(0, 0, 800, 160)),
-            make_buf(800, 160, coord_pattern),
+            monitor_info(Rect::new(0, 0, 1024, 160)),
+            make_buf(1024, 160, coord_pattern),
         )]
     }
 
@@ -1171,7 +1173,7 @@ mod tests {
     #[test]
     fn set_mode_and_add_mode_when_unfrozen_are_noops() {
         let mut c = OverlayController::new();
-        c.set_mode(ModeKind::Zoom, &PanicServices);
+        c.set_mode(ModeKind::Spotlight, &PanicServices);
         c.add_mode(ModeKind::Snip, &PanicServices);
         c.add_mode(ModeKind::Spotlight, &PanicServices);
         assert!(!c.is_frozen());
@@ -1697,7 +1699,7 @@ mod tests {
     #[test]
     fn capture_rebases_with_zoom_baked_in_full_monitor_copy_is_effected() {
         let mut f = freeze_fake(Point::new(16, 16));
-        // Zoom hold via the wheel chord (implicit activation), one notch in.
+        // Zoom in via the wheel chord (implicit activation), one notch in.
         f.controller.handle_overlay_event(
             0,
             OverlayEvent::MouseWheel {
@@ -2020,7 +2022,7 @@ mod tests {
     #[test]
     fn spotlight_toggle_off_with_zoom_repaints_once_and_keeps_the_veil() {
         let mut f = freeze_fake(Point::new(16, 16));
-        // Zoom hold on via the wheel chord: both layers active at (16,16).
+        // Zoom layer on via the wheel chord: both layers active at (16,16).
         f.controller.handle_overlay_event(
             0,
             OverlayEvent::MouseWheel {
@@ -2060,12 +2062,12 @@ mod tests {
         assert!(f.controller.is_frozen());
         assert_eq!(f.presents[0].borrow().len(), before + 2);
         // Full mode switches: one repaint each.
-        f.controller.set_mode(ModeKind::Zoom, &f.services);
+        f.controller.set_mode(ModeKind::Snip, &f.services);
         assert_eq!(f.presents[0].borrow().len(), before + 3);
         f.controller.set_mode(ModeKind::Spotlight, &f.services);
         assert_eq!(f.presents[0].borrow().len(), before + 4);
-        // Zoom toggle: one repaint, like every in-session toggle.
-        f.controller.toggle_mode(ModeKind::Zoom, &f.services);
+        // Spotlight toggle: one repaint, like every in-session toggle.
+        f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
         assert_eq!(f.presents[0].borrow().len(), before + 5);
     }
 
@@ -2078,7 +2080,7 @@ mod tests {
         f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
         f.controller.set_mode(ModeKind::Snip, &f.services);
         f.controller.unfreeze(); // exit capture
-        f.controller.set_mode(ModeKind::Zoom, &f.services);
+        f.controller.set_mode(ModeKind::Snip, &f.services);
         f.controller.set_mode(ModeKind::Spotlight, &f.services);
         f.controller.unfreeze(); // instant close
         for (i, presents) in f.presents.iter().enumerate() {
@@ -2100,8 +2102,8 @@ mod tests {
         assert_eq!(p.len(), 1, "instant freeze: exactly one present");
         // The single frame is the settled view: full veil, settled circle,
         // and the pill at full strength (it never fades in).
-        let original = make_buf(800, 160, coord_pattern);
-        let mut settled = DibBuffer::new(800, 160);
+        let original = make_buf(1024, 160, coord_pattern);
+        let mut settled = DibBuffer::new(1024, 160);
         let state = RenderState {
             spotlight: Some((Point::new(400, 100), 10)),
             ..RenderState::default()
@@ -2109,7 +2111,7 @@ mod tests {
         compose_frame(
             &original,
             &mut settled,
-            Rect::new(0, 0, 800, 160),
+            Rect::new(0, 0, 1024, 160),
             &state,
             160,
             Rgb::BLACK,
@@ -2142,8 +2144,8 @@ mod tests {
         let crop = copied.last().expect("one clipboard write");
         // The crop comes from the re-frozen base, composed WITHOUT the
         // legend — recompute it exactly.
-        let original = make_buf(800, 160, coord_pattern);
-        let mut base = DibBuffer::new(800, 160);
+        let original = make_buf(1024, 160, coord_pattern);
+        let mut base = DibBuffer::new(1024, 160);
         let state = RenderState {
             spotlight: Some((Point::new(400, 100), 10)),
             ..RenderState::default()
@@ -2151,7 +2153,7 @@ mod tests {
         compose_frame(
             &original,
             &mut base,
-            Rect::new(0, 0, 800, 160),
+            Rect::new(0, 0, 1024, 160),
             &state,
             160,
             Rgb::BLACK,

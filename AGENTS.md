@@ -76,15 +76,22 @@ a platform shell (OS-specific)? Pure logic in the core, OS glue in the shell.
 
 - **Spotlight** (`S`) is a **toggle**: layer on/off; with every layer off the
   screen stays frozen but completely clear (no dim).
-- **Zoom hold** (`F`) is a toggle **layer** at the last-used level
-  (1.0×–16.0×); it stacks over spotlight on/off.
+- **Zoom** is an **implicit layer** with no hotkey of its own: the
+  zoom-modifier wheel chord (default `Shift`+wheel) zooms from any mode,
+  stacking over spotlight on/off. The layer appears on zoom-in and
+  auto-dismisses when the zoom returns to the minimum (1.0×); `0`
+  (`reset_view`) drops it outright.
 - **Capture** (`C`) **re-freezes**: the current view (spotlight/zoom baked in)
   becomes the new frozen frame and a drag-selection snips the *effected*
   pixels. `Esc` in capture exits back to the pre-capture view; `Esc` outside
   capture unfreezes.
 - The **legend pill** is painted into the composed frame only — never into the
   capture originals — so it can never leak into a snip copy or the capture
-  re-base (`rebase_freeze` composes without it).
+  re-base (`rebase_freeze` composes without it). Its text is anti-aliased
+  vector typography from the embedded **Inter** typeface (SIL OFL 1.1,
+  `assets/fonts/`), rasterized once per freeze by the pure-Rust `fontdue`
+  crate into cached coverage bitmaps; `Legend::paint` only blits those caches
+  (no font work on the per-frame repaint path).
 
 ## Settings
 

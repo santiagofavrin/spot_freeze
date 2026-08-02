@@ -1414,7 +1414,7 @@ mod tests {
         ];
         for y in 0..10u32 {
             for x in 0..12u32 {
-                let in_ring = x < 2 || x >= 10 || y < 2 || y >= 8;
+                let in_ring = !(2..10).contains(&x) || !(2..8).contains(&y);
                 let got = px(&out, x, y);
                 if in_ring {
                     assert_eq!(

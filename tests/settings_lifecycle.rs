@@ -48,11 +48,6 @@ fn documented_default_values() {
         Modifiers::SHIFT,
         "hotkeys.zoom_modifier default = Shift"
     );
-    assert_eq!(
-        s.hotkeys.zoom_hold,
-        HotkeyGesture::new(Modifiers::NONE, 'F' as u32),
-        "hotkeys.zoom_hold default = F"
-    );
     assert!(!s.auto_start, "auto_start default = false");
 }
 

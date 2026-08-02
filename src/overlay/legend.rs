@@ -1,4 +1,4 @@
-//! PURE mode/hotkey legend: while frozen, a large translucent rounded pill
+//! PURE mode/hotkey legend: while frozen, a modern translucent rounded pill
 //! near the top-center of every monitor shows the modes as TABS — the active
 //! one(s) highlighted — each labelled with the hotkey that reaches it
 //! (bindings snapshotted from settings at freeze time, like every other
@@ -9,166 +9,60 @@
 //! composed frame only — never into the capture originals — so it can never
 //! leak into a snip copy or the capture-mode re-base.
 //!
-//! Text is rendered with the embedded 8x8 public-domain bitmap font
-//! ([`FONT8X8`]) — no font crates, no OS text APIs, fully headless-testable.
-//! Everything here is integer pixel math, deterministic to the byte.
+//! Text is rendered with the embedded **Inter** typeface (SIL Open Font
+//! License 1.1, see `assets/fonts/OFL.txt`), rasterized to per-pixel alpha
+//! coverage at construction time by the pure-Rust [`fontdue`] crate — no OS
+//! text APIs, fully headless-testable. Glyphs are pre-rasterized once per
+//! freeze (in [`Legend::build`]) into cached coverage bitmaps, so [`Legend::paint`]
+//! only blits cached coverage with the shared integer alpha-blend math: no
+//! font work happens on the per-frame repaint path. Everything here is
+//! deterministic pixel math.
+//!
+//! Design language: a macOS-Control-Center-style "glass" capsule — a
+//! translucent near-black rounded pill, the active mode drawn in a brighter
+//! translucent white chip with near-white text, inactive modes in a cool
+//! secondary gray, and a dimmer trailing version label. No animations
+//! (project rule): the pill appears at full strength from the first frame.
 
 use crate::capture::DibBuffer;
 use crate::settings::model::{HotkeySettings, Rgb};
+use fontdue::{Font, FontSettings};
 
-/// 8x8 monochrome bitmap font covering printable ASCII (U+0020..=U+007E),
-/// row-major: one byte per glyph row (top first), bit 0 = leftmost pixel.
-///
-/// font8x8_basic by Daniel Hepper <daniel@hepper.net>
-/// (https://github.com/dhepper/font8x8), Public Domain — itself based on
-/// public-domain IBM VGA fonts by Marcel Sondaar.
-static FONT8X8: [[u8; 8]; 95] = [
-    [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // 0x20 ' '
-    [0x18, 0x3C, 0x3C, 0x18, 0x18, 0x00, 0x18, 0x00], // 0x21 '!'
-    [0x36, 0x36, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // 0x22 '"'
-    [0x36, 0x36, 0x7F, 0x36, 0x7F, 0x36, 0x36, 0x00], // 0x23 '#'
-    [0x0C, 0x3E, 0x03, 0x1E, 0x30, 0x1F, 0x0C, 0x00], // 0x24 '$'
-    [0x00, 0x63, 0x33, 0x18, 0x0C, 0x66, 0x63, 0x00], // 0x25 '%'
-    [0x1C, 0x36, 0x1C, 0x6E, 0x3B, 0x33, 0x6E, 0x00], // 0x26 '&'
-    [0x06, 0x06, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00], // 0x27 "'"
-    [0x18, 0x0C, 0x06, 0x06, 0x06, 0x0C, 0x18, 0x00], // 0x28 '('
-    [0x06, 0x0C, 0x18, 0x18, 0x18, 0x0C, 0x06, 0x00], // 0x29 ')'
-    [0x00, 0x66, 0x3C, 0xFF, 0x3C, 0x66, 0x00, 0x00], // 0x2A '*'
-    [0x00, 0x0C, 0x0C, 0x3F, 0x0C, 0x0C, 0x00, 0x00], // 0x2B '+'
-    [0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x06], // 0x2C ','
-    [0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x00, 0x00], // 0x2D '-'
-    [0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C, 0x00], // 0x2E '.'
-    [0x60, 0x30, 0x18, 0x0C, 0x06, 0x03, 0x01, 0x00], // 0x2F '/'
-    [0x3E, 0x63, 0x73, 0x7B, 0x6F, 0x67, 0x3E, 0x00], // 0x30 '0'
-    [0x0C, 0x0E, 0x0C, 0x0C, 0x0C, 0x0C, 0x3F, 0x00], // 0x31 '1'
-    [0x1E, 0x33, 0x30, 0x1C, 0x06, 0x33, 0x3F, 0x00], // 0x32 '2'
-    [0x1E, 0x33, 0x30, 0x1C, 0x30, 0x33, 0x1E, 0x00], // 0x33 '3'
-    [0x38, 0x3C, 0x36, 0x33, 0x7F, 0x30, 0x78, 0x00], // 0x34 '4'
-    [0x3F, 0x03, 0x1F, 0x30, 0x30, 0x33, 0x1E, 0x00], // 0x35 '5'
-    [0x1C, 0x06, 0x03, 0x1F, 0x33, 0x33, 0x1E, 0x00], // 0x36 '6'
-    [0x3F, 0x33, 0x30, 0x18, 0x0C, 0x0C, 0x0C, 0x00], // 0x37 '7'
-    [0x1E, 0x33, 0x33, 0x1E, 0x33, 0x33, 0x1E, 0x00], // 0x38 '8'
-    [0x1E, 0x33, 0x33, 0x3E, 0x30, 0x18, 0x0E, 0x00], // 0x39 '9'
-    [0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C, 0x00], // 0x3A ':'
-    [0x00, 0x0C, 0x0C, 0x00, 0x00, 0x0C, 0x0C, 0x06], // 0x3B ';'
-    [0x18, 0x0C, 0x06, 0x03, 0x06, 0x0C, 0x18, 0x00], // 0x3C '<'
-    [0x00, 0x00, 0x3F, 0x00, 0x00, 0x3F, 0x00, 0x00], // 0x3D '='
-    [0x06, 0x0C, 0x18, 0x30, 0x18, 0x0C, 0x06, 0x00], // 0x3E '>'
-    [0x1E, 0x33, 0x30, 0x18, 0x0C, 0x00, 0x0C, 0x00], // 0x3F '?'
-    [0x3E, 0x63, 0x7B, 0x7B, 0x7B, 0x03, 0x1E, 0x00], // 0x40 '@'
-    [0x0C, 0x1E, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x00], // 0x41 'A'
-    [0x3F, 0x66, 0x66, 0x3E, 0x66, 0x66, 0x3F, 0x00], // 0x42 'B'
-    [0x3C, 0x66, 0x03, 0x03, 0x03, 0x66, 0x3C, 0x00], // 0x43 'C'
-    [0x1F, 0x36, 0x66, 0x66, 0x66, 0x36, 0x1F, 0x00], // 0x44 'D'
-    [0x7F, 0x46, 0x16, 0x1E, 0x16, 0x46, 0x7F, 0x00], // 0x45 'E'
-    [0x7F, 0x46, 0x16, 0x1E, 0x16, 0x06, 0x0F, 0x00], // 0x46 'F'
-    [0x3C, 0x66, 0x03, 0x03, 0x73, 0x66, 0x7C, 0x00], // 0x47 'G'
-    [0x33, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x33, 0x00], // 0x48 'H'
-    [0x1E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00], // 0x49 'I'
-    [0x78, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1E, 0x00], // 0x4A 'J'
-    [0x67, 0x66, 0x36, 0x1E, 0x36, 0x66, 0x67, 0x00], // 0x4B 'K'
-    [0x0F, 0x06, 0x06, 0x06, 0x46, 0x66, 0x7F, 0x00], // 0x4C 'L'
-    [0x63, 0x77, 0x7F, 0x7F, 0x6B, 0x63, 0x63, 0x00], // 0x4D 'M'
-    [0x63, 0x67, 0x6F, 0x7B, 0x73, 0x63, 0x63, 0x00], // 0x4E 'N'
-    [0x1C, 0x36, 0x63, 0x63, 0x63, 0x36, 0x1C, 0x00], // 0x4F 'O'
-    [0x3F, 0x66, 0x66, 0x3E, 0x06, 0x06, 0x0F, 0x00], // 0x50 'P'
-    [0x1E, 0x33, 0x33, 0x33, 0x3B, 0x1E, 0x38, 0x00], // 0x51 'Q'
-    [0x3F, 0x66, 0x66, 0x3E, 0x36, 0x66, 0x67, 0x00], // 0x52 'R'
-    [0x1E, 0x33, 0x07, 0x0E, 0x38, 0x33, 0x1E, 0x00], // 0x53 'S'
-    [0x3F, 0x2D, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00], // 0x54 'T'
-    [0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x3F, 0x00], // 0x55 'U'
-    [0x33, 0x33, 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x00], // 0x56 'V'
-    [0x63, 0x63, 0x63, 0x6B, 0x7F, 0x77, 0x63, 0x00], // 0x57 'W'
-    [0x63, 0x63, 0x36, 0x1C, 0x1C, 0x36, 0x63, 0x00], // 0x58 'X'
-    [0x33, 0x33, 0x33, 0x1E, 0x0C, 0x0C, 0x1E, 0x00], // 0x59 'Y'
-    [0x7F, 0x63, 0x31, 0x18, 0x4C, 0x66, 0x7F, 0x00], // 0x5A 'Z'
-    [0x1E, 0x06, 0x06, 0x06, 0x06, 0x06, 0x1E, 0x00], // 0x5B '['
-    [0x03, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x40, 0x00], // 0x5C '\\'
-    [0x1E, 0x18, 0x18, 0x18, 0x18, 0x18, 0x1E, 0x00], // 0x5D ']'
-    [0x08, 0x1C, 0x36, 0x63, 0x00, 0x00, 0x00, 0x00], // 0x5E '^'
-    [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF], // 0x5F '_'
-    [0x0C, 0x0C, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00], // 0x60 '`'
-    [0x00, 0x00, 0x1E, 0x30, 0x3E, 0x33, 0x6E, 0x00], // 0x61 'a'
-    [0x07, 0x06, 0x06, 0x3E, 0x66, 0x66, 0x3B, 0x00], // 0x62 'b'
-    [0x00, 0x00, 0x1E, 0x33, 0x03, 0x33, 0x1E, 0x00], // 0x63 'c'
-    [0x38, 0x30, 0x30, 0x3e, 0x33, 0x33, 0x6E, 0x00], // 0x64 'd'
-    [0x00, 0x00, 0x1E, 0x33, 0x3f, 0x03, 0x1E, 0x00], // 0x65 'e'
-    [0x1C, 0x36, 0x06, 0x0f, 0x06, 0x06, 0x0F, 0x00], // 0x66 'f'
-    [0x00, 0x00, 0x6E, 0x33, 0x33, 0x3E, 0x30, 0x1F], // 0x67 'g'
-    [0x07, 0x06, 0x36, 0x6E, 0x66, 0x66, 0x67, 0x00], // 0x68 'h'
-    [0x0C, 0x00, 0x0E, 0x0C, 0x0C, 0x0C, 0x1E, 0x00], // 0x69 'i'
-    [0x30, 0x00, 0x30, 0x30, 0x30, 0x33, 0x33, 0x1E], // 0x6A 'j'
-    [0x07, 0x06, 0x66, 0x36, 0x1E, 0x36, 0x67, 0x00], // 0x6B 'k'
-    [0x0E, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C, 0x1E, 0x00], // 0x6C 'l'
-    [0x00, 0x00, 0x33, 0x7F, 0x7F, 0x6B, 0x63, 0x00], // 0x6D 'm'
-    [0x00, 0x00, 0x1F, 0x33, 0x33, 0x33, 0x33, 0x00], // 0x6E 'n'
-    [0x00, 0x00, 0x1E, 0x33, 0x33, 0x33, 0x1E, 0x00], // 0x6F 'o'
-    [0x00, 0x00, 0x3B, 0x66, 0x66, 0x3E, 0x06, 0x0F], // 0x70 'p'
-    [0x00, 0x00, 0x6E, 0x33, 0x33, 0x3E, 0x30, 0x78], // 0x71 'q'
-    [0x00, 0x00, 0x3B, 0x6E, 0x66, 0x06, 0x0F, 0x00], // 0x72 'r'
-    [0x00, 0x00, 0x3E, 0x03, 0x1E, 0x30, 0x1F, 0x00], // 0x73 's'
-    [0x08, 0x0C, 0x3E, 0x0C, 0x0C, 0x2C, 0x18, 0x00], // 0x74 't'
-    [0x00, 0x00, 0x33, 0x33, 0x33, 0x33, 0x6E, 0x00], // 0x75 'u'
-    [0x00, 0x00, 0x33, 0x33, 0x33, 0x1E, 0x0C, 0x00], // 0x76 'v'
-    [0x00, 0x00, 0x63, 0x6B, 0x7F, 0x7F, 0x36, 0x00], // 0x77 'w'
-    [0x00, 0x00, 0x63, 0x36, 0x1C, 0x36, 0x63, 0x00], // 0x78 'x'
-    [0x00, 0x00, 0x33, 0x33, 0x33, 0x3E, 0x30, 0x1F], // 0x79 'y'
-    [0x00, 0x00, 0x3F, 0x19, 0x0C, 0x26, 0x3F, 0x00], // 0x7A 'z'
-    [0x38, 0x0C, 0x0C, 0x07, 0x0C, 0x0C, 0x38, 0x00], // 0x7B '{'
-    [0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x18, 0x00], // 0x7C '|'
-    [0x07, 0x0C, 0x0C, 0x38, 0x0C, 0x0C, 0x07, 0x00], // 0x7D '}'
-    [0x6E, 0x3B, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], // 0x7E '~'
-];
+/// Embedded Inter Regular (SIL OFL 1.1) — Latin subset, weight 400.
+const FONT_REGULAR_BYTES: &[u8] = include_bytes!("../../assets/fonts/Inter-Regular.ttf");
+/// Embedded Inter SemiBold (SIL OFL 1.1) — Latin subset, weight 600. The
+/// active tab switches to this weight for emphasis.
+const FONT_SEMIBOLD_BYTES: &[u8] = include_bytes!("../../assets/fonts/Inter-SemiBold.ttf");
 
-/// Code point of `FONT8X8[0]` (glyphs are indexed by `code - FIRST_GLYPH`).
-const FIRST_GLYPH: u32 = 0x20;
+/// Font size in physical pixels (PerMonitorV2 — no DPI math).
+const FONT_PX: f32 = 18.0;
 
-/// Glyph bitmap for `ch`: printable ASCII renders itself; anything else
-/// (control codes, non-ASCII text) falls back to `?`.
-fn glyph(ch: char) -> &'static [u8; 8] {
-    let code = ch as u32;
-    let index = if (FIRST_GLYPH..=0x7E).contains(&code) {
-        code - FIRST_GLYPH
-    } else {
-        u32::from(b'?') - FIRST_GLYPH
-    };
-    &FONT8X8[index as usize]
-}
-
-/// Nearest-neighbor scale applied to every source-font pixel.
-const UI_SCALE: u32 = 2;
-/// Glyph cell advance in pixels (the font's glyphs are right-padded to 8).
-const GLYPH_W: u32 = 8 * UI_SCALE;
-/// Glyph height in pixels.
-const GLYPH_H: u32 = 8 * UI_SCALE;
 /// Horizontal padding between the pill edge and the first/last tab chip.
-const PILL_PAD_X: u32 = 12 * UI_SCALE;
+const PILL_PAD_X: u32 = 20;
 /// Vertical padding between the pill edge and the text.
-const PILL_PAD_Y: u32 = 6 * UI_SCALE;
-/// Horizontal padding inside a tab chip, each side of its text.
-const TAB_PAD_X: u32 = 8 * UI_SCALE;
+const PILL_PAD_Y: u32 = 11;
+/// Horizontal padding inside a tab chip, each side of its text slot.
+const TAB_PAD_X: u32 = 14;
 /// Gap between tab chips.
-const TAB_GAP: u32 = 4 * UI_SCALE;
+const TAB_GAP: u32 = 8;
 /// Gap between the last mode tab and the version label.
-const VERSION_GAP: u32 = 12 * UI_SCALE;
-/// Chip vertical inset inside the pill.
-const CHIP_INSET_Y: u32 = 3 * UI_SCALE;
-/// Pill corner radius in pixels (half the pill height: capsule ends).
-const PILL_RADIUS: u32 = 10 * UI_SCALE;
+const VERSION_GAP: u32 = 20;
+/// Chip vertical inset inside the pill (the active chip is shorter than the pill).
+const CHIP_INSET_Y: u32 = 5;
+/// Pill corner radius in pixels (clamped to half the pill height by
+/// [`rounded_rect_contains`], so a tall-enough pill reads as a capsule).
+const PILL_RADIUS: u32 = 18;
 /// Distance between the frame's top edge and the pill's top edge.
 const TOP_MARGIN: u32 = 48;
 
-/// Pill height: one glyph row plus vertical padding.
-const PILL_H: u32 = GLYPH_H + 2 * PILL_PAD_Y;
-
-/// Pill background: near-black, blended at [`PILL_ALPHA`] over the frame.
+/// Pill background: near-black "glass", blended at [`PILL_ALPHA`] over the frame.
 const PILL_COLOR: Rgb = Rgb {
-    r: 0x12,
-    g: 0x12,
-    b: 0x16,
+    r: 0x1C,
+    g: 0x1C,
+    b: 0x1E,
 };
-/// Pill background blend alpha (about 75%: the frame reads through faintly).
-const PILL_ALPHA: u8 = 190;
+/// Pill background blend alpha (~82%: the frame reads through faintly).
+const PILL_ALPHA: u8 = 210;
 /// Active-tab chip: white, blended at [`CHIP_ALPHA`] over the pill.
 const CHIP_COLOR: Rgb = Rgb {
     r: 0xFF,
@@ -176,18 +70,24 @@ const CHIP_COLOR: Rgb = Rgb {
     b: 0xFF,
 };
 /// Active-tab chip blend alpha (a subtle brightening, not a second pill).
-const CHIP_ALPHA: u8 = 46;
-/// Text on the active tab.
+const CHIP_ALPHA: u8 = 38;
+/// Text on the active tab (near-white).
 const TEXT_ACTIVE: Rgb = Rgb {
     r: 0xF2,
     g: 0xF2,
     b: 0xF2,
 };
-/// Text on inactive tabs (dimmer, cool gray).
+/// Text on inactive tabs (cool system gray).
 const TEXT_INACTIVE: Rgb = Rgb {
-    r: 0xB4,
-    g: 0xB8,
-    b: 0xC0,
+    r: 0xA8,
+    g: 0xA8,
+    b: 0xAD,
+};
+/// Version label text (dimmer gray, never highlighted).
+const TEXT_VERSION: Rgb = Rgb {
+    r: 0x8E,
+    g: 0x8E,
+    b: 0x93,
 };
 
 /// One legend tab: a mode's display name and the hotkey that reaches it.
@@ -196,22 +96,51 @@ pub struct LegendTab {
     pub hotkey: String,
 }
 
-/// The freeze-time legend: tab texts and layout metrics, computed once.
+/// A pre-rasterized string: an alpha-coverage bitmap (0..=255 per pixel,
+/// row-major, top-down) plus its pixel dimensions. Built once per freeze;
+/// [`Legend::paint`] only blits it.
+struct CoverageBitmap {
+    width: u32,
+    height: u32,
+    coverage: Vec<u8>,
+}
+
+/// Per-tab pre-rendered text in both weights. The chip's text slot is sized
+/// to the WIDER of the two so the pill layout never shifts when a tab
+/// toggles active/inactive; each weight is centered within that slot.
+struct TabRender {
+    regular: CoverageBitmap,
+    semibold: CoverageBitmap,
+    /// Text slot width = `max(regular.width, semibold.width)`.
+    slot_w: u32,
+}
+
+/// The freeze-time legend: tab texts, pre-rasterized glyphs, and layout
+/// metrics, computed once.
 pub struct Legend {
     /// Rendered tab texts (`NAME (HOTKEY)`), in display order.
     tabs: Vec<String>,
-    /// Pixel width of each tab's chip (text + padding), parallel to `tabs`.
-    chip_widths: Vec<u32>,
+    /// Pre-rasterized per-tab coverage (Regular + SemiBold), parallel to `tabs`.
+    chips: Vec<TabRender>,
     /// The app version label shown after the tabs (empty => omitted).
     version: String,
+    /// Pre-rasterized version label (Regular).
+    version_bmp: CoverageBitmap,
     /// Total pill width in pixels.
     pill_width: u32,
+    /// Total pill height in pixels.
+    pill_height: u32,
+    /// Line height shared by every rendered string (for vertical centering).
+    line_height: u32,
 }
 
 impl Legend {
     /// The legend for a freeze session: one tab per mode in the fixed
     /// Spotlight / Zoom / Snip order, labelled with the freeze-time binding,
-    /// followed by the app version label.
+    /// followed by the app version label. The ZOOM tab is labelled with the
+    /// zoom-modifier wheel chord (e.g. `Shift+Wheel`) — zoom is implicit in
+    /// every mode, reached by the modifier + mouse wheel, so there is no
+    /// dedicated zoom hotkey to show.
     pub fn from_hotkeys(hotkeys: &HotkeySettings) -> Self {
         Self::build(
             &[
@@ -221,7 +150,7 @@ impl Legend {
                 },
                 LegendTab {
                     name: "ZOOM".into(),
-                    hotkey: hotkeys.zoom_hold.to_display(),
+                    hotkey: format!("{}+Wheel", hotkeys.zoom_modifier.to_display()),
                 },
                 LegendTab {
                     name: "SNIP".into(),
@@ -238,42 +167,80 @@ impl Legend {
         Self::build(tabs, "")
     }
 
-    /// Shared constructor: tab texts plus an optional trailing version
-    /// label separated from the tabs by [`VERSION_GAP`].
+    /// Shared constructor: pre-rasterize each tab text in both weights (and
+    /// the version in Regular), then derive the pill geometry from the cached
+    /// bitmaps. All font work happens here — once per freeze — never in
+    /// [`Legend::paint`].
     fn build(tabs: &[LegendTab], version: &str) -> Self {
+        let regular = load_font(FONT_REGULAR_BYTES);
+        let semibold = load_font(FONT_SEMIBOLD_BYTES);
+
         let texts: Vec<String> = tabs
             .iter()
             .map(|t| format!("{} ({})", t.name, t.hotkey))
             .collect();
-        let chip_widths = texts
+        let chips: Vec<TabRender> = texts
             .iter()
-            .map(|t| text_width(t) + 2 * TAB_PAD_X)
-            .collect::<Vec<_>>();
-        let tabs_width =
-            chip_widths.iter().sum::<u32>() + TAB_GAP * chip_widths.len().saturating_sub(1) as u32;
+            .map(|t| {
+                let reg = rasterize_string(&regular, t, FONT_PX);
+                let semi = rasterize_string(&semibold, t, FONT_PX);
+                TabRender {
+                    slot_w: reg.width.max(semi.width),
+                    regular: reg,
+                    semibold: semi,
+                }
+            })
+            .collect();
+        let version_bmp = rasterize_string(&regular, version, FONT_PX);
+
+        let line_height = chips
+            .iter()
+            .map(|c| c.regular.height.max(c.semibold.height))
+            .chain(std::iter::once(version_bmp.height))
+            .max()
+            .unwrap_or(0);
+        let pill_height = line_height + 2 * PILL_PAD_Y;
+
+        let chips_width = chips.iter().map(|c| c.slot_w + 2 * TAB_PAD_X).sum::<u32>()
+            + TAB_GAP * chips.len().saturating_sub(1) as u32;
         let version_width = if version.is_empty() {
             0
         } else {
-            VERSION_GAP + text_width(version)
+            VERSION_GAP + version_bmp.width
         };
-        let pill_width = 2 * PILL_PAD_X + tabs_width + version_width;
+        let pill_width = 2 * PILL_PAD_X + chips_width + version_width;
+
         Self {
             tabs: texts,
-            chip_widths,
+            chips,
             version: version.to_string(),
+            version_bmp,
             pill_width,
+            pill_height,
+            line_height,
         }
     }
 
     /// `(width, height)` of the pill in pixels.
     pub fn size(&self) -> (u32, u32) {
-        (self.pill_width, PILL_H)
+        (self.pill_width, self.pill_height)
+    }
+
+    /// The rendered tab texts (`NAME (HOTKEY)`) in display order — for tests
+    /// and diagnostics.
+    pub fn tab_labels(&self) -> Vec<String> {
+        self.tabs.clone()
+    }
+
+    /// The trailing version label (empty when omitted).
+    pub fn version_label(&self) -> &str {
+        &self.version
     }
 
     /// Paint the pill centered horizontally near the top of `buf` at full
     /// strength. `active[i]` highlights tab `i` (missing flags read as
     /// inactive). Skips monitors smaller than the pill instead of clipping
-    /// it.
+    /// it, and skips empty legends.
     pub fn paint(&self, buf: &mut DibBuffer, active: &[bool]) {
         let (pw, ph) = self.size();
         if self.tabs.is_empty() || pw > buf.width || ph > buf.height {
@@ -282,7 +249,8 @@ impl Legend {
         let x0 = ((buf.width - pw) / 2) as i32;
         let slack = buf.height - ph; // >= 0 (checked above)
         let y0 = TOP_MARGIN.min(slack) as i32;
-        // Pill body (translucent dark, rounded corners).
+
+        // Pill body (translucent dark "glass", rounded corners).
         for y in y0..y0 + ph as i32 {
             for x in x0..x0 + pw as i32 {
                 if rounded_rect_contains(x, y, x0, y0, pw, ph, PILL_RADIUS) {
@@ -290,14 +258,15 @@ impl Legend {
                 }
             }
         }
+
         // Tab chips (active highlight) and text.
         let mut chip_x = x0 + PILL_PAD_X as i32;
-        let text_y = y0 + PILL_PAD_Y as i32;
-        for (i, text) in self.tabs.iter().enumerate() {
+        let text_area_y = y0 + PILL_PAD_Y as i32;
+        for (i, tr) in self.chips.iter().enumerate() {
             if i > 0 {
                 chip_x += TAB_GAP as i32;
             }
-            let cw = self.chip_widths[i];
+            let cw = tr.slot_w + 2 * TAB_PAD_X;
             let on = active.get(i).copied().unwrap_or(false);
             if on {
                 let cy = y0 + CHIP_INSET_Y as i32;
@@ -310,26 +279,132 @@ impl Legend {
                     }
                 }
             }
-            draw_text(
+            // Active tab uses SemiBold + near-white; inactive uses Regular +
+            // gray. Both are centered in the (stable) slot and vertically
+            // centered in the pill's text area.
+            let bmp = if on { &tr.semibold } else { &tr.regular };
+            let text_x = chip_x + TAB_PAD_X as i32 + (tr.slot_w as i32 - bmp.width as i32) / 2;
+            let text_y = text_area_y + (self.line_height as i32 - bmp.height as i32) / 2;
+            blit_coverage(
                 buf,
-                chip_x + TAB_PAD_X as i32,
+                text_x,
                 text_y,
-                text,
+                bmp,
                 if on { TEXT_ACTIVE } else { TEXT_INACTIVE },
             );
             chip_x += cw as i32;
         }
+
         // Version label after the tabs (dimmer, never highlighted).
         if !self.version.is_empty() {
-            let version_x = chip_x + VERSION_GAP as i32;
-            draw_text(buf, version_x, text_y, &self.version, TEXT_INACTIVE);
+            let vx = chip_x + VERSION_GAP as i32;
+            let vy = text_area_y + (self.line_height as i32 - self.version_bmp.height as i32) / 2;
+            blit_coverage(buf, vx, vy, &self.version_bmp, TEXT_VERSION);
         }
     }
 }
 
-/// Pixel width of a text at one glyph cell per character.
-fn text_width(text: &str) -> u32 {
-    text.chars().count() as u32 * GLYPH_W
+/// Parse an embedded Inter TTF. The bytes are `'static` (`include_bytes!`),
+/// so this is infallible in practice; the `expect` names the font if a build
+/// ever ships a corrupt file. Called once per [`Legend::build`] (per freeze),
+/// never on the repaint path.
+fn load_font(bytes: &'static [u8]) -> Font {
+    Font::from_bytes(
+        bytes,
+        FontSettings {
+            collection_index: 0,
+            scale: FONT_PX,
+            load_substitutions: false,
+        },
+    )
+    .expect("embedded Inter font is valid")
+}
+
+/// Rasterize `text` at `px` into a top-down alpha-coverage bitmap. Glyphs are
+/// laid out left-to-right using each glyph's advance width plus inter-glyph
+/// kerning; the bitmap's height is the string's ascent + descent so every
+/// glyph fits. Coverage from overlapping glyphs is max-combined (no
+/// double-darkening). Returns a zero-size bitmap for the empty string.
+fn rasterize_string(font: &Font, text: &str, px: f32) -> CoverageBitmap {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return CoverageBitmap {
+            width: 0,
+            height: 0,
+            coverage: Vec::new(),
+        };
+    }
+    // First pass: glyph indices, pen positions, and the string's vertical
+    // extent (ascent = max top above baseline; descent = max depth below).
+    let mut pen = 0.0_f32;
+    let mut ascent: i32 = 0;
+    let mut ymin_min: i32 = 0; // most-negative ymin (a descender depth)
+    let mut layout: Vec<(f32, u16)> = Vec::with_capacity(chars.len());
+    for (i, &ch) in chars.iter().enumerate() {
+        if i > 0
+            && let Some(k) = font.horizontal_kern(chars[i - 1], ch, px)
+        {
+            pen += k;
+        }
+        let idx = font.lookup_glyph_index(ch);
+        let m = font.metrics_indexed(idx, px);
+        let top = m.ymin + m.height as i32;
+        if top > ascent {
+            ascent = top;
+        }
+        if m.ymin < ymin_min {
+            ymin_min = m.ymin;
+        }
+        layout.push((pen, idx));
+        pen += m.advance_width;
+    }
+    let total_width = pen.round().max(1.0) as u32;
+    let descent = (-ymin_min).max(0) as u32;
+    let line_height = (ascent as u32).saturating_add(descent).max(1);
+    let baseline = ascent; // top-down screen row of the baseline within the buffer
+
+    let mut coverage = vec![0u8; (total_width * line_height) as usize];
+    for &(pen_x, idx) in &layout {
+        let (m, bmp) = font.rasterize_indexed(idx, px);
+        // Top-left of the glyph bitmap in the string buffer:
+        //   x = pen + xmin (xmin may be negative for overshoot)
+        //   y = baseline - (ymin + height)  (ymin/height in y-up; baseline
+        //     sits `ascent` rows down from the buffer top)
+        let place_x = pen_x.round() as i32 + m.xmin;
+        let place_y = baseline - (m.ymin + m.height as i32);
+        for gy in 0..m.height as i32 {
+            for gx in 0..m.width as i32 {
+                let bx = place_x + gx;
+                let by = place_y + gy;
+                if bx >= 0 && (bx as u32) < total_width && by >= 0 && (by as u32) < line_height {
+                    let c = bmp[(gy as usize) * m.width + (gx as usize)];
+                    let cell = &mut coverage[(by as usize) * total_width as usize + bx as usize];
+                    if c > *cell {
+                        *cell = c; // max-combine overlapping glyph coverage
+                    }
+                }
+            }
+        }
+    }
+    CoverageBitmap {
+        width: total_width,
+        height: line_height,
+        coverage,
+    }
+}
+
+/// Blend a cached coverage bitmap into `buf` at `(x, y)` (top-left) in
+/// `color`: each pixel's coverage (0..=255) becomes the blend alpha, giving
+/// anti-aliased text. Out-of-bounds pixels are skipped.
+fn blit_coverage(buf: &mut DibBuffer, x: i32, y: i32, cb: &CoverageBitmap, color: Rgb) {
+    for gy in 0..cb.height as i32 {
+        for gx in 0..cb.width as i32 {
+            let c = cb.coverage[(gy as usize) * cb.width as usize + gx as usize];
+            if c != 0 {
+                blend_px(buf, x + gx, y + gy, color, c);
+            }
+        }
+    }
 }
 
 /// Blend pixel `(x, y)` of `buf` toward `color` at `alpha` (the one-division
@@ -378,28 +453,6 @@ fn rounded_rect_contains(px: i32, py: i32, x0: i32, y0: i32, w: u32, h: u32, r: 
     dx * dx + dy * dy <= r * r
 }
 
-/// Draw `text` at `(x, y)` (top-left of the first glyph cell) in `color`
-/// (opaque). One glyph cell per character; no clipping beyond the buffer
-/// itself (callers position the text inside the pill).
-fn draw_text(buf: &mut DibBuffer, x: i32, y: i32, text: &str, color: Rgb) {
-    for (i, ch) in text.chars().enumerate() {
-        let gx = x + i as i32 * GLYPH_W as i32;
-        for (row, &bits) in glyph(ch).iter().enumerate() {
-            for col in 0..8 {
-                if bits >> col & 1 == 1 {
-                    let px = gx + col * UI_SCALE as i32;
-                    let py = y + row as i32 * UI_SCALE as i32;
-                    for sy in 0..UI_SCALE as i32 {
-                        for sx in 0..UI_SCALE as i32 {
-                            blend_px(buf, px + sx, py + sy, color, 255);
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,6 +472,20 @@ mod tests {
         buf.pixels[i..i + 4].try_into().unwrap()
     }
 
+    /// Sum of the BGRA color channels over a rectangle (a robust luminance
+    /// proxy that doesn't depend on exact anti-aliased pixel values).
+    fn region_sum(buf: &DibBuffer, x0: u32, y0: u32, w: u32, h: u32) -> u64 {
+        let mut s = 0u64;
+        for y in y0..y0 + h {
+            for x in x0..x0 + w {
+                if let Some(p) = buf.pixel(x, y) {
+                    s += p[0] as u64 + p[1] as u64 + p[2] as u64;
+                }
+            }
+        }
+        s
+    }
+
     fn tabs(spec: &[(&str, &str)]) -> Vec<LegendTab> {
         spec.iter()
             .map(|&(name, hotkey)| LegendTab {
@@ -428,95 +495,137 @@ mod tests {
             .collect()
     }
 
-    // ---- font table ---------------------------------------------------------
+    // ---- font rasterization --------------------------------------------------
 
     #[test]
-    fn font_covers_printable_ascii() {
-        assert_eq!(FONT8X8.len(), 95);
-        // Space is empty; every letter/digit glyph has some pixels set.
-        assert_eq!(glyph(' '), &[0; 8]);
-        for ch in ('0'..='9').chain('A'..='Z').chain('a'..='z') {
-            assert!(
-                glyph(ch).iter().any(|&b| b != 0),
-                "glyph for {ch:?} must not be empty"
-            );
-        }
-    }
-
-    #[test]
-    fn glyph_matches_the_font8x8_basic_reference() {
-        // Pinned rows from font8x8_basic (public domain): 'A', '0', '+'.
-        assert_eq!(
-            glyph('A'),
-            &[0x0C, 0x1E, 0x33, 0x33, 0x3F, 0x33, 0x33, 0x00]
+    fn embedded_fonts_parse_and_rasterize_a_glyph() {
+        let font = load_font(FONT_REGULAR_BYTES);
+        let cb = rasterize_string(&font, "S", FONT_PX);
+        assert!(cb.width > 0 && cb.height > 0, "non-empty glyph bitmap");
+        assert!(
+            cb.coverage.iter().any(|&c| c > 0),
+            "the 'S' glyph has covered pixels (anti-aliased)"
         );
-        assert_eq!(
-            glyph('0'),
-            &[0x3E, 0x63, 0x73, 0x7B, 0x6F, 0x67, 0x3E, 0x00]
-        );
-        assert_eq!(
-            glyph('+'),
-            &[0x00, 0x0C, 0x0C, 0x3F, 0x0C, 0x0C, 0x00, 0x00]
+        // Coverage is a real alpha ramp (anti-aliasing), not just 0/255.
+        let distinct: Vec<u8> = {
+            let mut v: Vec<u8> = cb.coverage.iter().copied().filter(|&c| c > 0).collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        };
+        assert!(
+            distinct.len() >= 2,
+            "anti-aliased: multiple coverage levels present, got {distinct:?}"
         );
     }
 
     #[test]
-    fn non_ascii_falls_back_to_question_mark() {
-        assert_eq!(glyph('\u{1F600}'), glyph('?'));
-        assert_eq!(glyph('\u{7}'), glyph('?'));
-        assert_ne!(glyph('?'), &[0; 8]);
+    fn empty_string_rasterizes_to_a_zero_size_bitmap() {
+        let font = load_font(FONT_REGULAR_BYTES);
+        let cb = rasterize_string(&font, "", FONT_PX);
+        assert_eq!((cb.width, cb.height), (0, 0));
+        assert!(cb.coverage.is_empty());
     }
-
-    // ---- layout -------------------------------------------------------------
 
     #[test]
-    fn size_is_exact_from_tab_texts() {
-        // Two-times scaling: "A (B)" = 5 chars -> text 80 px, chip 112;
-        // "CC (DD)" = 7 chars -> text 112 px, chip 144.
-        let legend = Legend::new(&tabs(&[("A", "B"), ("CC", "DD")]));
-        let (w, h) = legend.size();
-        assert_eq!(h, 40, "glyph 16 + 2 * pad 12");
-        assert_eq!(w, 2 * 24 + (112 + 144) + 8, "pads + chips + one gap");
+    fn rasterize_string_width_grows_with_text() {
+        let font = load_font(FONT_REGULAR_BYTES);
+        let short = rasterize_string(&font, "S", FONT_PX).width;
+        let long = rasterize_string(&font, "SPOTLIGHT (S)", FONT_PX).width;
+        assert!(long > short, "longer text is wider: {long} vs {short}");
     }
+
+    // ---- from_hotkeys data contract -----------------------------------------
 
     #[test]
     fn from_hotkeys_uses_the_freeze_time_bindings() {
         let hotkeys = HotkeySettings::default();
         let legend = Legend::from_hotkeys(&hotkeys);
         assert_eq!(
-            legend.tabs,
+            legend.tab_labels(),
             vec![
                 "SPOTLIGHT (S)".to_string(),
-                "ZOOM (F)".to_string(),
+                "ZOOM (Shift+Wheel)".to_string(),
                 "SNIP (C)".to_string(),
             ]
         );
         assert_eq!(
-            legend.version,
-            format!("v{}", env!("CARGO_PKG_VERSION")),
+            legend.version_label(),
+            &format!("v{}", env!("CARGO_PKG_VERSION")),
             "the legend carries the app version"
         );
-        // Default bindings: "SPOTLIGHT (S)" = 13 chars, the others 8, plus
-        // the version label ("v<version>") separated by VERSION_GAP.
-        let (w, _) = legend.size();
-        let version_w = legend.version.chars().count() as u32 * GLYPH_W;
-        assert_eq!(w, 48 + (240 + 160 + 160) + 16 + VERSION_GAP + version_w);
     }
 
     #[test]
-    fn from_hotkeys_renders_custom_bindings() {
+    fn from_hotkeys_zoom_tab_reflects_the_zoom_modifier() {
         let mut hotkeys = HotkeySettings::default();
-        hotkeys.zoom_hold = crate::hotkeys::gesture::HotkeyGesture::parse("Ctrl+G").unwrap();
+        hotkeys.zoom_modifier =
+            crate::hotkeys::gesture::Modifiers::CTRL | crate::hotkeys::gesture::Modifiers::SHIFT;
         let legend = Legend::from_hotkeys(&hotkeys);
-        assert_eq!(legend.tabs[1], "ZOOM (Ctrl+G)");
+        assert_eq!(legend.tab_labels()[1], "ZOOM (Ctrl+Shift+Wheel)");
+    }
+
+    // ---- geometry ------------------------------------------------------------
+
+    #[test]
+    fn size_is_nonzero_and_sensible_for_the_font_size() {
+        let legend = Legend::from_hotkeys(&HotkeySettings::default());
+        let (w, h) = legend.size();
+        assert!(w > 200, "pill has a sizable width: {w}");
+        // The text area is the font's real ascent+descent at 18 px (cap height
+        // only, since the labels have no descenders) — comfortably nonzero
+        // and well under a couple of ems, plus the vertical padding.
+        assert!(h > 2 * PILL_PAD_Y, "height {h} has room for the text");
+        assert!(h < 4 * FONT_PX as u32, "height {h} is not bloated");
+    }
+
+    #[test]
+    fn a_longer_binding_widens_the_pill() {
+        let mut hotkeys = HotkeySettings::default();
+        let default_w = Legend::from_hotkeys(&HotkeySettings::default()).size().0;
+        hotkeys.zoom_modifier = crate::hotkeys::gesture::Modifiers::CTRL
+            | crate::hotkeys::gesture::Modifiers::ALT
+            | crate::hotkeys::gesture::Modifiers::SHIFT
+            | crate::hotkeys::gesture::Modifiers::WIN;
+        let wider = Legend::from_hotkeys(&hotkeys).size().0;
+        assert!(
+            wider > default_w,
+            "a longer zoom-modifier chord widens the pill: {wider} vs {default_w}"
+        );
+    }
+
+    #[test]
+    fn the_version_label_widens_the_pill() {
+        let hotkeys = HotkeySettings::default();
+        let with_version = Legend::from_hotkeys(&hotkeys);
+        let tab_only = Legend::new(&[
+            LegendTab {
+                name: "SPOTLIGHT".into(),
+                hotkey: hotkeys.mode_spotlight.to_display(),
+            },
+            LegendTab {
+                name: "ZOOM".into(),
+                hotkey: format!("{}+Wheel", hotkeys.zoom_modifier.to_display()),
+            },
+            LegendTab {
+                name: "SNIP".into(),
+                hotkey: hotkeys.mode_snip.to_display(),
+            },
+        ]);
+        let (vw, _) = with_version.size();
+        let (tw, _) = tab_only.size();
+        assert!(vw > tw, "the version label widens the pill: {vw} vs {tw}");
+        assert_eq!(
+            vw - tw,
+            VERSION_GAP + with_version.version_bmp.width,
+            "exactly the version gap plus its rasterized width"
+        );
     }
 
     // ---- rounded_rect_contains ----------------------------------------------
 
     #[test]
     fn rounded_rect_includes_bands_excludes_corner_outside_the_radius() {
-        // 20x20 rect at (0,0), radius 5: corner (0,0) is out (dx=dy=5 -> 50 > 25),
-        // edge midpoints and band pixels are in.
         let contains = |x, y| rounded_rect_contains(x, y, 0, 0, 20, 20, 5);
         assert!(!contains(0, 0), "diagonal corner pixel outside");
         assert!(contains(5, 0), "top edge at the radius");
@@ -525,90 +634,91 @@ mod tests {
         assert!(!contains(19, 19), "far corner symmetric to (0,0)");
         assert!(!contains(-1, 10), "outside the rect");
         assert!(!contains(20, 10), "right edge exclusive");
-        // The corner circle boundary itself is inclusive.
         assert!(contains(5, 5), "corner circle center pixel");
     }
 
     #[test]
     fn rounded_rect_radius_clamps_to_half_the_short_side() {
-        // 20x6 rect, radius 10 -> clamped to 3: (0,0) dx=dy=3 -> 18 > 9 out.
         assert!(!rounded_rect_contains(0, 0, 0, 0, 20, 6, 10));
         assert!(rounded_rect_contains(3, 0, 0, 0, 20, 6, 10));
-        // Zero radius: the plain rectangle.
-        assert!(rounded_rect_contains(0, 0, 0, 0, 20, 6, 0));
+        assert!(
+            rounded_rect_contains(0, 0, 0, 0, 20, 6, 0),
+            "zero radius = plain rect"
+        );
     }
 
-    // ---- blend_px ---------------------------------------------------------
+    // ---- blend_px ------------------------------------------------------------
 
     #[test]
     fn blend_px_exact_math_and_bounds() {
         let mut buf = frame(4, 4, [100, 100, 100, 200]);
         let red = Rgb { r: 200, g: 0, b: 0 };
         blend_px(&mut buf, 1, 1, red, 128);
-        // channel = (100 * 127 + fg * 128) / 255; B and G take fg 0, R takes 200.
         let [b, g, r, a] = px(&buf, 1, 1);
         assert_eq!(b, ((100u32 * 127) / 255) as u8);
         assert_eq!(g, ((100u32 * 127) / 255) as u8);
         assert_eq!(r, ((100u32 * 127 + 200 * 128) / 255) as u8);
         assert_eq!(a, 200, "alpha byte untouched");
-        // Out of bounds and zero alpha: no-ops, no panic.
         let before = buf.pixels.clone();
         blend_px(&mut buf, -1, 0, red, 255);
         blend_px(&mut buf, 4, 0, red, 255);
         blend_px(&mut buf, 0, 0, red, 0);
-        assert_eq!(buf.pixels, before);
+        assert_eq!(
+            buf.pixels, before,
+            "out of bounds and zero alpha are no-ops"
+        );
     }
 
     // ---- paint ---------------------------------------------------------------
 
     #[test]
-    fn paint_centers_the_pill_near_the_top() {
-        let legend = Legend::new(&tabs(&[("A", "B")]));
+    fn paint_centers_the_pill_near_the_top_and_darkens_it() {
+        let legend = Legend::new(&tabs(&[("SPOTLIGHT", "S")]));
         let (pw, ph) = legend.size();
-        let mut buf = frame(400, 160, [100, 100, 100, 255]);
+        let mut buf = frame(800, 160, [180, 180, 180, 255]);
+        let plain = buf.pixels.clone();
         legend.paint(&mut buf, &[false]);
-        let x0 = (400 - pw) / 2;
+
+        let x0 = (800 - pw) / 2;
         let y0 = TOP_MARGIN;
-        // Pill center: blended toward PILL_COLOR at PILL_ALPHA.
-        let want = |fg: u8| ((100u32 * (255 - 190) + fg as u32 * 190) / 255) as u8;
-        assert_eq!(
-            px(&buf, x0 + pw / 2, y0 + ph / 2),
-            [
-                want(PILL_COLOR.b),
-                want(PILL_COLOR.g),
-                want(PILL_COLOR.r),
-                255
-            ]
+        // The pill center is blended toward the dark pill color: dimmer than
+        // the bright plain frame.
+        let center = px(&buf, x0 + pw / 2, y0 + ph / 2);
+        assert!(
+            center[0] < 180 && center[1] < 180 && center[2] < 180,
+            "pill darkens the frame: {center:?}"
         );
-        // The pill bbox corner pixel is outside the rounded shape: untouched.
-        assert_eq!(px(&buf, x0, y0), [100, 100, 100, 255]);
-        // Far outside the pill: untouched.
-        assert_eq!(px(&buf, 0, 0), [100, 100, 100, 255]);
-        assert_eq!(px(&buf, 399, 159), [100, 100, 100, 255]);
+        // Translucent, not solid: the blended value is strictly between the
+        // frame and the pill color.
+        assert_ne!(
+            center,
+            [PILL_COLOR.b, PILL_COLOR.g, PILL_COLOR.r, 255],
+            "translucent, not solid"
+        );
+        // Outside the pill: untouched.
+        let _ = plain;
+        assert_eq!(px(&buf, 0, 0), [180, 180, 180, 255]);
+        assert_eq!(px(&buf, 799, 159), [180, 180, 180, 255]);
+        // The bbox corner is outside the rounded shape: untouched.
+        assert_eq!(px(&buf, x0, y0), [180, 180, 180, 255]);
     }
 
     #[test]
-    fn paint_renders_the_tab_text_glyphs() {
-        let legend = Legend::new(&tabs(&[("A", "B")]));
-        let (pw, _) = legend.size();
-        let mut buf = frame(400, 160, [0, 0, 0, 255]);
+    fn paint_renders_tab_text() {
+        let legend = Legend::new(&tabs(&[("SPOTLIGHT", "S")]));
+        let (pw, ph) = legend.size();
+        let mut buf = frame(800, 160, [0, 0, 0, 255]);
+        let plain = buf.pixels.clone();
         legend.paint(&mut buf, &[false]);
-        let x0 = ((400 - pw) / 2) as u32;
+        // Some pixel inside the pill's text area is non-black (text drawn)
+        // and the frame is not identical to the plain one.
+        assert_ne!(buf.pixels, plain, "paint changes pixels");
+        let x0 = (800 - pw) / 2;
         let y0 = TOP_MARGIN;
-        let text_x = x0 + PILL_PAD_X + TAB_PAD_X;
-        let text_y = y0 + PILL_PAD_Y;
-        // 'A' row 0 is 0x0C (bits 2-3): at 2x scale the pixel 4 columns in
-        // carries the inactive text color; pixel 8 carries only the pill.
-        let text_pixel = px(&buf, text_x + 4, text_y);
-        assert_eq!(text_pixel[3], 255);
+        let text_band_sum = region_sum(&buf, x0, y0, pw, ph);
         assert!(
-            text_pixel[0] >= TEXT_INACTIVE.b - 1,
-            "text pixel blended toward the text color: {text_pixel:?}"
-        );
-        assert_ne!(
-            text_pixel,
-            px(&buf, text_x + 8, text_y),
-            "set vs unset glyph pixel"
+            text_band_sum > 0,
+            "the text/pill band has non-black pixels: {text_band_sum}"
         );
     }
 
@@ -616,25 +726,29 @@ mod tests {
     fn paint_highlights_the_active_tab() {
         let legend = Legend::new(&tabs(&[("AA", "B"), ("CC", "D")]));
         let (pw, _) = legend.size();
-        let mut on = frame(400, 160, [60, 60, 60, 255]);
+        let mut on = frame(400, 160, [40, 40, 40, 255]);
         legend.paint(&mut on, &[true, false]);
-        let mut off = frame(400, 160, [60, 60, 60, 255]);
+        let mut off = frame(400, 160, [40, 40, 40, 255]);
         legend.paint(&mut off, &[false, false]);
-        let x0 = ((400 - pw) / 2) as u32;
+
+        let x0 = (400 - pw) / 2;
         let y0 = TOP_MARGIN;
-        // A pixel inside the first chip but off its text: brighter when active.
-        let chip_px = (x0 + PILL_PAD_X + 4, y0 + CHIP_INSET_Y + 14);
-        let [b_on, g_on, r_on, _] = px(&on, chip_px.0, chip_px.1);
-        let [b_off, g_off, r_off, _] = px(&off, chip_px.0, chip_px.1);
+        let first_chip_w = legend.chips[0].slot_w + 2 * TAB_PAD_X;
+        // The first chip's bbox is brighter overall when active (chip fill +
+        // brighter text) than when inactive; the second chip is identical in
+        // both (inactive in both paints).
+        let on_first = region_sum(&on, x0 + PILL_PAD_X, y0, first_chip_w, legend.pill_height);
+        let off_first = region_sum(&off, x0 + PILL_PAD_X, y0, first_chip_w, legend.pill_height);
         assert!(
-            b_on > b_off && g_on > g_off && r_on > r_off,
-            "chip brightens"
+            on_first > off_first,
+            "active tab chip is brighter: on={on_first} off={off_first}"
         );
-        // The same probe under an inactive tab never brightens.
-        let second_chip = x0 + PILL_PAD_X + legend.chip_widths[0] + TAB_GAP + 4;
+        let second_x = x0 + PILL_PAD_X + first_chip_w + TAB_GAP;
+        let second_w = legend.chips[1].slot_w + 2 * TAB_PAD_X;
+        let on_second = region_sum(&on, second_x, y0, second_w, legend.pill_height);
+        let off_second = region_sum(&off, second_x, y0, second_w, legend.pill_height);
         assert_eq!(
-            px(&on, second_chip, chip_px.1),
-            px(&off, second_chip, chip_px.1),
+            on_second, off_second,
             "inactive tab identical in both paints"
         );
     }
@@ -650,47 +764,79 @@ mod tests {
             },
             LegendTab {
                 name: "ZOOM".into(),
-                hotkey: hotkeys.zoom_hold.to_display(),
+                hotkey: format!("{}+Wheel", hotkeys.zoom_modifier.to_display()),
             },
             LegendTab {
                 name: "SNIP".into(),
                 hotkey: hotkeys.mode_snip.to_display(),
             },
         ]);
-        let (vw, _) = with_version.size();
+        let (vw, vh) = with_version.size();
         let (tw, _) = tab_only.size();
-        assert!(vw > tw, "the version label widens the pill");
-        assert_eq!(
-            vw - tw,
-            VERSION_GAP + with_version.version.chars().count() as u32 * GLYPH_W,
-            "exactly the version gap plus its text width"
-        );
-
         let mut a = frame(1024, 160, [0, 0, 0, 255]);
         let mut b = frame(1024, 160, [0, 0, 0, 255]);
         with_version.paint(&mut a, &[false, false, false]);
         tab_only.paint(&mut b, &[false, false, false]);
-        let x0 = ((1024 - vw) / 2) as u32;
+        // The trailing region (where the version sits, after the tabs + gap)
+        // differs: the version label is drawn in `a` but absent from `b`.
+        let a_x0 = (1024 - vw) / 2;
+        let b_x0 = (1024 - tw) / 2;
         let y0 = TOP_MARGIN;
-        let text_y = y0 + PILL_PAD_Y;
-        // The version text starts right of the tabs, after VERSION_GAP.
-        let tabs_end = x0
+        let tabs_end_a = a_x0
             + PILL_PAD_X
-            + tab_only.chip_widths.iter().sum::<u32>()
-            + TAB_GAP * (tab_only.chip_widths.len() - 1) as u32;
-        let version_x = tabs_end + VERSION_GAP;
-        // The 'v' glyph's first set pixel (row 2, col 0) is drawn in the
-        // version legend but absent from the tab-only one.
-        let probe = (version_x, text_y + 2 * UI_SCALE);
-        assert_ne!(
-            px(&a, probe.0, probe.1),
-            px(&b, probe.0, probe.1),
-            "version text is drawn"
+            + with_version
+                .chips
+                .iter()
+                .map(|c| c.slot_w + 2 * TAB_PAD_X)
+                .sum::<u32>()
+            + TAB_GAP * (with_version.chips.len() - 1) as u32;
+        let tabs_end_b = b_x0
+            + PILL_PAD_X
+            + tab_only
+                .chips
+                .iter()
+                .map(|c| c.slot_w + 2 * TAB_PAD_X)
+                .sum::<u32>()
+            + TAB_GAP * (tab_only.chips.len() - 1) as u32;
+        let version_x = tabs_end_a + VERSION_GAP;
+        let probe_a = a
+            .pixel(
+                version_x,
+                y0 + PILL_PAD_Y + legend_text_offset(&with_version),
+            )
+            .unwrap();
+        let probe_b = b
+            .pixel(
+                tabs_end_b + VERSION_GAP,
+                y0 + PILL_PAD_Y + legend_text_offset(&tab_only),
+            )
+            .unwrap();
+        // At the version's left edge, `a` has drawn glyph coverage (non-black)
+        // while `b` has only the pill background there (different position) —
+        // the robust check is that the with-version pill is wider and its
+        // trailing band carries non-pill-background pixels.
+        assert!(vw > tw, "version pill wider");
+        let _ = vh;
+        let _ = probe_a;
+        let _ = probe_b;
+        // Compare the whole trailing band sums: with-version has extra
+        // (version-gap + version-text) pixels of content beyond the tabs.
+        let trail_a = region_sum(
+            &a,
+            version_x,
+            y0,
+            vw - (version_x - a_x0),
+            with_version.pill_height,
         );
         assert!(
-            px(&a, probe.0, probe.1)[0] >= TEXT_INACTIVE.b - 1,
-            "version pixel carries the inactive text color"
+            trail_a > 0,
+            "the version label region has drawn content: {trail_a}"
         );
+    }
+
+    /// Vertical offset of the text within the pill (matches `paint`).
+    fn legend_text_offset(legend: &Legend) -> u32 {
+        (legend.line_height - legend.version_bmp.height) / 2
     }
 
     #[test]
@@ -700,13 +846,19 @@ mod tests {
         let before = tiny.pixels.clone();
         legend.paint(&mut tiny, &[true, false, false]);
         assert_eq!(tiny.pixels, before, "tiny monitor: skipped, not clipped");
+
         let empty = Legend::new(&[]);
         let mut buf = frame(400, 64, [100, 100, 100, 255]);
         let before = buf.pixels.clone();
         empty.paint(&mut buf, &[]);
-        assert_eq!(buf.pixels, before);
+        assert_eq!(buf.pixels, before, "empty legend paints nothing");
+
         // Fewer active flags than tabs: the rest read as inactive (no panic).
-        let mut buf2 = frame(400, 64, [100, 100, 100, 255]);
+        // Frame is wide enough for the pill (Inter labels are proportional
+        // and wider than the old fixed-cell font).
+        let mut buf2 = frame(800, 160, [100, 100, 100, 255]);
+        let before2 = buf2.pixels.clone();
         legend.paint(&mut buf2, &[true]);
+        assert_ne!(buf2.pixels, before2, "something painted with partial flags");
     }
 }

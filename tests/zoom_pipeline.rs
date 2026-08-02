@@ -3,12 +3,13 @@
 //! `zoom_resample` driven through `ZoomSettings`-style clamp math exactly the
 //! way the controller applies it.
 //!
-//! REWORK NOTE (mode-redesign update): `ZoomMode` is now a pure LAYER (the
-//! "zoom hold", toggled by the `zoom_hold` binding) — the `ModeStack` routing
-//! matrix decides WHICH wheel events reach it (zoom modifier from any state,
-//! plain wheel when the layer is active and the spotlight layer is not), so
-//! the layer's `on_wheel` takes
-//! no `modifiers` argument and applies every wheel it receives. Rendering
+//! REWORK NOTE (mode-redesign update): `ZoomMode` is now a pure, IMPLICIT
+//! LAYER (no hotkey of its own) — the `ModeStack` routing decides WHICH wheel
+//! events reach it (only the zoom-modifier chord, from any state; the plain
+//! wheel never zooms), so the layer's `on_wheel` takes
+//! no `modifiers` argument and applies every wheel it receives. The stack
+//! implicitly activates the layer on a zoom-in chord and drops it back at the
+//! 1.0 baseline. Rendering
 //! moved out of the layer: the controller reads
 //! [`ModeStack::render_state`] and hands the `RenderState` to
 //! `composite::compose_frame` (pixel-exact compose coverage lives in
@@ -259,11 +260,12 @@ fn render_state_carries_zoom_only_on_the_cursor_monitor() {
     // `compose_frame` — ONLY on the monitor its cursor is on; every other
     // monitor gets a layer-free RenderState (plain darkened frame).
     let mut stack = ModeStack::new(default_params());
-    stack.set_mode(ModeKind::Zoom); // full switch: zoom is the only layer
     let cursor = Point::new(16, 16);
     let _ = stack.on_mouse_move(0, cursor);
-    // Plain wheel reaches zoom because the layer is active (routing matrix).
-    let _ = stack.on_wheel(0, cursor, NOTCH, Modifiers::NONE);
+    // The zoom chord implicitly activates the layer and zooms in one notch.
+    let _ = stack.on_wheel(0, cursor, NOTCH, Modifiers::SHIFT);
+    // Spotlight off, leaving zoom the only layer (the render-path focus here).
+    stack.toggle_mode(ModeKind::Spotlight);
     let zoom = stack.zoom().expect("zoom layer active").zoom();
     assert!((zoom - 1.25).abs() < 1e-6);
 
@@ -273,10 +275,7 @@ fn render_state_carries_zoom_only_on_the_cursor_monitor() {
         Some((zoom, cursor)),
         "zoom layer on cursor monitor"
     );
-    assert!(
-        rs0.spotlight.is_none(),
-        "set_mode dropped the spotlight layer"
-    );
+    assert!(rs0.spotlight.is_none(), "spotlight toggled off");
     assert!(rs0.snip.is_none());
 
     let rs1 = stack.render_state(1);
@@ -291,20 +290,20 @@ fn render_state_carries_zoom_only_on_the_cursor_monitor() {
 #[test]
 fn render_state_zoom_modifier_wheel_zooms_when_layer_active() {
     // Shift+wheel (the default zoom_modifier) reaches the zoom layer from any
-    // state — here right after an additive activation.
+    // state — here it implicitly activates the layer out of the pristine
+    // spotlight-only state and zooms in the same event.
     let mut stack = ModeStack::new(default_params()); // starts: spotlight only
-    stack.add_mode(ModeKind::Zoom); // layer added at the last-used factor (1.0)
     let _ = stack.on_mouse_move(0, Point::new(8, 8));
     let _ = stack.on_wheel(0, Point::new(8, 8), NOTCH, Modifiers::SHIFT);
     let zoom = stack.zoom().expect("zoom layer").zoom();
     assert!(
         (zoom - 1.25).abs() < 1e-6,
-        "Shift+wheel zooms while the zoom layer is active, got {zoom}"
+        "Shift+wheel implicitly activates and zooms the layer, got {zoom}"
     );
     let rs = stack.render_state(0);
     assert_eq!(rs.zoom, Some((zoom, Point::new(8, 8))));
-    // Spotlight is still active too (add_mode is additive): the hole follows
-    // the same cursor.
+    // Spotlight is still active too (implicit activation is additive): the
+    // hole follows the same cursor.
     assert_eq!(rs.spotlight, Some((Point::new(8, 8), 150)));
 }
 

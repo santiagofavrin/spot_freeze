@@ -86,9 +86,7 @@ fn build_icon_argb(size: usize) -> Vec<u8> {
                 let sy = (y as f32 + 0.5 - sparkle_cy).abs();
                 sx.sqrt() + sy.sqrt() <= sparkle_arm.sqrt()
             };
-            let [r, g, b] = if dist <= circle {
-                WHITE
-            } else if in_sparkle {
+            let [r, g, b] = if dist <= circle || in_sparkle {
                 WHITE
             } else if (dist - ring_center).abs() <= ring_half {
                 SKY
@@ -558,6 +556,6 @@ mod tests {
         // SNI gives the item no way to pop its own menu on Activate; ksni's
         // MENU_ON_ACTIVATE (ItemIsMenu = true) is the protocol route that
         // makes the host open the menu on left-click.
-        assert!(<CounterTray as ksni::Tray>::MENU_ON_ACTIVATE);
+        const { assert!(<CounterTray as ksni::Tray>::MENU_ON_ACTIVATE) };
     }
 }

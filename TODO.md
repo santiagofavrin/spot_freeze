@@ -6,7 +6,7 @@ runtime verification by the user, then this file can be deleted.
 
 ## Verify on Windows
 - Settings window rebind fields register modifier keys (item 3)
-- Zoom hold row rebinding + auto-start checkbox in the settings window
+- auto-start checkbox in the settings window
 - auto_start on -> re-login -> app starts; off -> entry gone
 
 ## Verify on macOS

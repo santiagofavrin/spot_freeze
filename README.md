@@ -3,7 +3,7 @@
 A tiny, fast utility for Windows 11, Linux (Wayland — targeting Hyprland and
 other wlroots compositors), and macOS 14+ (Apple Silicon) that lives in the
 system tray and **freezes your screen** on a global hotkey — then lets you
-spotlight a region, zoom in as a persistent layer, or enter **capture mode**
+spotlight a region, zoom in around the cursor, or enter **capture mode**
 to snip part of the frozen frame to the clipboard — with the spotlight and
 zoom effects baked in.
 
@@ -22,19 +22,21 @@ re-composited from reusable buffers — never a full repaint from scratch.
   frozen screen; `S` turns it on and off (off = frozen but clear, no dim).
   Scroll the mouse wheel to resize it — wheel up makes it smaller and wheel
   down makes it bigger; no modifier is needed.
-- **Zoom hold** — `F` toggles a persistent zoom layer at the last-used level
+- **Zoom** — magnify around the cursor with `Shift` + wheel, from any mode
   (1.0×–16.0×, ×1.25 per notch by default), on top of spotlight on or off.
-  Magnify around the cursor with `Shift` + wheel from anywhere (it adds the
-  layer on the spot), or with the plain wheel while the spotlight is off.
+  Zoom is implicit: the layer appears the moment you zoom in and drops itself
+  when you zoom back out to 1.0× — there is no zoom hotkey to manage.
 - **Capture mode** — `C` re-freezes the screen with the effects active at
   that moment (spotlight and/or zoom) baked in, then drag a rectangle and
   copy the *effected* pixels to the clipboard (see *Copying screenshots*
   below). A persistent accent frame border marks capture mode.
 - **Instant freeze/unfreeze** — the overlay appears and disappears with no
   fade or animation; in-session mode changes are equally immediate.
-- **On-screen legend** — while frozen, a large pill near the top of each
-  monitor shows the modes as tabs with the active one highlighted, labelled
-  with the hotkeys that reach them, followed by the app version.
+- **On-screen legend** — while frozen, a modern translucent "glass" pill
+  near the top of each monitor shows the modes as tabs with the active one
+  highlighted in a brighter chip, labelled with the hotkeys that reach them,
+  followed by the app version. Typography is anti-aliased vector text from
+  the embedded Inter typeface (SIL OFL 1.1).
 - **Customizable overlay** — set the dim-veil color and opacity, plus a
   separate, lighter veil color and opacity for capture mode.
 - **Every hotkey is rebindable**, with conflict validation. On Windows the
@@ -81,11 +83,9 @@ screen is frozen.
 | Toggle screen freeze | `Win+F` | Global — works from any app (in capture mode it backs out of capture first, like `Esc`) |
 | Spotlight toggle | `S` | While frozen — off = screen stays frozen but CLEAR (no dim), on = spotlight back immediately |
 | Capture mode | `C` | While frozen — re-freezes with the current effects baked in (persistent accent frame + lighter veil) |
-| Zoom hold toggle | `F` | While frozen — applies the last-used zoom level as a layer over spotlight on/off; toggle off to drop it |
-| Zoom in / out (from anywhere) | `Shift` + mouse wheel | While frozen — adds the zoom layer on the spot if it isn't active yet |
-| Zoom in / out (zoom hold active) | Mouse wheel | While frozen, when the zoom layer is on and spotlight is off |
+| Zoom in / out | `Shift` + mouse wheel | While frozen — in all modes; adds the zoom layer on the spot if it isn't active yet, drops it back at 1.0× |
 | Resize spotlight circle | Mouse wheel | While spotlight is active |
-| Reset zoom to 1.0× | `0` | While zoom is active |
+| Dismiss zoom | `0` | While zoom is active |
 | Copy screenshot to clipboard | `Ctrl+C` | While frozen (see below) |
 | Unfreeze / exit capture | `Esc` | While frozen — see below |
 
@@ -109,9 +109,11 @@ Spotlight and zoom are **layers**; capture is the only real mode switch:
 - **`S` (Spotlight) — toggle.** Turns the spotlight layer on and off without
   touching the zoom layer. With every layer off, the screen stays frozen (all
   input still captured) but the overlay is completely clear — no dim at all.
-- **`F` (Zoom hold) — toggle.** Adds the zoom layer at the last-used zoom
-  level, on top of spotlight on or off; press again to drop it. Zooming
-  changes the level for next time (`0` resets it to 1.0×).
+- **Zoom — implicit layer.** There is no zoom hotkey: `Shift`+wheel zooms
+  from anywhere, on top of spotlight on or off. The layer appears the moment
+  you zoom in, and drops itself when you zoom back out to 1.0× (no
+  magnification) — it exists only while actually magnified. `0` dismisses it
+  outright.
 - **`C` (Capture) — re-freeze.** The view exactly as it is now — spotlight
   and/or zoom baked in — becomes the new frozen frame, and a drag-selection
   snips the *effected* pixels from it. `Esc` discards the re-frozen frame and
@@ -119,16 +121,22 @@ Spotlight and zoom are **layers**; capture is the only real mode switch:
   pressing `C` again while in capture just clears the selection.
 
 The wheel follows the layers: a plain wheel resizes the spotlight whenever it
-is active, `Shift`+wheel zooms from anywhere (implicitly adding the zoom
-layer when it isn't active yet), and a plain wheel zooms when the zoom layer
-is on and the spotlight is off (with both layers on, the plain wheel resizes
-the spotlight and `Shift`+wheel zooms).
+is active and never zooms, while `Shift`+wheel zooms from anywhere —
+implicitly adding the zoom layer when it isn't active yet and dropping it
+again once you're back at 1.0×.
 
-**Legend:** while frozen, a large pill near the top-center of each monitor shows the modes as tabs —
-**SPOTLIGHT**, **ZOOM**, **SNIP** — with the active one(s) highlighted and
-the hotkey that reaches each. While capture mode is active, a thin
-accent-colored frame border stays on screen, the veil switches to a lighter,
-distinctly tinted shade, and the dragged selection stays completely clear.
+**Legend:** while frozen, a modern translucent "glass" capsule near the
+top-center of each monitor shows the modes as tabs —
+**SPOTLIGHT**, **ZOOM**, **SNIP** — with the active one(s) highlighted in a
+brighter chip and the hotkey that reaches each (the ZOOM tab shows the
+zoom-modifier wheel chord, e.g. `Shift+Wheel`); a dimmer app-version label
+trails the tabs. Text is anti-aliased vector typography from the embedded
+[Inter](https://github.com/rsms/inter) typeface (SIL Open Font License 1.1,
+see `assets/fonts/OFL.txt`), rasterized by the pure-Rust `fontdue` crate at
+freeze time so per-frame repaints only blit cached glyphs. While capture mode
+is active, a thin accent-colored frame border stays on screen, the veil
+switches to a lighter, distinctly tinted shade, and the dragged selection
+stays completely clear.
 
 ## Install
 

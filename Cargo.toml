@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+fontdue = "0.9.3"
 jsonc-parser = { version = "0.33.1", features = ["serde_json"] }
 png = "0.18.1"
 serde = { version = "1.0.229", features = ["derive"] }

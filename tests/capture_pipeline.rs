@@ -96,7 +96,7 @@ fn capture_rebakes_effects_and_indicator_wraps_an_undimmed_frame() {
     let capture_frame = compose_with_stack(&base, &stack);
     for y in 0..H {
         for x in 0..W {
-            let at_edge = x < 2 || x >= W - 2 || y < 2 || y >= H - 2;
+            let at_edge = !(2..W - 2).contains(&x) || !(2..H - 2).contains(&y);
             let got = capture_frame.pixel(x, y).unwrap();
             if at_edge {
                 assert_eq!(
@@ -135,7 +135,7 @@ fn capture_copy_crops_effected_pixels_with_zoom_and_spotlight_baked_in() {
     let original = buffer_with(W, H, pattern_a);
     let mut stack = ModeStack::new(params());
     stack.seed_cursor(0, Point::new(12, 12));
-    // Zoom hold via the wheel chord (implicit activation), one notch in.
+    // Zoom in via the wheel chord (implicit activation), one notch in.
     stack.on_wheel(0, Point::new(12, 12), 120, Modifiers::SHIFT);
     let pre_capture = compose_with_stack(&original, &stack);
     assert_ne!(
@@ -166,27 +166,21 @@ fn capture_copy_crops_effected_pixels_with_zoom_and_spotlight_baked_in() {
 }
 
 #[test]
-fn zoom_hold_layers_over_spotlight_and_restores_the_last_used_factor() {
+fn zoom_layers_over_spotlight_and_dismisses_at_the_baseline() {
     let original = buffer_with(W, H, pattern_a);
     let mut stack = ModeStack::new(params());
     stack.seed_cursor(0, Point::new(12, 12));
 
-    // `F` toggles the hold on (1.0 initially), the wheel takes it to 1.5625.
-    // The zoom chord is required here: with the spotlight layer also active,
-    // the plain wheel resizes the spotlight instead (routing matrix).
-    stack.toggle_mode(ModeKind::Zoom);
+    // The zoom chord implicitly activates the layer over the spotlight and
+    // zooms in (two notches → 1.5625). The chord is required here: with the
+    // spotlight layer also active, the plain wheel resizes the spotlight
+    // instead (wheel routing).
     stack.on_wheel(0, Point::new(12, 12), 240, Modifiers::SHIFT);
-    let z = stack.zoom().expect("zoom hold active").zoom();
+    let z = stack.zoom().expect("zoom layer active").zoom();
     assert!(
         (z - 1.5625).abs() < 1e-6,
-        "the zoom chord zooms the active hold"
+        "the zoom chord zooms the active layer"
     );
-
-    // Off and on again: the last-used factor is back (not a fresh 1.0).
-    stack.toggle_mode(ModeKind::Zoom);
-    stack.toggle_mode(ModeKind::Zoom);
-    let z = stack.zoom().expect("zoom hold re-activated").zoom();
-    assert!((z - 1.5625).abs() < 1e-6, "last-used factor restored");
 
     // The layer composes over the spotlight: hole = zoomed base, outside =
     // dimmed zoomed base (pipeline pinned in composition_pipeline.rs).
@@ -195,7 +189,14 @@ fn zoom_hold_layers_over_spotlight_and_restores_the_last_used_factor() {
     let frame = compose_with_stack(&original, &stack);
     assert_ne!(frame.pixels, original.pixels);
 
-    // `0` resets the hold to 1.0.
+    // Zooming back out to the baseline auto-dismisses the layer.
+    stack.on_wheel(0, Point::new(12, 12), -240, Modifiers::SHIFT);
+    assert!(stack.zoom().is_none(), "back at 1.0: the layer drops");
+    assert!(stack.is_active(ModeKind::Spotlight), "spotlight untouched");
+
+    // Re-activate, then `0` (reset_view) dismisses the layer outright.
+    stack.on_wheel(0, Point::new(12, 12), 120, Modifiers::SHIFT);
+    assert!(stack.zoom().is_some());
     stack.reset_view();
-    assert_eq!(stack.zoom().unwrap().zoom(), 1.0);
+    assert!(stack.zoom().is_none(), "reset_view drops the zoom layer");
 }
