@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.2](https://github.com/santiagofavrin/spotfreeze/compare/v1.9.1...v1.9.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* repair wheel resize and test build ([77ae91d](https://github.com/santiagofavrin/spotfreeze/commit/77ae91ddb0490ee006ac1f8ff0835e3a92b0bf34))
+
 ## [1.9.1](https://github.com/santiagofavrin/spotfreeze/compare/v1.9.0...v1.9.1) (2026-08-02)
 
 
