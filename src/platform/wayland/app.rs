@@ -232,10 +232,11 @@ fn unfreeze_syncing_plan(
     }
 }
 
-/// Tray tooltip: app name + the current freeze binding.
+/// Tray tooltip: app name, version, and the current freeze binding.
 fn tooltip_text(settings: &AppSettings) -> String {
     format!(
-        "SpotFreeze — freeze: {}",
+        "SpotFreeze v{} — freeze: {}",
+        env!("CARGO_PKG_VERSION"),
         settings.hotkeys.freeze_toggle.to_display()
     )
 }

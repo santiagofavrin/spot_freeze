@@ -420,10 +420,11 @@ fn confirm_exit(state: &Rc<RefCell<AppState>>) {
     std::process::exit(0);
 }
 
-/// Tray tooltip: app name + the current freeze binding (same text as Windows).
+/// Tray tooltip: app name, version, and the current freeze binding (same text as Windows).
 fn tooltip_text(settings: &AppSettings) -> String {
     format!(
-        "SpotFreeze — freeze: {}",
+        "SpotFreeze v{} — freeze: {}",
+        env!("CARGO_PKG_VERSION"),
         settings.hotkeys.freeze_toggle.to_display()
     )
 }
