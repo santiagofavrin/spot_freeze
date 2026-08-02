@@ -1,13 +1,11 @@
-//! PURE mode/hotkey legend: while frozen, a small translucent rounded pill at
-//! the bottom-center of every monitor shows the modes as TABS — the active
+//! PURE mode/hotkey legend: while frozen, a large translucent rounded pill
+//! near the top-center of every monitor shows the modes as TABS — the active
 //! one(s) highlighted — each labelled with the hotkey that reaches it
 //! (bindings snapshotted from settings at freeze time, like every other
 //! freeze-time setting).
 //!
-//! Bottom-center, not top-center: the top band of a frozen frame carries the
-//! captured content's window title bars and menus, where the eye lands first;
-//! the bottom edge is the least information-dense band on most desktops (and
-//! where the macOS screenshot HUD lives). The pill is painted into the
+//! The pill sits below the top edge with a generous inset so it stays visible
+//! without looking pinned to the screen boundary. It is painted into the
 //! composed frame only — never into the capture originals — so it can never
 //! leak into a snip copy or the capture-mode re-base.
 //!
@@ -137,24 +135,26 @@ fn glyph(ch: char) -> &'static [u8; 8] {
     &FONT8X8[index as usize]
 }
 
+/// Nearest-neighbor scale applied to every source-font pixel.
+const UI_SCALE: u32 = 2;
 /// Glyph cell advance in pixels (the font's glyphs are right-padded to 8).
-const GLYPH_W: u32 = 8;
+const GLYPH_W: u32 = 8 * UI_SCALE;
 /// Glyph height in pixels.
-const GLYPH_H: u32 = 8;
+const GLYPH_H: u32 = 8 * UI_SCALE;
 /// Horizontal padding between the pill edge and the first/last tab chip.
-const PILL_PAD_X: u32 = 12;
+const PILL_PAD_X: u32 = 12 * UI_SCALE;
 /// Vertical padding between the pill edge and the text.
-const PILL_PAD_Y: u32 = 6;
+const PILL_PAD_Y: u32 = 6 * UI_SCALE;
 /// Horizontal padding inside a tab chip, each side of its text.
-const TAB_PAD_X: u32 = 8;
+const TAB_PAD_X: u32 = 8 * UI_SCALE;
 /// Gap between tab chips.
-const TAB_GAP: u32 = 4;
+const TAB_GAP: u32 = 4 * UI_SCALE;
 /// Chip vertical inset inside the pill.
-const CHIP_INSET_Y: u32 = 3;
+const CHIP_INSET_Y: u32 = 3 * UI_SCALE;
 /// Pill corner radius in pixels (half the pill height: capsule ends).
-const PILL_RADIUS: u32 = 10;
-/// Distance between the pill's bottom edge and the frame's bottom edge.
-const BOTTOM_MARGIN: u32 = 24;
+const PILL_RADIUS: u32 = 10 * UI_SCALE;
+/// Distance between the frame's top edge and the pill's top edge.
+const TOP_MARGIN: u32 = 48;
 
 /// Pill height: one glyph row plus vertical padding.
 const PILL_H: u32 = GLYPH_H + 2 * PILL_PAD_Y;
@@ -249,7 +249,7 @@ impl Legend {
         (self.pill_width, PILL_H)
     }
 
-    /// Paint the pill centered horizontally at the bottom-center of `buf`.
+    /// Paint the pill centered horizontally near the top of `buf`.
     /// `active[i]` highlights tab `i` (missing flags read as inactive).
     /// `alpha` scales the whole pill (the freeze fade-in blends it in with
     /// the veil; 255 = full strength, 0 = nothing painted). Skips monitors
@@ -261,7 +261,7 @@ impl Legend {
         }
         let x0 = ((buf.width - pw) / 2) as i32;
         let slack = buf.height - ph; // >= 0 (checked above)
-        let y0 = (slack - BOTTOM_MARGIN.min(slack)) as i32;
+        let y0 = TOP_MARGIN.min(slack) as i32;
         // Pill body (translucent dark, rounded corners).
         let pill_alpha = scale_alpha(PILL_ALPHA, alpha);
         for y in y0..y0 + ph as i32 {
@@ -367,7 +367,13 @@ fn draw_text(buf: &mut DibBuffer, x: i32, y: i32, text: &str, color: Rgb, alpha:
         for (row, &bits) in glyph(ch).iter().enumerate() {
             for col in 0..8 {
                 if bits >> col & 1 == 1 {
-                    blend_px(buf, gx + col, y + row as i32, color, alpha);
+                    let px = gx + col * UI_SCALE as i32;
+                    let py = y + row as i32 * UI_SCALE as i32;
+                    for sy in 0..UI_SCALE as i32 {
+                        for sx in 0..UI_SCALE as i32 {
+                            blend_px(buf, px + sx, py + sy, color, alpha);
+                        }
+                    }
                 }
             }
         }
@@ -445,12 +451,12 @@ mod tests {
 
     #[test]
     fn size_is_exact_from_tab_texts() {
-        // "A (B)" = 5 chars -> text 40 px, chip 40 + 16 = 56;
-        // "CC (DD)" = 7 chars -> text 56 px, chip 72.
+        // Two-times scaling: "A (B)" = 5 chars -> text 80 px, chip 112;
+        // "CC (DD)" = 7 chars -> text 112 px, chip 144.
         let legend = Legend::new(&tabs(&[("A", "B"), ("CC", "DD")]));
         let (w, h) = legend.size();
-        assert_eq!(h, 20, "glyph 8 + 2 * pad 6");
-        assert_eq!(w, 2 * 12 + (56 + 72) + 4, "pads + chips + one gap");
+        assert_eq!(h, 40, "glyph 16 + 2 * pad 12");
+        assert_eq!(w, 2 * 24 + (112 + 144) + 8, "pads + chips + one gap");
     }
 
     #[test]
@@ -467,7 +473,7 @@ mod tests {
         );
         // Default bindings: "SPOTLIGHT (S)" = 13 chars, the others 8.
         let (w, _) = legend.size();
-        assert_eq!(w, 24 + (120 + 80 + 80) + 8);
+        assert_eq!(w, 48 + (240 + 160 + 160) + 16);
     }
 
     #[test]
@@ -536,13 +542,13 @@ mod tests {
     // ---- paint ---------------------------------------------------------------
 
     #[test]
-    fn paint_centers_the_pill_at_the_bottom() {
+    fn paint_centers_the_pill_near_the_top() {
         let legend = Legend::new(&tabs(&[("A", "B")]));
         let (pw, ph) = legend.size();
-        let mut buf = frame(400, 64, [100, 100, 100, 255]);
+        let mut buf = frame(400, 160, [100, 100, 100, 255]);
         legend.paint(&mut buf, &[false], 255);
         let x0 = (400 - pw) / 2;
-        let y0 = 64 - ph - 24;
+        let y0 = TOP_MARGIN;
         // Pill center: blended toward PILL_COLOR at PILL_ALPHA.
         let want = |fg: u8| ((100u32 * (255 - 190) + fg as u32 * 190) / 255) as u8;
         assert_eq!(
@@ -558,47 +564,47 @@ mod tests {
         assert_eq!(px(&buf, x0, y0), [100, 100, 100, 255]);
         // Far outside the pill: untouched.
         assert_eq!(px(&buf, 0, 0), [100, 100, 100, 255]);
-        assert_eq!(px(&buf, 399, 63), [100, 100, 100, 255]);
+        assert_eq!(px(&buf, 399, 159), [100, 100, 100, 255]);
     }
 
     #[test]
     fn paint_renders_the_tab_text_glyphs() {
         let legend = Legend::new(&tabs(&[("A", "B")]));
-        let (pw, ph) = legend.size();
-        let mut buf = frame(400, 64, [0, 0, 0, 255]);
+        let (pw, _) = legend.size();
+        let mut buf = frame(400, 160, [0, 0, 0, 255]);
         legend.paint(&mut buf, &[false], 255);
         let x0 = ((400 - pw) / 2) as u32;
-        let y0 = (64 - ph - 24) as u32;
+        let y0 = TOP_MARGIN;
         let text_x = x0 + PILL_PAD_X + TAB_PAD_X;
         let text_y = y0 + PILL_PAD_Y;
-        // 'A' row 0 is 0x0C (bits 2-3): the pixel 2 columns in carries the
-        // inactive text color; the pixel 4 columns in carries only the pill.
-        let text_pixel = px(&buf, text_x + 2, text_y);
+        // 'A' row 0 is 0x0C (bits 2-3): at 2x scale the pixel 4 columns in
+        // carries the inactive text color; pixel 8 carries only the pill.
+        let text_pixel = px(&buf, text_x + 4, text_y);
         assert_eq!(text_pixel[3], 255);
         assert!(
             text_pixel[0] >= TEXT_INACTIVE.b - 1,
             "text pixel blended toward the text color: {text_pixel:?}"
         );
-        assert_ne!(text_pixel, px(&buf, text_x + 4, text_y), "set vs unset glyph pixel");
+        assert_ne!(text_pixel, px(&buf, text_x + 8, text_y), "set vs unset glyph pixel");
     }
 
     #[test]
     fn paint_highlights_the_active_tab() {
         let legend = Legend::new(&tabs(&[("AA", "B"), ("CC", "D")]));
-        let (pw, ph) = legend.size();
-        let mut on = frame(400, 64, [60, 60, 60, 255]);
+        let (pw, _) = legend.size();
+        let mut on = frame(400, 160, [60, 60, 60, 255]);
         legend.paint(&mut on, &[true, false], 255);
-        let mut off = frame(400, 64, [60, 60, 60, 255]);
+        let mut off = frame(400, 160, [60, 60, 60, 255]);
         legend.paint(&mut off, &[false, false], 255);
         let x0 = ((400 - pw) / 2) as u32;
-        let y0 = (64 - ph - 24) as u32;
+        let y0 = TOP_MARGIN;
         // A pixel inside the first chip but off its text: brighter when active.
-        let chip_px = (x0 + PILL_PAD_X + 2, y0 + CHIP_INSET_Y + 7);
+        let chip_px = (x0 + PILL_PAD_X + 4, y0 + CHIP_INSET_Y + 14);
         let [b_on, g_on, r_on, _] = px(&on, chip_px.0, chip_px.1);
         let [b_off, g_off, r_off, _] = px(&off, chip_px.0, chip_px.1);
         assert!(b_on > b_off && g_on > g_off && r_on > r_off, "chip brightens");
         // The same probe under an inactive tab never brightens.
-        let second_chip = x0 + PILL_PAD_X + legend.chip_widths[0] + TAB_GAP + 2;
+        let second_chip = x0 + PILL_PAD_X + legend.chip_widths[0] + TAB_GAP + 4;
         assert_eq!(
             px(&on, second_chip, chip_px.1),
             px(&off, second_chip, chip_px.1),
@@ -609,15 +615,15 @@ mod tests {
     #[test]
     fn paint_scales_with_alpha_and_alpha_zero_is_a_noop() {
         let legend = Legend::new(&tabs(&[("A", "B")]));
-        let mut buf = frame(400, 64, [100, 100, 100, 255]);
+        let mut buf = frame(400, 160, [100, 100, 100, 255]);
         let before = buf.pixels.clone();
         legend.paint(&mut buf, &[false], 0);
         assert_eq!(buf.pixels, before, "alpha 0 paints nothing");
-        let mut half = frame(400, 64, [100, 100, 100, 255]);
+        let mut half = frame(400, 160, [100, 100, 100, 255]);
         legend.paint(&mut half, &[false], 128);
         let (pw, ph) = legend.size();
         let cx = ((400 - pw) / 2 + pw / 2) as u32;
-        let cy = (64 - ph - 24 + ph / 2) as u32;
+        let cy = TOP_MARGIN + ph / 2;
         let want = ((100u32 * (255 - scale_alpha(190, 128) as u32)
             + PILL_COLOR.b as u32 * scale_alpha(190, 128) as u32)
             / 255) as u8;

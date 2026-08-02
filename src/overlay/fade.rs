@@ -5,11 +5,9 @@
 //! controller turns these decisions into `set_alpha` calls, blended presents,
 //! or re-composed frames.
 //!
-//! The schedule drives every overlay transition: the freeze/unfreeze fades
-//! AND the in-session spotlight enter/exit animations (the `S` toggle). A
-//! single eased progress byte (`alpha`, 0..=255) parameterizes all of them:
-//! the veil strength, the whole-window alpha, and the spotlight circle scale
-//! all read the same value, so one step grid drives the whole choreography.
+//! The schedule drives the freeze/unfreeze fades. A single eased progress byte
+//! (`alpha`, 0..=255) parameterizes the veil strength, the whole-window alpha,
+//! and the spotlight circle scale, so one step grid drives the choreography.
 //!
 //! # Motion design (researched: Material motion, Apple HIG)
 //!
@@ -60,16 +58,15 @@
 //! content that changed while frozen reappears with a small pop when the
 //! overlay unmaps. That pop is inherent to blending toward a snapshot; a
 //! true live crossfade would need the per-surface alpha the protocol lacks.
-//! In-session spotlight toggles present re-composed frames on EVERY platform:
-//! a window-alpha ramp there would unveil the live desktop and break the
-//! freeze illusion.
+//! In-session spotlight toggles do not use this schedule. They repaint the
+//! settled on/off state once, immediately.
 //!
 //! # Interruption state machine
 //!
 //! States: `Unfrozen` / `Frozen`; transitions `freeze` (fade IN) and
 //! `unfreeze` (fade OUT) are ATOMIC — the drivers run synchronously on the
-//! single UI thread exactly like the in-session spotlight toggle animations,
-//! so mid-transition interruption is impossible by construction. What happens
+//! single UI thread, so mid-transition interruption is impossible by
+//! construction. What happens
 //! to input pressed DURING a transition is platform-specific (no state
 //! corruption anywhere — the controller only ever sees settled requests):
 //!

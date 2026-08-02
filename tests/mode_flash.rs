@@ -6,11 +6,11 @@
 //! REMOVED: activation into spotlight and every other mode change must be
 //! seamless — no flash frames, no white repaint pops. What remains:
 //!
-//! - freeze entry and the spotlight toggle run the pure transition schedule
-//!   (src/overlay/fade.rs: 8 steps + 1 settled endpoint, ease-out cubic,
-//!   veil ramp + circle 60%<->100%);
-//! - full mode switches (`set_mode`), capture entry (`C`), and Esc from
-//!   capture repaint exactly ONCE — instant by design;
+//! - freeze entry runs the pure transition schedule (src/overlay/fade.rs:
+//!   8 steps + 1 settled endpoint, ease-out cubic, veil ramp + circle
+//!   60%<->100%);
+//! - spotlight toggles, full mode switches (`set_mode`), capture entry (`C`),
+//!   and Esc from capture repaint exactly ONCE — instant by design;
 //! - NO frame presented on any monitor, at any point of the journey, ever
 //!   carries an entirely white 6 px border band.
 //!
@@ -94,30 +94,30 @@ fn freeze_entry_is_only_the_transition_frames_and_ends_seamless() {
 }
 
 #[test]
-fn spotlight_toggle_runs_the_schedule_both_ways_without_flashing() {
+fn spotlight_toggle_repaints_once_both_ways_without_flashing() {
     let mut f = freeze(Point::new(16, 16));
-    // Off: veil lifts, circle shrinks, session stays frozen.
+    // Off: one settled repaint, session stays frozen.
     let before = f.presents[0].borrow().len();
     f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
     assert!(f.controller.is_frozen());
     assert_eq!(
         f.presents[0].borrow().len(),
-        before + TRANSITION_PRESENTS,
-        "toggle-off: transition steps + settled endpoint, no flash frames"
+        before + 1,
+        "toggle-off: one settled repaint, no flash frames"
     );
     assert_eq!(
         f.last_present(0).pixels,
         original0().pixels,
         "toggle-off ends exactly on the unveiled original"
     );
-    // On: veil eases in, circle expands.
+    // On: one settled repaint.
     let before = f.presents[0].borrow().len();
     f.controller.toggle_mode(ModeKind::Spotlight, &f.services);
     assert_eq!(f.controller.active_mode(), ModeKind::Spotlight);
     assert_eq!(
         f.presents[0].borrow().len(),
-        before + TRANSITION_PRESENTS,
-        "toggle-on: transition steps + settled endpoint, no flash frames"
+        before + 1,
+        "toggle-on: one settled repaint, no flash frames"
     );
     assert_ne!(
         f.last_present(0).pixels,
