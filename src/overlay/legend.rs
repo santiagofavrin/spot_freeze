@@ -2,7 +2,7 @@
 //! near the top-center of every monitor shows the modes as TABS — the active
 //! one(s) highlighted — each labelled with the hotkey that reaches it
 //! (bindings snapshotted from settings at freeze time, like every other
-//! freeze-time setting).
+//! freeze-time setting) — followed by the app version label.
 //!
 //! The pill sits below the top edge with a generous inset so it stays visible
 //! without looking pinned to the screen boundary. It is painted into the
@@ -149,6 +149,8 @@ const PILL_PAD_Y: u32 = 6 * UI_SCALE;
 const TAB_PAD_X: u32 = 8 * UI_SCALE;
 /// Gap between tab chips.
 const TAB_GAP: u32 = 4 * UI_SCALE;
+/// Gap between the last mode tab and the version label.
+const VERSION_GAP: u32 = 12 * UI_SCALE;
 /// Chip vertical inset inside the pill.
 const CHIP_INSET_Y: u32 = 3 * UI_SCALE;
 /// Pill corner radius in pixels (half the pill height: capsule ends).
@@ -200,32 +202,45 @@ pub struct Legend {
     tabs: Vec<String>,
     /// Pixel width of each tab's chip (text + padding), parallel to `tabs`.
     chip_widths: Vec<u32>,
+    /// The app version label shown after the tabs (empty => omitted).
+    version: String,
     /// Total pill width in pixels.
     pill_width: u32,
 }
 
 impl Legend {
     /// The legend for a freeze session: one tab per mode in the fixed
-    /// Spotlight / Zoom / Snip order, labelled with the freeze-time binding.
+    /// Spotlight / Zoom / Snip order, labelled with the freeze-time binding,
+    /// followed by the app version label.
     pub fn from_hotkeys(hotkeys: &HotkeySettings) -> Self {
-        Self::new(&[
-            LegendTab {
-                name: "SPOTLIGHT".into(),
-                hotkey: hotkeys.mode_spotlight.to_display(),
-            },
-            LegendTab {
-                name: "ZOOM".into(),
-                hotkey: hotkeys.zoom_hold.to_display(),
-            },
-            LegendTab {
-                name: "SNIP".into(),
-                hotkey: hotkeys.mode_snip.to_display(),
-            },
-        ])
+        Self::build(
+            &[
+                LegendTab {
+                    name: "SPOTLIGHT".into(),
+                    hotkey: hotkeys.mode_spotlight.to_display(),
+                },
+                LegendTab {
+                    name: "ZOOM".into(),
+                    hotkey: hotkeys.zoom_hold.to_display(),
+                },
+                LegendTab {
+                    name: "SNIP".into(),
+                    hotkey: hotkeys.mode_snip.to_display(),
+                },
+            ],
+            &format!("v{}", env!("CARGO_PKG_VERSION")),
+        )
     }
 
-    /// Tabs in display order; each renders as `NAME (HOTKEY)`.
+    /// Tabs in display order; each renders as `NAME (HOTKEY)`. No version
+    /// label (used by tests and callers that want the tab-only pill).
     pub fn new(tabs: &[LegendTab]) -> Self {
+        Self::build(tabs, "")
+    }
+
+    /// Shared constructor: tab texts plus an optional trailing version
+    /// label separated from the tabs by [`VERSION_GAP`].
+    fn build(tabs: &[LegendTab], version: &str) -> Self {
         let texts: Vec<String> = tabs
             .iter()
             .map(|t| format!("{} ({})", t.name, t.hotkey))
@@ -234,12 +249,18 @@ impl Legend {
             .iter()
             .map(|t| text_width(t) + 2 * TAB_PAD_X)
             .collect::<Vec<_>>();
-        let pill_width = 2 * PILL_PAD_X
-            + chip_widths.iter().sum::<u32>()
-            + TAB_GAP * chip_widths.len().saturating_sub(1) as u32;
+        let tabs_width =
+            chip_widths.iter().sum::<u32>() + TAB_GAP * chip_widths.len().saturating_sub(1) as u32;
+        let version_width = if version.is_empty() {
+            0
+        } else {
+            VERSION_GAP + text_width(version)
+        };
+        let pill_width = 2 * PILL_PAD_X + tabs_width + version_width;
         Self {
             tabs: texts,
             chip_widths,
+            version: version.to_string(),
             pill_width,
         }
     }
@@ -273,6 +294,9 @@ impl Legend {
         let mut chip_x = x0 + PILL_PAD_X as i32;
         let text_y = y0 + PILL_PAD_Y as i32;
         for (i, text) in self.tabs.iter().enumerate() {
+            if i > 0 {
+                chip_x += TAB_GAP as i32;
+            }
             let cw = self.chip_widths[i];
             let on = active.get(i).copied().unwrap_or(false);
             if on {
@@ -293,7 +317,12 @@ impl Legend {
                 text,
                 if on { TEXT_ACTIVE } else { TEXT_INACTIVE },
             );
-            chip_x += (cw + TAB_GAP) as i32;
+            chip_x += cw as i32;
+        }
+        // Version label after the tabs (dimmer, never highlighted).
+        if !self.version.is_empty() {
+            let version_x = chip_x + VERSION_GAP as i32;
+            draw_text(buf, version_x, text_y, &self.version, TEXT_INACTIVE);
         }
     }
 }
@@ -462,9 +491,16 @@ mod tests {
                 "SNIP (C)".to_string(),
             ]
         );
-        // Default bindings: "SPOTLIGHT (S)" = 13 chars, the others 8.
+        assert_eq!(
+            legend.version,
+            format!("v{}", env!("CARGO_PKG_VERSION")),
+            "the legend carries the app version"
+        );
+        // Default bindings: "SPOTLIGHT (S)" = 13 chars, the others 8, plus
+        // the version label ("v<version>") separated by VERSION_GAP.
         let (w, _) = legend.size();
-        assert_eq!(w, 48 + (240 + 160 + 160) + 16);
+        let version_w = legend.version.chars().count() as u32 * GLYPH_W;
+        assert_eq!(w, 48 + (240 + 160 + 160) + 16 + VERSION_GAP + version_w);
     }
 
     #[test]
@@ -600,6 +636,60 @@ mod tests {
             px(&on, second_chip, chip_px.1),
             px(&off, second_chip, chip_px.1),
             "inactive tab identical in both paints"
+        );
+    }
+
+    #[test]
+    fn paint_renders_the_version_label_after_the_tabs() {
+        let hotkeys = HotkeySettings::default();
+        let with_version = Legend::from_hotkeys(&hotkeys);
+        let tab_only = Legend::new(&[
+            LegendTab {
+                name: "SPOTLIGHT".into(),
+                hotkey: hotkeys.mode_spotlight.to_display(),
+            },
+            LegendTab {
+                name: "ZOOM".into(),
+                hotkey: hotkeys.zoom_hold.to_display(),
+            },
+            LegendTab {
+                name: "SNIP".into(),
+                hotkey: hotkeys.mode_snip.to_display(),
+            },
+        ]);
+        let (vw, _) = with_version.size();
+        let (tw, _) = tab_only.size();
+        assert!(vw > tw, "the version label widens the pill");
+        assert_eq!(
+            vw - tw,
+            VERSION_GAP + with_version.version.chars().count() as u32 * GLYPH_W,
+            "exactly the version gap plus its text width"
+        );
+
+        let mut a = frame(1024, 160, [0, 0, 0, 255]);
+        let mut b = frame(1024, 160, [0, 0, 0, 255]);
+        with_version.paint(&mut a, &[false, false, false]);
+        tab_only.paint(&mut b, &[false, false, false]);
+        let x0 = ((1024 - vw) / 2) as u32;
+        let y0 = TOP_MARGIN;
+        let text_y = y0 + PILL_PAD_Y;
+        // The version text starts right of the tabs, after VERSION_GAP.
+        let tabs_end = x0
+            + PILL_PAD_X
+            + tab_only.chip_widths.iter().sum::<u32>()
+            + TAB_GAP * (tab_only.chip_widths.len() - 1) as u32;
+        let version_x = tabs_end + VERSION_GAP;
+        // The 'v' glyph's first set pixel (row 2, col 0) is drawn in the
+        // version legend but absent from the tab-only one.
+        let probe = (version_x, text_y + 2 * UI_SCALE);
+        assert_ne!(
+            px(&a, probe.0, probe.1),
+            px(&b, probe.0, probe.1),
+            "version text is drawn"
+        );
+        assert!(
+            px(&a, probe.0, probe.1)[0] >= TEXT_INACTIVE.b - 1,
+            "version pixel carries the inactive text color"
         );
     }
 

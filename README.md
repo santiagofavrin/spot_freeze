@@ -34,7 +34,7 @@ re-composited from reusable buffers — never a full repaint from scratch.
   fade or animation; in-session mode changes are equally immediate.
 - **On-screen legend** — while frozen, a large pill near the top of each
   monitor shows the modes as tabs with the active one highlighted, labelled
-  with the hotkeys that reach them.
+  with the hotkeys that reach them, followed by the app version.
 - **Customizable overlay** — set the dim-veil color and opacity, plus a
   separate, lighter veil color and opacity for capture mode.
 - **Every hotkey is rebindable**, with conflict validation. On Windows the

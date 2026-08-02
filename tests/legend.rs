@@ -40,7 +40,9 @@ fn default_bindings_render_mode_tabs_with_their_hotkeys() {
     // "SPOTLIGHT (S)" (13 chars), "ZOOM (F)" / "SNIP (C)" (8 chars each)
     // at 16 px per char + per-tab padding, plus pill padding and gaps.
     assert_eq!(h, 40, "16 px text + 2 * 12 px vertical padding");
-    assert_eq!(w, 48 + (240 + 160 + 160) + 16);
+    // The pill also carries the app version ("v<version>") after a 24 px gap.
+    let version_chars = format!("v{}", env!("CARGO_PKG_VERSION")).chars().count() as u32;
+    assert_eq!(w, 48 + (240 + 160 + 160) + 16 + 24 + version_chars * 16);
 }
 
 #[test]
