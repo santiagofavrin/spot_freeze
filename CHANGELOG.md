@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.8.0...v1.9.0) (2026-08-02)
+
+
+### Features
+
+* plain-wheel spotlight resize, no radius animation on toggle ([e698cc9](https://github.com/santiagofavrin/spotfreeze/commit/e698cc972592422a518d9ff5e759ffa15774920a))
+* remove all fades and animations from freeze/unfreeze ([52f85c3](https://github.com/santiagofavrin/spotfreeze/commit/52f85c38248c71b9e41cd939a06d2258e0c6e6dd))
+
 ## [1.8.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.7.0...v1.8.0) (2026-08-02)
 
 
