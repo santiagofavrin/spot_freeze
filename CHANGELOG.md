@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.11.0...v1.12.0) (2026-08-02)
+
+
+### Features
+
+* show version in the freeze legend ([39b195f](https://github.com/santiagofavrin/spotfreeze/commit/39b195f7adc501c31420c1bedde51667a9b3a850))
+
 ## [1.11.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.10.0...v1.11.0) (2026-08-02)
 
 
