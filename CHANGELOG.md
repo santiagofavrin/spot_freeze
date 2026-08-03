@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.14.0...v1.15.0) (2026-08-03)
+
+
+### Features
+
+* add self-update tray action ([714503a](https://github.com/santiagofavrin/spotfreeze/commit/714503acc342c8456fff95319519cc00c46ad5d5))
+
 ## [1.14.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.13.1...v1.14.0) (2026-08-03)
 
 
