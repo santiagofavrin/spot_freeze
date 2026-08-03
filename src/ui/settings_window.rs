@@ -74,8 +74,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     ShowWindow, SystemParametersInfoW, UnhookWindowsHookEx, WA_INACTIVE, WH_KEYBOARD_LL,
     WINDOW_EX_STYLE, WINDOW_STYLE, WM_ACTIVATE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT,
     WM_CTLCOLORSTATIC, WM_DRAWITEM, WM_KEYDOWN, WM_NCCREATE, WM_NCDESTROY, WM_SETFONT,
-    WM_SYSKEYDOWN, WNDCLASS_STYLES, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_OVERLAPPED, WS_SYSMENU,
-    WS_TABSTOP, WS_VISIBLE,
+    WM_SYSKEYDOWN, WNDCLASS_STYLES, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_CLIPSIBLINGS,
+    WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
 };
 use windows::core::{PCWSTR, w};
 
@@ -1682,9 +1682,10 @@ unsafe fn create_label(
 }
 
 /// Create the owner-drawn card background spanning [card_top, card_bottom]
-/// (96-DPI units) and push it to the bottom of the Z-order: it is created
-/// AFTER the card's controls (when its exact bounds are known) but must paint
-/// and hit-test beneath them.
+/// (96-DPI units) and push it to the bottom of the Z-order. `WS_CLIPSIBLINGS`
+/// is required because the frame is created AFTER the card's controls (when
+/// its exact bounds are known); without it, an owner-drawn static can paint
+/// over overlapping sibling controls on Windows 11 despite the z-order.
 ///
 /// SAFETY: `parent` must be a valid window; `hinst` our module handle.
 unsafe fn create_card_frame(
@@ -1699,7 +1700,7 @@ unsafe fn create_card_frame(
         create_child(
             WC_STATICW,
             "",
-            WS_CHILD.0 | WS_VISIBLE.0 | SS_OWNERDRAW_U32,
+            WS_CHILD.0 | WS_VISIBLE.0 | WS_CLIPSIBLINGS.0 | SS_OWNERDRAW_U32,
             px(dpi, MARGIN),
             px(dpi, card_top),
             px(dpi, CARD_W),
