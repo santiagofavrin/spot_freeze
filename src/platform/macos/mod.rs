@@ -13,6 +13,7 @@
 //! - [`surface`]: [`crate::platform::OverlaySurface`] via NSWindow/NSView.
 //! - [`hotkeys`]: global freeze hotkey via Carbon `RegisterEventHotKey`.
 //! - [`tray`]: `NSStatusItem` tray icon + menu.
+//! - [`settings_window`]: native AppKit settings editor (modal panel).
 //! - [`clipboard`]: [`crate::platform::PlatformServices`] over `NSPasteboard`.
 //! - `coords`: pure Cocoa-points ↔ virtual-physical-pixels conversions.
 
@@ -22,6 +23,7 @@ pub mod capture;
 pub mod clipboard;
 pub(crate) mod coords;
 pub mod hotkeys;
+pub mod settings_window;
 pub mod surface;
 pub mod tray;
 

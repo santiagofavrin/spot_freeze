@@ -494,13 +494,15 @@ fn reconcile_frozen_state(state: &mut AppState) {
 
 /// Tray menu intents: "Spotlight"/"Screenshot" drive the overlay directly,
 /// "Reload Settings" re-reads the JSONC file, "Settings…" opens the settings
-/// window, "Exit" starts the shared confirm-and-quit flow.
+/// window, "Open settings folder" reveals it in Explorer, "Exit" starts the
+/// shared confirm-and-quit flow.
 fn on_tray_event(state: &mut AppState, hwnd: HWND, wparam: WPARAM) {
     match wparam.0 {
         x if x == TrayEvent::MenuSpotlight as usize => tray_spotlight(state, hwnd),
         x if x == TrayEvent::MenuScreenshot as usize => tray_screenshot(state, hwnd),
         x if x == TrayEvent::MenuReloadSettings as usize => reload_settings(state, hwnd),
         x if x == TrayEvent::MenuSettings as usize => open_settings(state, hwnd),
+        x if x == TrayEvent::MenuOpenSettingsFolder as usize => open_settings_folder(state, hwnd),
         x if x == TrayEvent::MenuExit as usize => confirm_exit(state, hwnd),
         _ => {}
     }
@@ -583,6 +585,20 @@ fn open_settings(state: &mut AppState, hwnd: HWND) {
         show_error(
             Some(hwnd),
             &format!("Could not open the settings window:\n{e:#}"),
+        );
+    }
+}
+
+/// Tray "Open settings folder": reveal `spotfreeze.jsonc`'s folder in
+/// Explorer with the file pre-selected. Spawned detached and never waited
+/// on: explorer.exe often exits non-zero even on success, so waiting on it
+/// would misreport failures.
+fn open_settings_folder(state: &mut AppState, hwnd: HWND) {
+    let arg = format!("/select,{}", state.settings_path.display());
+    if let Err(e) = std::process::Command::new("explorer").arg(arg).spawn() {
+        show_error(
+            Some(hwnd),
+            &format!("Could not open the settings folder:\n{e:#}"),
         );
     }
 }

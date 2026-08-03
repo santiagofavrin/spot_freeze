@@ -28,6 +28,28 @@ pub fn open_in_editor(path: &Path) -> Result<()> {
     }
 }
 
+/// Reveal the settings file in the platform file manager (tray "Open settings
+/// folder"): `open -R` selects the file in a Finder window on macOS;
+/// `xdg-open` opens its containing folder on Linux (`xdg-open` cannot select a
+/// file, so the parent directory is opened instead).
+///
+/// Detached spawn, like [`open_in_editor`]: the app never blocks on the file
+/// manager.
+pub fn open_settings_folder(path: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        spawn(Command::new("open").arg("-R").arg(path)).context("spawning open -R")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let folder = path.parent().unwrap_or(path);
+        if spawn(Command::new("xdg-open").arg(folder)).is_ok() {
+            return Ok(());
+        }
+        anyhow::bail!("xdg-open is not available to open {}", folder.display());
+    }
+}
+
 fn spawn(command: &mut Command) -> Result<()> {
     command
         .stdin(std::process::Stdio::null())

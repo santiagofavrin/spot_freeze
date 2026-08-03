@@ -19,9 +19,18 @@
 //! and alpha is forced to 255 (screen content is opaque). Any other layout
 //! falls back to redrawing into a BGRA `CGBitmapContext`.
 //!
-//! Permissions: Screen Recording (TCC) is REQUIRED. Checked up-front with
-//! `CGPreflightScreenCaptureAccess`; on denial the error tells the user where
-//! to enable it (the shell surfaces it — nothing here panics or prompts).
+//! Permissions: Screen Recording (TCC) is REQUIRED, but the
+//! `CGPreflightScreenCaptureAccess` preflight is only ADVISORY — it is a
+//! known stale false-negative for rebuilt ad-hoc-signed binaries (each
+//! re-sign changes the cdhash, so System Settings can show the grant while
+//! the preflight says no). A false preflight triggers one
+//! `CGRequestScreenCaptureAccess` — refreshing TCC state, and prompting on
+//! a genuinely undetermined first run — and the capture proceeds
+//! regardless: the real denial signal is ScreenCaptureKit's own result (a
+//! user-declined / TCC-flavored listing error, or an empty display list
+//! under a false preflight — see `is_permission_denial`). Only a genuine
+//! denial produces the enable-and-restart guidance; every other failure
+//! surfaces verbatim.
 //!
 //! Async: both SCK entry points are completion-handler based. The handlers
 //! fire on SCK's own queue, so the main thread simply waits on a channel
@@ -29,15 +38,15 @@
 //! `Result<DibBuffer, String>` back.
 
 use crate::capture::{Capturer, DibBuffer, MonitorInfo};
-use crate::platform::macos::coords::{CocoaRect, cocoa_rect_to_virtual};
-use anyhow::{Context, Result, anyhow, bail};
+use crate::platform::macos::coords::{cocoa_rect_to_virtual, CocoaRect};
+use anyhow::{anyhow, bail, Context, Result};
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::NSScreen;
 use objc2_core_graphics::{
     CGBitmapContextCreate, CGColorSpace, CGContext, CGDataProvider, CGImage, CGImageAlphaInfo,
-    CGImageByteOrderInfo, CGPreflightScreenCaptureAccess,
+    CGImageByteOrderInfo, CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess,
 };
 use objc2_foundation::{NSArray, NSError, NSNumber, NSPoint, NSRect, NSSize, NSString};
 use objc2_screen_capture_kit::{
@@ -59,6 +68,17 @@ const BITMAP_INFO_BGRA: u32 =
 
 /// Upper bound for a ScreenCaptureKit round-trip before it is declared dead.
 const SCK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The `SCStream` error domain: ScreenCaptureKit reports a user-declined
+/// capture here.
+const SC_STREAM_ERROR_DOMAIN: &str = "com.apple.ScreenCaptureKit.SCStreamErrorDomain";
+
+/// `SCStreamErrorUserDeclined` — the user (via TCC) refused screen capture.
+const SC_STREAM_ERROR_USER_DECLINED: isize = -3801;
+
+/// Field separator for the plain-data error encoding ([`encode_error`] /
+/// [`decode_error`]); U+001F never appears in an NSError domain or code.
+const ERROR_FIELD_SEP: char = '\u{1f}';
 
 /// One attached screen, flattened into value data (no AppKit objects, so the
 /// other backend modules can hold it freely).
@@ -160,12 +180,17 @@ impl Default for MacCapturer {
 impl Capturer for MacCapturer {
     /// One screenshot per display at native pixel size, in `NSScreen` order.
     fn capture_all(&self) -> Result<Vec<(MonitorInfo, DibBuffer)>> {
-        if !CGPreflightScreenCaptureAccess() {
-            bail!(
-                "SpotFreeze does not have Screen Recording permission.\n\
-                 Enable it in System Settings → Privacy & Security → Screen Recording, \
-                 then restart SpotFreeze."
-            );
+        // The TCC preflight is ADVISORY only: it is a known stale
+        // false-negative for rebuilt ad-hoc-signed binaries (each re-sign
+        // changes the cdhash, so System Settings can show the grant while
+        // the preflight says no). A false preflight triggers one access
+        // request — refreshing TCC state, and prompting on a genuinely
+        // undetermined first run — but never gates the capture: a real
+        // denial is detected from ScreenCaptureKit's own results (see
+        // [`is_permission_denial`]).
+        let preflight_ok = CGPreflightScreenCaptureAccess();
+        if !preflight_ok {
+            let _ = CGRequestScreenCaptureAccess();
         }
         let mtm = MainThreadMarker::new()
             .context("screen capture must run on the application's main thread")?;
@@ -173,7 +198,10 @@ impl Capturer for MacCapturer {
         if screens.is_empty() {
             bail!("no displays found");
         }
-        let displays = shareable_displays()?;
+        let displays = shareable_displays(preflight_ok)?;
+        if displays.is_empty() && is_permission_denial(preflight_ok, true, None, None, None) {
+            return Err(permission_error());
+        }
 
         let mut out = Vec::with_capacity(screens.len());
         for (screen, info) in screens.iter().zip(monitor_infos(&screens)) {
@@ -196,12 +224,16 @@ impl Capturer for MacCapturer {
 /// Fetch `SCShareableContent.displays()` (desktop windows INCLUDED — the
 /// freeze must show exactly what was on screen; only off-screen windows are
 /// filtered out). Blocks the calling thread until SCK answers or times out.
-fn shareable_displays() -> Result<Retained<NSArray<SCDisplay>>> {
+///
+/// A listing failure is classified against `preflight_ok`: a genuine
+/// permission denial becomes the friendly enable-and-restart guidance,
+/// anything else surfaces verbatim.
+fn shareable_displays(preflight_ok: bool) -> Result<Retained<NSArray<SCDisplay>>> {
     let (tx, rx) = mpsc::channel::<Result<Retained<NSArray<SCDisplay>>, String>>();
     let block = RcBlock::new(
         move |content: *mut SCShareableContent, error: *mut NSError| {
             let result = if content.is_null() {
-                Err(describe_error(error))
+                Err(encode_error(error))
             } else {
                 // SAFETY: the completion handler hands over a valid object for the
                 // duration of the call; `displays()` retains the array it returns,
@@ -218,9 +250,17 @@ fn shareable_displays() -> Result<Retained<NSArray<SCDisplay>>> {
             false, true, &block,
         );
     }
-    rx.recv_timeout(SCK_TIMEOUT)
-        .map_err(|_| anyhow!("ScreenCaptureKit did not deliver the shareable content list"))?
-        .map_err(|e| anyhow!("listing shareable displays failed: {e}"))
+    let result = rx
+        .recv_timeout(SCK_TIMEOUT)
+        .map_err(|_| anyhow!("ScreenCaptureKit did not deliver the shareable content list"))?;
+    result.map_err(|encoded| {
+        let (domain, code, description) = decode_error(&encoded);
+        if is_permission_denial(preflight_ok, false, domain, code, Some(description)) {
+            permission_error()
+        } else {
+            anyhow!("listing shareable displays failed: {description}")
+        }
+    })
 }
 
 /// Capture one display at `width_px`×`height_px` physical pixels into a
@@ -354,6 +394,87 @@ fn force_opaque(pixels: &mut [u8]) {
     }
 }
 
+/// The friendly denial guidance. Surfaced only when ScreenCaptureKit itself
+/// confirms the denial — never from the advisory preflight alone, which is
+/// a known stale false-negative for rebuilt ad-hoc-signed binaries.
+fn permission_error() -> anyhow::Error {
+    anyhow!(
+        "SpotFreeze does not have Screen Recording permission.\n\
+         Enable it in System Settings → Privacy & Security → Screen Recording, \
+         then restart SpotFreeze."
+    )
+}
+
+/// Encode an `NSError` pointer (null-tolerant) as plain channel data:
+/// `domain ␟ code ␟ human description`. Only plain data may cross the
+/// completion-handler channel, so everything the permission classifier
+/// needs is flattened into the string here and decoded back out on the
+/// receiving thread by [`decode_error`].
+fn encode_error(error: *mut NSError) -> String {
+    if error.is_null() {
+        return format!("{ERROR_FIELD_SEP}{ERROR_FIELD_SEP}unknown ScreenCaptureKit error");
+    }
+    let (domain, code) = {
+        // SAFETY: non-null pointer to a valid NSError, borrowed for this scope.
+        let error = unsafe { &*error };
+        (nsstring_to_string(&error.domain()), error.code())
+    };
+    format!(
+        "{domain}{ERROR_FIELD_SEP}{code}{ERROR_FIELD_SEP}{}",
+        describe_error(error)
+    )
+}
+
+/// Split an [`encode_error`] string back into `(domain, code, description)`.
+/// A plain message with no separators decodes to `(None, None, message)`,
+/// so hand-written errors still surface verbatim.
+fn decode_error(encoded: &str) -> (Option<&str>, Option<isize>, &str) {
+    let mut fields = encoded.splitn(3, ERROR_FIELD_SEP);
+    let (Some(domain), Some(code), Some(description)) =
+        (fields.next(), fields.next(), fields.next())
+    else {
+        return (None, None, encoded);
+    };
+    (
+        (!domain.is_empty()).then_some(domain),
+        code.parse().ok(),
+        description,
+    )
+}
+
+/// Decide whether a ScreenCaptureKit failure means the user has declined
+/// Screen Recording permission — as opposed to a transient failure that
+/// should surface verbatim. Pure (no OS calls) so it is headless-testable.
+///
+/// Genuine-denial signals, most specific first:
+/// - `SCStreamErrorUserDeclined` (-3801) in the `SCStream` error domain;
+/// - an error domain or description pointing at TCC / "declined" /
+///   "screen recording" (the wording varies across macOS releases);
+/// - no error at all, but zero capturable displays while the (advisory)
+///   preflight says permission is missing — how a denial surfaces on
+///   systems that do not raise -3801.
+fn is_permission_denial(
+    preflight_ok: bool,
+    displays_empty: bool,
+    error_domain: Option<&str>,
+    error_code: Option<isize>,
+    error_description: Option<&str>,
+) -> bool {
+    if error_domain == Some(SC_STREAM_ERROR_DOMAIN)
+        && error_code == Some(SC_STREAM_ERROR_USER_DECLINED)
+    {
+        return true;
+    }
+    let mentions_denial = |text: &str| {
+        let text = text.to_ascii_lowercase();
+        text.contains("tcc") || text.contains("declined") || text.contains("screen recording")
+    };
+    if error_domain.is_some_and(mentions_denial) || error_description.is_some_and(mentions_denial) {
+        return true;
+    }
+    displays_empty && !preflight_ok
+}
+
 /// Human-readable description of an `NSError` pointer (null-tolerant).
 fn describe_error(error: *mut NSError) -> String {
     if error.is_null() {
@@ -477,5 +598,89 @@ mod tests {
         }];
         assert_eq!(primary_height(&screens), 900.0);
         assert_eq!(primary_height(&[]), 0.0);
+    }
+
+    #[test]
+    fn permission_denial_detects_scstream_user_declined() {
+        // The definitive signal — even a stale-TRUE preflight must not mask it.
+        assert!(is_permission_denial(
+            true,
+            false,
+            Some(SC_STREAM_ERROR_DOMAIN),
+            Some(SC_STREAM_ERROR_USER_DECLINED),
+            Some("The user declined TCC."),
+        ));
+    }
+
+    #[test]
+    fn permission_denial_detects_wording_variants() {
+        // Domain/code vary across macOS releases; TCC-ish wording is enough.
+        assert!(is_permission_denial(
+            false,
+            false,
+            None,
+            None,
+            Some("The user declined TCC."),
+        ));
+        assert!(is_permission_denial(
+            false,
+            false,
+            None,
+            Some(-1),
+            Some("Screen Recording is not allowed for this app."),
+        ));
+        assert!(is_permission_denial(
+            false,
+            false,
+            Some("com.apple.TCC.error"),
+            None,
+            None,
+        ));
+    }
+
+    #[test]
+    fn permission_denial_detects_empty_displays_under_false_preflight() {
+        assert!(is_permission_denial(false, true, None, None, None));
+        // A true preflight means an empty list is NOT a denial signal.
+        assert!(!is_permission_denial(true, true, None, None, None));
+    }
+
+    #[test]
+    fn permission_denial_leaves_other_failures_alone() {
+        // Same domain, different code: a real SCK failure, not a denial.
+        assert!(!is_permission_denial(
+            false,
+            false,
+            Some(SC_STREAM_ERROR_DOMAIN),
+            Some(-3808),
+            Some("The stream failed to start."),
+        ));
+        assert!(!is_permission_denial(
+            false,
+            false,
+            None,
+            None,
+            Some("unknown ScreenCaptureKit error"),
+        ));
+        assert!(!is_permission_denial(true, false, None, None, None));
+    }
+
+    #[test]
+    fn error_encoding_round_trips_through_decode() {
+        let encoded = format!(
+            "{SC_STREAM_ERROR_DOMAIN}{ERROR_FIELD_SEP}{SC_STREAM_ERROR_USER_DECLINED}{ERROR_FIELD_SEP}The user declined TCC."
+        );
+        let (domain, code, description) = decode_error(&encoded);
+        assert_eq!(domain, Some(SC_STREAM_ERROR_DOMAIN));
+        assert_eq!(code, Some(SC_STREAM_ERROR_USER_DECLINED));
+        assert_eq!(description, "The user declined TCC.");
+    }
+
+    #[test]
+    fn decode_error_tolerates_a_plain_message() {
+        let (domain, code, description) = decode_error("unknown ScreenCaptureKit error");
+        assert_eq!(domain, None);
+        assert_eq!(code, None);
+        assert_eq!(description, "unknown ScreenCaptureKit error");
     }
 }

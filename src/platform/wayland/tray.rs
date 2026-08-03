@@ -13,6 +13,10 @@
 //!   that ignores `ItemIsMenu` and still calls `Activate` gets an
 //!   `UnknownMethod` error and shows nothing, and the item can no longer
 //!   receive left-click itself — `Tray::activate` is dead with this set.
+//! * The menu opens with a disabled "SpotFreeze v<version>" line (a
+//!   `StandardItem` with `enabled: false`, so it never fires `activate`)
+//!   before the action items; "Open settings folder" reveals
+//!   `spotfreeze.jsonc` in the file manager, next to "Edit settings".
 //! * `ksni` runs in `async-io` mode: its D-Bus connection and service loop are
 //!   driven by ksni's/zbus's internal executor threads. Our own thread only
 //!   owns the ksni handle and pumps intents (tooltip updates, shutdown) so
@@ -117,29 +121,32 @@ fn app_icon() -> ksni::Icon {
 // ---------------------------------------------------------------------------
 
 /// The SNI exposed over D-Bus. Callbacks fire on the tray service's thread.
-struct SpotFreezeTray<F, G, H, I, J>
+struct SpotFreezeTray<F, G, H, I, J, K>
 where
     F: Fn() + Send + 'static,
     G: Fn() + Send + 'static,
     H: Fn() + Send + 'static,
     I: Fn() + Send + 'static,
     J: Fn() + Send + 'static,
+    K: Fn() + Send + 'static,
 {
     tooltip: String,
     on_spotlight: F,
     on_screenshot: G,
     on_edit_settings: H,
+    on_open_folder: K,
     on_reload_settings: I,
     on_exit: J,
 }
 
-impl<F, G, H, I, J> ksni::Tray for SpotFreezeTray<F, G, H, I, J>
+impl<F, G, H, I, J, K> ksni::Tray for SpotFreezeTray<F, G, H, I, J, K>
 where
     F: Fn() + Send + 'static,
     G: Fn() + Send + 'static,
     H: Fn() + Send + 'static,
     I: Fn() + Send + 'static,
     J: Fn() + Send + 'static,
+    K: Fn() + Send + 'static,
 {
     /// Left-click opens the menu, same as right-click (see the module docs
     /// for which hosts honor this and what the others do).
@@ -168,6 +175,13 @@ where
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         vec![
             StandardItem {
+                label: format!("SpotFreeze v{}", env!("CARGO_PKG_VERSION")),
+                enabled: false,
+                ..Default::default()
+            }
+            .into(),
+            ksni::MenuItem::Separator,
+            StandardItem {
                 label: "Spotlight".into(),
                 activate: Box::new(|tray: &mut Self| (tray.on_spotlight)()),
                 ..Default::default()
@@ -183,6 +197,12 @@ where
             StandardItem {
                 label: "Edit settings".into(),
                 activate: Box::new(|tray: &mut Self| (tray.on_edit_settings)()),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: "Open settings folder".into(),
+                activate: Box::new(|tray: &mut Self| (tray.on_open_folder)()),
                 ..Default::default()
             }
             .into(),
@@ -215,8 +235,8 @@ enum TrayCommand {
 
 /// The tray thread's whole life: register the SNI (tolerating a missing
 /// watcher), report readiness, then serve tooltip updates until shutdown.
-fn tray_thread<F, G, H, I, J>(
-    tray: SpotFreezeTray<F, G, H, I, J>,
+fn tray_thread<F, G, H, I, J, K>(
+    tray: SpotFreezeTray<F, G, H, I, J, K>,
     ready: mpsc::Sender<Result<()>>,
     commands: mpsc::Receiver<TrayCommand>,
 ) where
@@ -225,6 +245,7 @@ fn tray_thread<F, G, H, I, J>(
     H: Fn() + Send + 'static,
     I: Fn() + Send + 'static,
     J: Fn() + Send + 'static,
+    K: Fn() + Send + 'static,
 {
     let handle = match future::block_on(tray.assume_sni_available(true).spawn())
         .context("failed to start the StatusNotifierItem tray service")
@@ -257,7 +278,8 @@ fn tray_thread<F, G, H, I, J>(
     }
 }
 
-/// Tray icon with a "Spotlight" / "Screenshot" / "Edit settings" /
+/// Tray icon with a disabled "SpotFreeze v<version>" line followed by a
+/// "Spotlight" / "Screenshot" / "Edit settings" / "Open settings folder" /
 /// "Reload settings" / "Exit" menu; both mouse buttons open the menu (see
 /// the module docs). Callbacks fire on the tray's own thread.
 pub struct WaylandTray {
@@ -266,13 +288,16 @@ pub struct WaylandTray {
 }
 
 impl WaylandTray {
-    /// Register the SNI and show the icon. The callbacks fire in menu order:
-    /// "Spotlight", "Screenshot", "Edit settings", "Reload settings", "Exit".
-    pub fn spawn<F, G, H, I, J>(
+    /// Register the SNI and show the icon. The menu opens with a disabled
+    /// version line, then the callbacks fire in menu order: "Spotlight",
+    /// "Screenshot", "Edit settings", "Open settings folder", "Reload
+    /// settings", "Exit".
+    pub fn spawn<F, G, H, I, J, K>(
         tooltip: &str,
         on_spotlight: F,
         on_screenshot: G,
         on_edit_settings: H,
+        on_open_folder: K,
         on_reload_settings: I,
         on_exit: J,
     ) -> Result<Self>
@@ -282,6 +307,7 @@ impl WaylandTray {
         H: Fn() + Send + 'static,
         I: Fn() + Send + 'static,
         J: Fn() + Send + 'static,
+        K: Fn() + Send + 'static,
     {
         let (commands, command_rx) = mpsc::channel();
         let (ready, ready_rx) = mpsc::channel();
@@ -290,6 +316,7 @@ impl WaylandTray {
             on_spotlight,
             on_screenshot,
             on_edit_settings,
+            on_open_folder,
             on_reload_settings,
             on_exit,
         };
@@ -468,6 +495,7 @@ mod tests {
         Box<dyn Fn() + Send>,
         Box<dyn Fn() + Send>,
         Box<dyn Fn() + Send>,
+        Box<dyn Fn() + Send>,
     >;
 
     /// Callback invocation counters, one per tray menu action.
@@ -475,6 +503,7 @@ mod tests {
         spotlights: Arc<AtomicUsize>,
         screenshots: Arc<AtomicUsize>,
         edits: Arc<AtomicUsize>,
+        open_folders: Arc<AtomicUsize>,
         reloads: Arc<AtomicUsize>,
         exits: Arc<AtomicUsize>,
     }
@@ -484,6 +513,7 @@ mod tests {
             spotlights: Arc::new(AtomicUsize::new(0)),
             screenshots: Arc::new(AtomicUsize::new(0)),
             edits: Arc::new(AtomicUsize::new(0)),
+            open_folders: Arc::new(AtomicUsize::new(0)),
             reloads: Arc::new(AtomicUsize::new(0)),
             exits: Arc::new(AtomicUsize::new(0)),
         };
@@ -498,6 +528,7 @@ mod tests {
             on_spotlight: bump(&counters.spotlights),
             on_screenshot: bump(&counters.screenshots),
             on_edit_settings: bump(&counters.edits),
+            on_open_folder: bump(&counters.open_folders),
             on_reload_settings: bump(&counters.reloads),
             on_exit: bump(&counters.exits),
         };
@@ -523,9 +554,17 @@ mod tests {
         let menu = ksni::Tray::menu(&tray);
         let mut labels = Vec::new();
         let mut separators = Vec::new();
+        let mut version_enabled = None;
         for (index, item) in menu.into_iter().enumerate() {
             match item {
                 ksni::MenuItem::Standard(item) => {
+                    if index == 0 {
+                        // The version line is the disabled item: capture its
+                        // `enabled` flag before firing `activate` below (a
+                        // no-op for this item, since it is left at
+                        // `Default::default()` and wired to no counter).
+                        version_enabled = Some(item.enabled);
+                    }
                     labels.push(item.label.clone());
                     (item.activate)(&mut tray);
                 }
@@ -534,19 +573,35 @@ mod tests {
             }
         }
         assert_eq!(
+            version_enabled,
+            Some(false),
+            "the version line must be disabled"
+        );
+        let version_label = labels.remove(0);
+        assert!(
+            version_label.starts_with("SpotFreeze v"),
+            "unexpected version label: {version_label}"
+        );
+        assert_eq!(
             labels,
             [
                 "Spotlight",
                 "Screenshot",
                 "Edit settings",
+                "Open settings folder",
                 "Reload settings",
                 "Exit"
             ]
         );
-        assert_eq!(separators, [2], "one separator after the freeze actions");
+        assert_eq!(
+            separators,
+            [1, 4],
+            "one separator after the version line, one after the freeze actions"
+        );
         assert_eq!(counters.spotlights.load(Ordering::Relaxed), 1);
         assert_eq!(counters.screenshots.load(Ordering::Relaxed), 1);
         assert_eq!(counters.edits.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.open_folders.load(Ordering::Relaxed), 1);
         assert_eq!(counters.reloads.load(Ordering::Relaxed), 1);
         assert_eq!(counters.exits.load(Ordering::Relaxed), 1);
     }

@@ -64,6 +64,9 @@ enum Intent {
     Screenshot,
     /// Tray "Edit settings": open the JSONC file.
     EditSettings,
+    /// Tray "Open settings folder": reveal the JSONC file in the file
+    /// manager.
+    OpenSettingsFolder,
     /// Tray "Reload settings": re-read the JSONC file immediately (a changed
     /// freeze binding is re-registered on the spot).
     ReloadSettings,
@@ -102,6 +105,11 @@ impl AppState {
             Intent::EditSettings => {
                 if let Err(e) = edit::open_in_editor(&self.settings_path) {
                     eprintln!("spotfreeze: could not open the settings editor: {e:#}");
+                }
+            }
+            Intent::OpenSettingsFolder => {
+                if let Err(e) = edit::open_settings_folder(&self.settings_path) {
+                    eprintln!("spotfreeze: could not open the settings folder: {e:#}");
                 }
             }
             Intent::ReloadSettings => self.reload_settings(),
@@ -320,6 +328,12 @@ pub fn run() -> Result<()> {
             let tx = intent_tx.clone();
             move || {
                 let _ = tx.send(Intent::EditSettings);
+            }
+        },
+        {
+            let tx = intent_tx.clone();
+            move || {
+                let _ = tx.send(Intent::OpenSettingsFolder);
             }
         },
         {

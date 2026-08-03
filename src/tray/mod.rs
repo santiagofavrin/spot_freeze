@@ -29,9 +29,9 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIcon, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos,
-    GetSystemMetrics, HICON, MF_SEPARATOR, MF_STRING, PostMessageW, SM_CXSMICON, SM_CYSMICON,
-    SetForegroundWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WM_APP,
-    WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
+    GetSystemMetrics, HICON, MF_DISABLED, MF_GRAYED, MF_SEPARATOR, MF_STRING, PostMessageW,
+    SM_CXSMICON, SM_CYSMICON, SetForegroundWindow, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    TrackPopupMenu, WM_APP, WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -49,6 +49,9 @@ pub enum TrayEvent {
     MenuReloadSettings,
     /// "Settings…" chosen from the popup menu.
     MenuSettings,
+    /// "Open settings folder" chosen from the popup menu: reveal the folder
+    /// containing `spotfreeze.jsonc`, with the file selected, in Explorer.
+    MenuOpenSettingsFolder,
     /// "Exit" chosen from the popup menu. The tray itself NEVER
     /// asks and NEVER exits — the app runs its Yes/No confirmation flow.
     MenuExit,
@@ -67,7 +70,8 @@ const IDM_SPOTLIGHT: usize = 1;
 const IDM_SCREENSHOT: usize = 2;
 const IDM_RELOAD_SETTINGS: usize = 3;
 const IDM_SETTINGS: usize = 4;
-const IDM_EXIT: usize = 5;
+const IDM_OPEN_FOLDER: usize = 5;
+const IDM_EXIT: usize = 6;
 
 /// State shared between [`TrayIcon`] and the subclass proc. The subclass chain
 /// owns one `Rc` reference (passed as `dwRefData`) while
@@ -85,9 +89,10 @@ struct TrayShared {
     sink: Rc<dyn Fn(TrayEvent)>,
 }
 
-/// Tray icon with tooltip. Either mouse button shows the popup menu
-/// (Spotlight / Screenshot / Reload Settings / Settings… / Exit); menu
-/// choices are forwarded to the sink.
+/// Tray icon with tooltip. Either mouse button shows the popup menu (a
+/// disabled version line, then Spotlight / Screenshot / Reload Settings /
+/// Settings… / Open settings folder / Exit); menu choices are forwarded to
+/// the sink.
 pub struct TrayIcon {
     hwnd: HWND,
     #[allow(dead_code)] // retained for API parity; the live sink is in `shared`
@@ -259,19 +264,32 @@ unsafe extern "system" fn tray_subclass_proc(
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
-/// Popup menu shown for either mouse button: Spotlight / Screenshot /
-/// Reload Settings / Settings… / Exit. `TPM_RETURNCMD | TPM_NONOTIFY` makes
-/// the selection the synchronous return value, so no `WM_COMMAND` routing is
-/// needed. `SetForegroundWindow` first (plus the `WM_NULL` nudge after) so the
-/// menu dismisses correctly when the user clicks elsewhere.
+/// Popup menu shown for either mouse button: a disabled version line, then
+/// Spotlight / Screenshot / Reload Settings / Settings… / Open settings
+/// folder / Exit. `TPM_RETURNCMD | TPM_NONOTIFY` makes the selection the
+/// synchronous return value, so no `WM_COMMAND` routing is needed.
+/// `SetForegroundWindow` first (plus the `WM_NULL` nudge after) so the menu
+/// dismisses correctly when the user clicks elsewhere.
 fn show_context_menu(hwnd: HWND, sink: &Rc<dyn Fn(TrayEvent)>) {
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
+        // The version label is dynamic, so its buffer must outlive
+        // TrackPopupMenu below; it does, as a local of this function.
+        let version = format!("SpotFreeze v{}", env!("CARGO_PKG_VERSION"));
+        let version_wide: Vec<u16> = version.encode_utf16().chain(std::iter::once(0)).collect();
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING | MF_GRAYED | MF_DISABLED,
+            0,
+            PCWSTR(version_wide.as_ptr()),
+        );
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, IDM_SPOTLIGHT, w!("Spotlight"));
         let _ = AppendMenuW(menu, MF_STRING, IDM_SCREENSHOT, w!("Screenshot"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, IDM_RELOAD_SETTINGS, w!("Reload Settings"));
         let _ = AppendMenuW(menu, MF_STRING, IDM_SETTINGS, w!("Settings…"));
+        let _ = AppendMenuW(menu, MF_STRING, IDM_OPEN_FOLDER, w!("Open settings folder"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, IDM_EXIT, w!("Exit"));
 
@@ -295,6 +313,7 @@ fn show_context_menu(hwnd: HWND, sink: &Rc<dyn Fn(TrayEvent)>) {
             IDM_SCREENSHOT => sink(TrayEvent::MenuScreenshot),
             IDM_RELOAD_SETTINGS => sink(TrayEvent::MenuReloadSettings),
             IDM_SETTINGS => sink(TrayEvent::MenuSettings),
+            IDM_OPEN_FOLDER => sink(TrayEvent::MenuOpenSettingsFolder),
             IDM_EXIT => sink(TrayEvent::MenuExit),
             _ => {} // dismissed without a choice
         }

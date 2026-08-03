@@ -1,6 +1,7 @@
 //! Status-bar tray: an `NSStatusItem` with a runtime-drawn template icon and
-//! a menu with "Spotlight", "Screenshot", "Edit Settings…",
-//! "Reload Settings", and "Exit SpotFreeze".
+//! a menu with a disabled version line, "Spotlight", "Screenshot",
+//! "Settings…", "Open Settings Folder", "Reload Settings", and
+//! "Exit SpotFreeze".
 //!
 //! Interaction idiom: the menu is set directly on the status item, so a
 //! single click (either button) opens it. That is the standard AppKit status
@@ -50,8 +51,11 @@ pub enum TrayEvent {
     /// "Screenshot" chosen from the menu: freeze first when unfrozen, then
     /// enter snip/capture mode.
     MenuScreenshot,
-    /// "Edit Settings…" chosen from the menu.
+    /// "Settings…" chosen from the menu: open the native settings window.
     MenuSettings,
+    /// "Open Settings Folder" chosen from the menu: reveal
+    /// `spotfreeze.jsonc` in Finder (selected, in its folder).
+    MenuOpenSettingsFolder,
     /// "Reload Settings" chosen from the menu: re-read the JSONC file
     /// immediately (a changed freeze binding is re-registered on the spot).
     MenuReloadSettings,
@@ -110,6 +114,11 @@ define_class!(
             (self.ivars().sink)(TrayEvent::MenuSettings);
         }
 
+        #[unsafe(method(openSettingsFolder:))]
+        fn open_settings_folder(&self, _sender: &AnyObject) {
+            (self.ivars().sink)(TrayEvent::MenuOpenSettingsFolder);
+        }
+
         #[unsafe(method(reloadSettings:))]
         fn reload_settings(&self, _sender: &AnyObject) {
             (self.ivars().sink)(TrayEvent::MenuReloadSettings);
@@ -160,6 +169,18 @@ impl MacTray {
         // SAFETY: `delegate` is a valid action target and outlives the menu
         // (owned by this MacTray); the selectors exist on it.
         unsafe {
+            // Disabled version line (informational only): a nil action plus
+            // an explicit setEnabled(false) keeps it grayed regardless of
+            // the menu's autoenablesItems setting.
+            let version = NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::from_str(&format!("SpotFreeze v{}", env!("CARGO_PKG_VERSION"))),
+                None,
+                &NSString::from_str(""),
+            );
+            version.setEnabled(false);
+            menu.addItem(&version);
+            menu.addItem(&NSMenuItem::separatorItem(mtm));
             let spotlight = NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(mtm),
                 &NSString::from_str("Spotlight"),
@@ -179,12 +200,20 @@ impl MacTray {
             menu.addItem(&NSMenuItem::separatorItem(mtm));
             let settings = NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(mtm),
-                &NSString::from_str("Edit Settings…"),
+                &NSString::from_str("Settings…"),
                 Some(sel!(editSettings:)),
                 &NSString::from_str(""),
             );
             settings.setTarget(Some(target));
             menu.addItem(&settings);
+            let open_folder = NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::from_str("Open Settings Folder"),
+                Some(sel!(openSettingsFolder:)),
+                &NSString::from_str(""),
+            );
+            open_folder.setTarget(Some(target));
+            menu.addItem(&open_folder);
             let reload = NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(mtm),
                 &NSString::from_str("Reload Settings"),

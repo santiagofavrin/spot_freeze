@@ -10,11 +10,14 @@
 //!   [`match_frozen_key`] → `set_mode` / `add_mode` / `reset_view` /
 //!   `snip_copy_and_close` / `unfreeze` (mouse events pass through). The plan
 //!   is rebuilt from the current settings at every freeze.
-//! - **Settings are edited externally** (tray "Edit Settings…" opens the
-//!   JSONC file in the default editor), so settings are RE-READ from disk at
-//!   every freeze and the Carbon hotkey is re-registered (register-first) if
-//!   `freeze_toggle` changed. A malformed file keeps the previous settings
-//!   and shows an alert instead of silently resetting to defaults.
+//! - **Settings are edited in a native settings window** (tray "Settings…";
+//!   the raw JSONC is reachable via "Open Settings Folder"). Saving persists
+//!   to disk and applies immediately (hotkey rebind, auto-start). Settings
+//!   are additionally RE-READ from disk at every freeze and the Carbon
+//!   hotkey is re-registered (register-first) if `freeze_toggle` changed, so
+//!   hand edits of the JSONC still take effect. A malformed file keeps the
+//!   previous settings and shows an alert instead of silently resetting to
+//!   defaults.
 //! - **Exit keeps a confirmation** — an `NSAlert` Yes/No, then cleanup and
 //!   `exit(0)`.
 //!
@@ -38,6 +41,7 @@ use crate::platform::macos::autostart;
 use crate::platform::macos::capture::MacCapturer;
 use crate::platform::macos::clipboard::MacServices;
 use crate::platform::macos::hotkeys::{CarbonHotkey, CarbonHotkeyManager};
+use crate::platform::macos::settings_window;
 use crate::platform::macos::surface;
 use crate::platform::macos::tray::{MacTray, TrayEvent};
 use crate::settings::model::AppSettings;
@@ -227,6 +231,7 @@ pub fn run() -> Result<()> {
                 TrayEvent::MenuSpotlight => tray_spotlight(&state),
                 TrayEvent::MenuScreenshot => tray_screenshot(&state),
                 TrayEvent::MenuSettings => open_settings(&state),
+                TrayEvent::MenuOpenSettingsFolder => open_settings_folder(&state),
                 TrayEvent::MenuReloadSettings => reload_settings(&state),
                 TrayEvent::MenuExit => confirm_exit(&state),
             }
@@ -388,15 +393,47 @@ fn tray_screenshot(state: &Rc<RefCell<AppState>>) {
     controller.set_mode(ModeKind::Snip, services);
 }
 
-/// "Edit Settings…": open the JSONC file in the default editor (detached —
-/// settings are re-read at the next freeze).
+/// "Settings…": open the native settings window. `run_modal` pumps its own
+/// modal loop, so NO `AppState` borrow may be held across the call (module
+/// docs): the current settings and path are cloned out first, the borrow is
+/// dropped, and the window runs. On Save, persist and apply exactly like the
+/// Windows shell's `apply_saved_settings`/`apply_new_settings` flow.
 fn open_settings(state: &Rc<RefCell<AppState>>) {
-    let path = state.borrow().settings_path.clone();
-    if !path.exists() {
-        let _ = store::load(&path);
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let (current, path) = {
+        let s = state.borrow();
+        (s.settings.clone(), s.settings_path.clone())
+    };
+    let Some(new_settings) = settings_window::run_modal(mtm, &current) else {
+        return; // cancelled / closed: nothing to do
+    };
+    if let Err(e) = store::save(&path, &new_settings) {
+        queue_alert(format!("Could not save {}:\n{e:#}", path.display()));
     }
-    if let Err(e) = crate::platform::shared::edit::open_in_editor(&path) {
-        queue_alert(format!("Could not open the settings file:\n{e:#}"));
+    // Swap in the new settings and re-register the freeze hotkey if its
+    // binding changed (register-first; also refreshes the tray tooltip).
+    let auto_start_changed = new_settings.auto_start != current.auto_start;
+    let auto_start = new_settings.auto_start;
+    {
+        let mut s = state.borrow_mut();
+        s.settings = new_settings;
+        s.rebind_freeze_hotkey_if_changed();
+    }
+    // Auto-start toggled via the settings window: reconcile the LaunchAgent
+    // now (hand-edited JSONC is covered by startup reconciliation).
+    if auto_start_changed && let Err(e) = autostart::apply_auto_start(auto_start) {
+        queue_alert(format!("Could not update the login item:\n{e:#}"));
+    }
+}
+
+/// "Open Settings Folder": reveal `spotfreeze.jsonc` in Finder, selected in
+/// its folder (detached — the app never blocks on Finder).
+fn open_settings_folder(state: &Rc<RefCell<AppState>>) {
+    let path = state.borrow().settings_path.clone();
+    if let Err(e) = crate::platform::shared::edit::open_settings_folder(&path) {
+        queue_alert(format!("Could not open the settings folder:\n{e:#}"));
     }
 }
 
