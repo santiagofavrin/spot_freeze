@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.13.1...v1.14.0) (2026-08-03)
+
+
+### Features
+
+* add macOS settings editor ([c108ed8](https://github.com/santiagofavrin/spotfreeze/commit/c108ed84a5c1d034b84ca7cbe4cb258af2963416))
+
 ## [1.13.1](https://github.com/santiagofavrin/spotfreeze/compare/v1.13.0...v1.13.1) (2026-08-02)
 
 
