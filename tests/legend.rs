@@ -95,13 +95,14 @@ fn pill_is_top_centered_translucent_and_highlights_the_active_tab() {
     let frame_h = 160u32;
 
     let mut active = dark_frame(frame_w, frame_h);
-    legend.paint(&mut active, &[true]);
+    let origin = legend.default_origin(frame_w, frame_h);
+    legend.paint(&mut active, &[true], origin);
     let mut inactive = dark_frame(frame_w, frame_h);
-    legend.paint(&mut inactive, &[false]);
+    legend.paint(&mut inactive, &[false], origin);
     let plain = dark_frame(frame_w, frame_h);
 
-    let x0 = (frame_w - pw) / 2;
-    let y0 = 48;
+    let x0 = origin.x as u32;
+    let y0 = origin.y as u32;
     // The pill is painted in the top-center band and is translucent: the pill
     // center is dimmer than the plain frame (blended toward near-black) but
     // not solid black.

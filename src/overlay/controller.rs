@@ -42,7 +42,13 @@
 //!   pill near the top-center listing the modes as tabs (active ones
 //!   highlighted) with their freeze-time hotkey bindings. The legend never
 //!   reaches the capture originals: `rebase_freeze` composes without it, so
-//!   snip copies stay clean.
+//!   snip copies stay clean. The pill is MOVABLE (drag it anywhere on its
+//!   monitor) and CLOSEABLE (click its "×" button to hide it for the rest of
+//!   the freeze session); both are per-monitor, per-session, and the position
+//!   survives capture entry/exit. The `overlay.show_legend` setting gates
+//!   whether the pill appears at all. Legend drag/close events are intercepted
+//!   BEFORE mode routing so the spotlight/zoom don't follow the cursor while
+//!   the pill is being dragged.
 //! - **Cursor seeding**: freshly activated layers receive one synthetic
 //!   mouse-move with the LIVE cursor position, so the first presented frame
 //!   already has the spotlight hole / zoom focus under the cursor instead of
@@ -113,6 +119,14 @@ impl PendingRepaint {
     }
 }
 
+/// Active legend drag: which monitor's pill is being dragged and the offset
+/// from the pill's top-left to the grab point (so the pill doesn't jump when
+/// the drag starts).
+struct LegendDrag {
+    monitor: usize,
+    offset: Point,
+}
+
 /// Everything that exists only while the screen is frozen.
 ///
 /// `originals`, `frames`, `monitors`, and `windows` are parallel vectors in
@@ -144,6 +158,16 @@ struct FreezeState {
     /// The mode legend painted into every composed frame while frozen
     /// (tabs + freeze-time bindings); never baked into the capture originals.
     legend: Legend,
+    /// Per-monitor legend pill top-left position (monitor-local coords),
+    /// initialized to [`Legend::default_origin`] at freeze. Dragging updates
+    /// only the grabbed monitor's entry; persists across capture transitions.
+    legend_pos: Vec<Point>,
+    /// Per-monitor legend hidden flag: `true` once the user clicks the close
+    /// button on that monitor's pill (stays hidden until the next freeze).
+    legend_hidden: Vec<bool>,
+    /// Active legend drag, if any. Cleared on `LeftButtonUp`. Persists across
+    /// capture transitions (it shouldn't normally be active during one).
+    legend_drag: Option<LegendDrag>,
     /// Pre-capture per-monitor ORIGINALS, stashed while capture mode's
     /// re-frozen (effects-baked) base occupies `originals`; `None` outside
     /// capture mode. Invariant: `capture.is_some() == modes.in_capture()` —
@@ -238,6 +262,12 @@ impl OverlayController {
 
         let settings = settings.clone();
         let monitor_count = monitors.len();
+        let legend = Legend::from_hotkeys(&settings.hotkeys);
+        let legend_pos: Vec<Point> = originals
+            .iter()
+            .map(|o| legend.default_origin(o.width, o.height))
+            .collect();
+        let legend_hidden = vec![false; monitor_count];
         let mut state = FreezeState {
             originals,
             frames,
@@ -245,7 +275,10 @@ impl OverlayController {
             windows,
             pending_repaint: vec![None; monitor_count],
             modes: ModeStack::new(mode_params(&settings)),
-            legend: Legend::from_hotkeys(&settings.hotkeys),
+            legend,
+            legend_pos,
+            legend_hidden,
+            legend_drag: None,
             settings,
             capture: None,
         };
@@ -548,9 +581,21 @@ fn dispatch_event(inner: &Rc<RefCell<Option<FreezeState>>>, monitor: usize, even
 
 /// Feed `event` to the mode stack and apply the resulting `ModeEffect`'s
 /// dirty-region repaints. Returns `true` when the stack requested exit.
+///
+/// BEFORE routing to the mode stack, mouse events are intercepted for the
+/// legend pill: a `LeftButtonDown` inside a visible pill starts a drag (or
+/// closes the pill if the click lands on the close button); `MouseMove`/
+/// `LeftButtonUp` during a drag move/end the pill without the spotlight/zoom
+/// following the cursor. Intercepted events never reach the mode stack.
 fn apply_overlay_event(state: &mut FreezeState, monitor: usize, event: OverlayEvent) -> bool {
     if monitor >= state.windows.len() {
         return false; // stale event from an already-destroyed window
+    }
+    // Legend interception: computed with immutable reads first, then applied
+    // mutably — avoids double-mutable-borrow of `state`.
+    if let Some(action) = legend_intercept(state, monitor, event) {
+        apply_legend_action(state, action);
+        return false; // intercepted: modes never see this event
     }
     let effect = match event {
         OverlayEvent::MouseMove { at } => state.modes.on_mouse_move(monitor, at),
@@ -569,6 +614,113 @@ fn apply_overlay_event(state: &mut FreezeState, monitor: usize, event: OverlayEv
         render_and_present(state, m, dirty);
     }
     effect.exit
+}
+
+/// `true` when the legend pill is visible on monitor `m`: the setting allows
+/// it AND the user hasn't closed it for this freeze session.
+fn legend_visible(state: &FreezeState, m: usize) -> bool {
+    state.settings.overlay.show_legend && !state.legend_hidden[m]
+}
+
+/// What the legend interception wants to do with an event, computed from
+/// immutable reads of [`FreezeState`] so the caller can apply it mutably
+/// afterwards without a double-borrow.
+enum LegendAction {
+    /// Grab the pill on `monitor` at the click point; `offset` is
+    /// `click_point - legend_pos[monitor]` so the pill doesn't jump.
+    StartDrag { monitor: usize, offset: Point },
+    /// Move the dragged pill to `at` (monitor-local coords on the drag's
+    /// monitor).
+    DragMove { at: Point },
+    /// Release the pill (end the drag).
+    EndDrag,
+    /// Close (hide) the pill on `monitor` for the rest of the freeze session.
+    Close { monitor: usize },
+}
+
+/// Decide whether `event` on `monitor` should be intercepted for the legend
+/// pill (drag or close), using only immutable reads of `state`. Returns
+/// `None` when the event should fall through to normal mode routing.
+fn legend_intercept(
+    state: &FreezeState,
+    monitor: usize,
+    event: OverlayEvent,
+) -> Option<LegendAction> {
+    // An active drag intercepts mouse-move (same monitor) and button-up
+    // (any monitor) so the drag ends cleanly.
+    if let Some(drag) = &state.legend_drag {
+        match event {
+            OverlayEvent::MouseMove { at } if monitor == drag.monitor => {
+                return Some(LegendAction::DragMove { at });
+            }
+            OverlayEvent::LeftButtonUp { .. } => {
+                return Some(LegendAction::EndDrag);
+            }
+            _ => {} // wheel/key/cross-monitor move: fall through to mode routing
+        }
+    }
+
+    // LeftButtonDown: hit-test the pill for drag or close.
+    if let OverlayEvent::LeftButtonDown { at } = event {
+        if !legend_visible(state, monitor) {
+            return None;
+        }
+        // The pill is not interactive when it doesn't fit on the monitor
+        // (paint skips it, so there's nothing to grab or close).
+        let (pw, ph) = state.legend.size();
+        if pw > state.originals[monitor].width || ph > state.originals[monitor].height {
+            return None;
+        }
+        let origin = state.legend_pos[monitor];
+        let pill = state.legend.pill_rect(origin);
+        if !pill.contains(at) {
+            return None;
+        }
+        // Inside the pill: close button takes priority, otherwise start a drag.
+        if state.legend.close_hit_rect(origin).contains(at) {
+            return Some(LegendAction::Close { monitor });
+        }
+        let offset = Point::new(at.x - origin.x, at.y - origin.y);
+        return Some(LegendAction::StartDrag { monitor, offset });
+    }
+
+    None
+}
+
+/// Apply a legend interception action: mutate `state` and repaint as needed.
+fn apply_legend_action(state: &mut FreezeState, action: LegendAction) {
+    match action {
+        LegendAction::StartDrag { monitor, offset } => {
+            state.legend_drag = Some(LegendDrag { monitor, offset });
+        }
+        LegendAction::DragMove { at } => {
+            // Extract the drag target without holding a borrow across the
+            // mutable updates below (split-borrow safety).
+            let (m, offset) = match &state.legend_drag {
+                Some(drag) => (drag.monitor, drag.offset),
+                None => return,
+            };
+            let (pw, ph) = state.legend.size();
+            let w = state.originals[m].width;
+            let h = state.originals[m].height;
+            // Clamp so the whole pill stays on-screen (monitor-local
+            // buffer dims). If the pill is larger than the monitor (it
+            // won't paint anyway), the lower bound is 0.
+            let max_x = (w as i32 - pw as i32).max(0);
+            let max_y = (h as i32 - ph as i32).max(0);
+            let new_x = (at.x - offset.x).clamp(0, max_x);
+            let new_y = (at.y - offset.y).clamp(0, max_y);
+            state.legend_pos[m] = Point::new(new_x, new_y);
+            render_and_present(state, m, None);
+        }
+        LegendAction::EndDrag => {
+            state.legend_drag = None;
+        }
+        LegendAction::Close { monitor } => {
+            state.legend_hidden[monitor] = true;
+            render_and_present(state, monitor, None);
+        }
+    }
 }
 
 /// Re-compose monitor `m`'s full frame from the active layers and present it.
@@ -656,13 +808,16 @@ fn veil_for(in_capture: bool, any_active: bool, settings: &AppSettings) -> (u8, 
 fn compose_frame_for(state: &mut FreezeState, m: usize) {
     // Split borrows across disjoint fields: modes (read) builds the render
     // state, originals[m] (read) + frames[m] (write) are the pixel buffers,
-    // settings (read) supplies the veil parameters, legend (read) the pill.
+    // settings (read) supplies the veil parameters, legend (read) the pill,
+    // legend_pos/legend_hidden (read) the per-monitor pill position/visibility.
     let FreezeState {
         originals,
         frames,
         modes,
         settings,
         legend,
+        legend_pos,
+        legend_hidden,
         ..
     } = state;
     let render_state = modes.render_state(m);
@@ -676,7 +831,12 @@ fn compose_frame_for(state: &mut FreezeState, m: usize) {
         dim,
         veil_color,
     );
-    legend.paint(&mut frames[m], &modes.layers_active());
+    // The legend is painted only when the setting allows it AND the user
+    // hasn't closed it for this freeze session. It never reaches the capture
+    // originals (this is the only place it is drawn).
+    if settings.overlay.show_legend && !legend_hidden[m] {
+        legend.paint(&mut frames[m], &modes.layers_active(), legend_pos[m]);
+    }
 }
 
 /// Capture-mode entry: RE-BASE the freeze on the currently composited view.
@@ -951,6 +1111,7 @@ mod tests {
         captured: Vec<(MonitorInfo, DibBuffer)>,
         presents: Vec<Rc<RefCell<Vec<DibBuffer>>>>,
         copied: Rc<RefCell<Vec<DibBuffer>>>,
+        settings: AppSettings,
     }
 
     impl FakeFreeze {
@@ -973,7 +1134,7 @@ mod tests {
                     &FakeCapturer {
                         captured: self.captured.clone(),
                     },
-                    &fake_settings(),
+                    &self.settings,
                     factory,
                     &self.services,
                 )
@@ -1036,6 +1197,15 @@ mod tests {
 
     /// The [`freeze_fake`] core over arbitrary fake monitors.
     fn freeze_fake_with(captured: Vec<(MonitorInfo, DibBuffer)>, cursor: Point) -> FakeFreeze {
+        freeze_fake_with_settings(captured, cursor, fake_settings())
+    }
+
+    /// [`freeze_fake_with`] with custom settings (e.g. `show_legend = false`).
+    fn freeze_fake_with_settings(
+        captured: Vec<(MonitorInfo, DibBuffer)>,
+        cursor: Point,
+        settings: AppSettings,
+    ) -> FakeFreeze {
         let presents: Vec<Rc<RefCell<Vec<DibBuffer>>>> = (0..captured.len())
             .map(|_| Rc::new(RefCell::new(Vec::new())))
             .collect();
@@ -1051,6 +1221,7 @@ mod tests {
             captured,
             presents,
             copied,
+            settings,
         };
         session.refreeze();
         session
@@ -2116,8 +2287,9 @@ mod tests {
             160,
             Rgb::BLACK,
         );
-        Legend::from_hotkeys(&AppSettings::default().hotkeys)
-            .paint(&mut settled, &[true, false, false]);
+        let legend = Legend::from_hotkeys(&AppSettings::default().hotkeys);
+        let origin = legend.default_origin(1024, 160);
+        legend.paint(&mut settled, &[true, false, false], origin);
         assert_eq!(p[0].pixels, settled.pixels);
     }
 
@@ -2163,11 +2335,229 @@ mod tests {
         // Discriminator: had the legend been baked into the base, the crop
         // would contain pill pixels.
         let legend = Legend::from_hotkeys(&AppSettings::default().hotkeys);
-        legend.paint(&mut base, &[true, false, false]);
+        let origin = legend.default_origin(1024, 160);
+        legend.paint(&mut base, &[true, false, false], origin);
         let baked = crop_normalized(&base, Point::new(80, 40), Point::new(720, 100)).unwrap();
         assert_ne!(
             crop.pixels, baked.pixels,
             "the pill zone proves the legend was excluded from the base"
+        );
+    }
+
+    // ---- legend drag + close + show_legend + capture survival -----------------
+
+    /// Helper: read a field from the frozen [`FreezeState`] via the
+    /// controller's shared cell (tests are in-module, so private fields are
+    /// visible).
+    fn with_state<R>(f: &FakeFreeze, fns: impl FnOnce(&FreezeState) -> R) -> R {
+        let slot = f.controller.inner.borrow();
+        fns(slot.as_ref().expect("frozen"))
+    }
+
+    /// The pill rendered at `pos` into a settled spotlight frame at
+    /// `(cursor, 10)` on the 1024x160 big monitor — the reference for
+    /// comparing presented frames after legend interactions.
+    fn settled_with_legend(cursor: Point, legend: &Legend, pos: Point) -> DibBuffer {
+        let original = make_buf(1024, 160, coord_pattern);
+        let mut out = DibBuffer::new(1024, 160);
+        let state = RenderState {
+            spotlight: Some((cursor, 10)),
+            ..RenderState::default()
+        };
+        compose_frame(
+            &original,
+            &mut out,
+            Rect::new(0, 0, 1024, 160),
+            &state,
+            160,
+            Rgb::BLACK,
+        );
+        legend.paint(&mut out, &[true, false, false], pos);
+        out
+    }
+
+    #[test]
+    fn dragging_the_legend_moves_it_and_suppresses_mode_routing() {
+        let mut f = freeze_fake_with(big_monitor(), Point::new(400, 100));
+        let legend = Legend::from_hotkeys(&AppSettings::default().hotkeys);
+        let initial_pos = with_state(&f, |s| s.legend_pos[0]);
+        let pill = legend.pill_rect(initial_pos);
+        // Click inside the pill but NOT on the close button (far left of the
+        // pill body).
+        let click = Point::new(pill.x + 10, pill.y + pill.height as i32 / 2);
+        assert!(pill.contains(click), "click inside the pill");
+        assert!(
+            !legend.close_hit_rect(initial_pos).contains(click),
+            "not on the close button"
+        );
+
+        f.controller
+            .handle_overlay_event(0, OverlayEvent::LeftButtonDown { at: click });
+        assert!(with_state(&f, |s| s.legend_drag.is_some()), "drag started");
+
+        // Move the mouse: the legend moves, the spotlight hole does NOT.
+        let target = Point::new(200, 100);
+        f.controller
+            .handle_overlay_event(0, OverlayEvent::MouseMove { at: target });
+        let new_pos = with_state(&f, |s| s.legend_pos[0]);
+        assert_ne!(new_pos, initial_pos, "legend moved");
+
+        // The presented frame has the spotlight hole still at (400, 100)
+        // and the pill at the new position — modes never saw the move.
+        assert_eq!(
+            last_present(&f.presents[0]).pixels,
+            settled_with_legend(Point::new(400, 100), &legend, new_pos).pixels,
+            "spotlight hole stayed put, only the legend moved"
+        );
+
+        // End the drag.
+        f.controller
+            .handle_overlay_event(0, OverlayEvent::LeftButtonUp { at: target });
+        assert!(with_state(&f, |s| s.legend_drag.is_none()), "drag ended");
+    }
+
+    #[test]
+    fn clicking_the_close_button_hides_the_legend() {
+        let mut f = freeze_fake_with(big_monitor(), Point::new(400, 100));
+        let legend = Legend::from_hotkeys(&AppSettings::default().hotkeys);
+        let initial_pos = with_state(&f, |s| s.legend_pos[0]);
+        let close = legend.close_hit_rect(initial_pos);
+        let click = Point::new(
+            close.x + close.width as i32 / 2,
+            close.y + close.height as i32 / 2,
+        );
+        assert!(close.contains(click), "click inside the close button");
+
+        f.controller
+            .handle_overlay_event(0, OverlayEvent::LeftButtonDown { at: click });
+
+        assert!(
+            with_state(&f, |s| s.legend_hidden[0]),
+            "legend hidden after close click"
+        );
+        assert!(
+            with_state(&f, |s| s.legend_drag.is_none()),
+            "close does not start a drag"
+        );
+
+        // The presented frame has no pill (compose without legend).
+        let original = make_buf(1024, 160, coord_pattern);
+        let mut expected = DibBuffer::new(1024, 160);
+        let state = RenderState {
+            spotlight: Some((Point::new(400, 100), 10)),
+            ..RenderState::default()
+        };
+        compose_frame(
+            &original,
+            &mut expected,
+            Rect::new(0, 0, 1024, 160),
+            &state,
+            160,
+            Rgb::BLACK,
+        );
+        assert_eq!(
+            last_present(&f.presents[0]).pixels,
+            expected.pixels,
+            "no legend painted after close"
+        );
+
+        // A further click in the (now absent) pill region forwards to modes
+        // normally: the legend is not re-shown and no drag starts.
+        f.controller
+            .handle_overlay_event(0, OverlayEvent::LeftButtonDown { at: click });
+        assert!(
+            with_state(&f, |s| s.legend_hidden[0]),
+            "legend stays hidden"
+        );
+        assert!(
+            with_state(&f, |s| s.legend_drag.is_none()),
+            "no drag started on hidden legend"
+        );
+    }
+
+    #[test]
+    fn show_legend_false_never_paints_and_clicks_forward_to_modes() {
+        let mut settings = fake_settings();
+        settings.overlay.show_legend = false;
+        let mut f = freeze_fake_with_settings(big_monitor(), Point::new(400, 100), settings);
+
+        // The presented frame has no pill.
+        let original = make_buf(1024, 160, coord_pattern);
+        let mut expected = DibBuffer::new(1024, 160);
+        let state = RenderState {
+            spotlight: Some((Point::new(400, 100), 10)),
+            ..RenderState::default()
+        };
+        compose_frame(
+            &original,
+            &mut expected,
+            Rect::new(0, 0, 1024, 160),
+            &state,
+            160,
+            Rgb::BLACK,
+        );
+        assert_eq!(
+            last_present(&f.presents[0]).pixels,
+            expected.pixels,
+            "no legend painted when show_legend is false"
+        );
+
+        // A click in the top-center (where the pill would be) forwards to
+        // modes: no drag starts, no hide happens.
+        let legend = Legend::from_hotkeys(&AppSettings::default().hotkeys);
+        let origin = legend.default_origin(1024, 160);
+        let pill_center = Point::new(
+            origin.x + legend.size().0 as i32 / 2,
+            origin.y + legend.size().1 as i32 / 2,
+        );
+        f.controller
+            .handle_overlay_event(0, OverlayEvent::LeftButtonDown { at: pill_center });
+        assert!(
+            with_state(&f, |s| s.legend_drag.is_none()),
+            "no drag when show_legend is false"
+        );
+        assert!(
+            !with_state(&f, |s| s.legend_hidden[0]),
+            "no hide when show_legend is false"
+        );
+    }
+
+    #[test]
+    fn legend_position_survives_capture_entry_and_exit() {
+        let mut f = freeze_fake_with(big_monitor(), Point::new(400, 100));
+        let legend = Legend::from_hotkeys(&AppSettings::default().hotkeys);
+        let initial_pos = with_state(&f, |s| s.legend_pos[0]);
+        let pill = legend.pill_rect(initial_pos);
+        let click = Point::new(pill.x + 10, pill.y + pill.height as i32 / 2);
+
+        // Drag the legend to a new position.
+        f.controller
+            .handle_overlay_event(0, OverlayEvent::LeftButtonDown { at: click });
+        f.controller.handle_overlay_event(
+            0,
+            OverlayEvent::MouseMove {
+                at: Point::new(200, 100),
+            },
+        );
+        f.controller.handle_overlay_event(
+            0,
+            OverlayEvent::LeftButtonUp {
+                at: Point::new(200, 100),
+            },
+        );
+        let dragged_pos = with_state(&f, |s| s.legend_pos[0]);
+        assert_ne!(dragged_pos, initial_pos, "legend was dragged");
+
+        // Enter capture mode and exit back to the frozen view.
+        f.controller.set_mode(ModeKind::Snip, &f.services);
+        f.controller.unfreeze(); // Esc: exits capture, stays frozen
+        assert!(f.controller.is_frozen());
+
+        // The legend position is unchanged across the capture transition.
+        assert_eq!(
+            with_state(&f, |s| s.legend_pos[0]),
+            dragged_pos,
+            "legend position survives capture entry/exit"
         );
     }
 }

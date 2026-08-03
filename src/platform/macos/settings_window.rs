@@ -35,6 +35,7 @@ struct Fields {
     color: String,
     snip_color: String,
     auto_start: bool,
+    show_legend: bool,
 }
 
 fn fields_from_settings(s: &AppSettings) -> Fields {
@@ -57,6 +58,7 @@ fn fields_from_settings(s: &AppSettings) -> Fields {
         color: s.overlay.color.to_hex(),
         snip_color: s.overlay.snip_color.to_hex(),
         auto_start: s.auto_start,
+        show_legend: s.overlay.show_legend,
     }
 }
 
@@ -170,6 +172,7 @@ fn validate_fields(f: &Fields) -> Result<AppSettings, Vec<String>> {
             color: color.unwrap(),
             snip_dim_opacity: snip_dim.unwrap(),
             snip_color: snip_color.unwrap(),
+            show_legend: f.show_legend,
         },
         auto_start: f.auto_start,
     })
@@ -231,6 +234,7 @@ fn parse_color(label: &str, text: &str, errors: &mut Vec<String>) -> Option<Rgb>
 struct WindowIvars {
     fields: Vec<Retained<NSTextField>>,
     auto_start: Retained<NSButton>,
+    show_legend: Retained<NSButton>,
     result: Rc<RefCell<Option<AppSettings>>>,
 }
 
@@ -258,6 +262,10 @@ define_class!(
                 snip_color: values[14].clone(),
                 auto_start: {
                     let state: isize = unsafe { msg_send![&*self.ivars().auto_start, state] };
+                    state == 1
+                },
+                show_legend: {
+                    let state: isize = unsafe { msg_send![&*self.ivars().show_legend, state] };
                     state == 1
                 },
             };
@@ -447,6 +455,21 @@ pub fn run_modal(mtm: MainThreadMarker, current: &AppSettings) -> Option<AppSett
     check.setState(if values.auto_start { 1 } else { 0 });
     effect.addSubview(&check);
 
+    let show_legend = NSButton::initWithFrame(
+        NSButton::alloc(mtm),
+        NSRect {
+            origin: NSPoint { x: 28.0, y: 70.0 },
+            size: NSSize {
+                width: 300.0,
+                height: 24.0,
+            },
+        },
+    );
+    show_legend.setTitle(&NSString::from_str("Show mode legend"));
+    show_legend.setButtonType(NSButtonType::Switch);
+    show_legend.setState(if values.show_legend { 1 } else { 0 });
+    effect.addSubview(&show_legend);
+
     let save = NSButton::initWithFrame(
         NSButton::alloc(mtm),
         NSRect {
@@ -477,6 +500,7 @@ pub fn run_modal(mtm: MainThreadMarker, current: &AppSettings) -> Option<AppSett
         WindowIvars {
             fields: controls,
             auto_start: check,
+            show_legend,
             result: result.clone(),
         },
     );
@@ -539,5 +563,17 @@ mod tests {
         f.color = "blue".into();
         f.snip_color = "#12345".into();
         assert!(validate_fields(&f).is_err());
+    }
+
+    #[test]
+    fn show_legend_round_trips_when_toggled_off() {
+        let mut f = fields_from_settings(&AppSettings::default());
+        assert!(f.show_legend, "default is true");
+        f.show_legend = false;
+        let settings = validate_fields(&f).expect("must validate");
+        assert!(
+            !settings.overlay.show_legend,
+            "toggled-off show_legend reaches the settings copy"
+        );
     }
 }

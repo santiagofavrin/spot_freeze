@@ -145,6 +145,7 @@ pub fn open(
         color_swatch: HWND::default(),
         color_hex_edit: HWND::default(),
         auto_start_check: HWND::default(),
+        show_legend_check: HWND::default(),
         hint_label: HWND::default(),
         save_button: HWND::default(),
         dpi: 96,
@@ -356,6 +357,8 @@ struct SettingsDraft {
     color_hex: String,
     /// The auto-start checkbox. A plain boolean: nothing to validate.
     auto_start: bool,
+    /// The show-legend checkbox. A plain boolean: nothing to validate.
+    show_legend: bool,
 }
 
 /// Parsed + range-checked numeric values, ready to write into `AppSettings`.
@@ -673,6 +676,7 @@ const ID_NUMERIC_BASE: i32 = 400; // + numeric field index
 const ID_COLOR_HEX: i32 = 450;
 const ID_COLOR_SWATCH: i32 = 451;
 const ID_AUTO_START_CHECK: i32 = 460;
+const ID_SHOW_LEGEND_CHECK: i32 = 461;
 const ID_SAVE: i32 = 500;
 const ID_CANCEL: i32 = 501;
 const ID_EXIT: i32 = 502;
@@ -687,7 +691,7 @@ const ID_CARD_SECONDARY: i32 = 602;
 // trace lives in `build_ui`; CLIENT_H is its final y + BOTTOM_PAD.
 const MARGIN: i32 = 20;
 const CLIENT_W: i32 = 640;
-const CLIENT_H: i32 = 724;
+const CLIENT_H: i32 = 754;
 const CARD_W: i32 = CLIENT_W - 2 * MARGIN;
 const CARD_PAD_X: i32 = 16;
 const CARD_PAD_TOP: i32 = 10;
@@ -772,6 +776,7 @@ struct SettingsWindowState {
     color_swatch: HWND,
     color_hex_edit: HWND,
     auto_start_check: HWND,
+    show_legend_check: HWND,
     hint_label: HWND,
     save_button: HWND,
     /// The window's DPI, captured in WM_CREATE; the owner-draw routines scale
@@ -1139,7 +1144,8 @@ unsafe extern "system" fn settings_wnd_proc(
                     || id == ID_CARD_SECONDARY
                     || (ID_ZOOM_CHECK_BASE..ID_ZOOM_CHECK_BASE + MOD_CHECK_COUNT as i32)
                         .contains(&id)
-                    || id == ID_AUTO_START_CHECK;
+                    || id == ID_AUTO_START_CHECK
+                    || id == ID_SHOW_LEGEND_CHECK;
                 if on_card {
                     let text_color = if id == ID_CARD_SECONDARY {
                         TEXT_SECONDARY
@@ -1477,6 +1483,21 @@ unsafe fn build_ui(state: &mut SettingsWindowState) -> Result<()> {
             y += ROW_PITCH;
         }
 
+        state.show_legend_check = create_child(
+            WC_BUTTONW,
+            "Show mode legend while frozen",
+            checkbox_style,
+            px(dpi, CONTENT_X),
+            px(dpi, y) + px(dpi, (ROW_H - CHECK_H) / 2),
+            px(dpi, CONTENT_W),
+            px(dpi, CHECK_H),
+            ID_SHOW_LEGEND_CHECK,
+            parent,
+            hinst,
+            base_font,
+        )?;
+        y += ROW_PITCH;
+
         state.auto_start_check = create_child(
             WC_BUTTONW,
             "Launch SpotFreeze at login (auto-start)",
@@ -1741,6 +1762,7 @@ fn seed_controls(state: &SettingsWindowState) {
     set_text(state.color_hex_edit, &state.settings.overlay.color.to_hex());
     repaint_swatch(state);
     set_checkbox(state.auto_start_check, state.settings.auto_start);
+    set_checkbox(state.show_legend_check, state.settings.overlay.show_legend);
 }
 
 /// Tick a modifier-checkbox row to match a [`Modifiers`] set.
@@ -1800,6 +1822,7 @@ fn collect_draft(state: &SettingsWindowState) -> SettingsDraft {
         },
         color_hex: read_text(state.color_hex_edit),
         auto_start: checkbox_checked(state.auto_start_check),
+        show_legend: checkbox_checked(state.show_legend_check),
     }
 }
 
@@ -1839,6 +1862,7 @@ fn apply_valid_draft(settings: &mut AppSettings, draft: &SettingsDraft, parsed: 
     settings.overlay.dim_opacity = parsed.numerics.dim_opacity;
     settings.overlay.color = parsed.overlay_color;
     settings.auto_start = draft.auto_start;
+    settings.overlay.show_legend = draft.show_legend;
 }
 
 // ---------------------------------------------------------------------------
@@ -2032,6 +2056,10 @@ unsafe fn on_command(state: *mut SettingsWindowState, wparam: WPARAM) {
                 refresh_validation(state);
             }
             ID_AUTO_START_CHECK => {
+                end_capture_restore(state);
+                refresh_validation(state);
+            }
+            ID_SHOW_LEGEND_CHECK => {
                 end_capture_restore(state);
                 refresh_validation(state);
             }
@@ -2535,6 +2563,7 @@ mod tests {
             numerics: default_numerics(),
             color_hex: "#000000".to_string(),
             auto_start: false,
+            show_legend: true,
         }
     }
 
@@ -2674,6 +2703,37 @@ mod tests {
         assert!(
             !settings.auto_start,
             "unticked writes false too (toggle off)"
+        );
+    }
+
+    #[test]
+    fn show_legend_does_not_affect_validation() {
+        let mut draft = default_like_draft();
+        assert!(validate_draft(&draft).is_ok());
+        draft.show_legend = false;
+        assert!(validate_draft(&draft).is_ok());
+    }
+
+    #[test]
+    fn apply_valid_draft_transfers_show_legend_both_ways() {
+        let unchecked = SettingsDraft {
+            show_legend: false,
+            ..default_like_draft()
+        };
+        let parsed = validate_draft(&unchecked).expect("draft validates");
+        let mut settings = AppSettings::default();
+        assert!(settings.overlay.show_legend);
+
+        apply_valid_draft(&mut settings, &unchecked, parsed);
+        assert!(
+            !settings.overlay.show_legend,
+            "unticked checkbox reaches the settings copy"
+        );
+
+        apply_valid_draft(&mut settings, &default_like_draft(), parsed);
+        assert!(
+            settings.overlay.show_legend,
+            "ticked writes true too (toggle on)"
         );
     }
 

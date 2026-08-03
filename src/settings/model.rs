@@ -206,6 +206,11 @@ pub struct OverlaySettings {
     /// Color of the capture (snip) veil — a cool dark slate, visibly distinct
     /// from the spotlight veil. Default: `#16283A`.
     pub snip_color: Rgb,
+    /// Whether the mode legend pill is painted while frozen. The user can
+    /// still close it for a single freeze session by clicking its close
+    /// button; this setting controls whether it appears at all. Default:
+    /// `true`.
+    pub show_legend: bool,
 }
 
 impl Default for OverlaySettings {
@@ -219,6 +224,7 @@ impl Default for OverlaySettings {
                 g: 0x28,
                 b: 0x3A,
             },
+            show_legend: true,
         }
     }
 }
@@ -283,6 +289,14 @@ mod tests {
             }
         );
         assert_ne!(d.snip_color, d.color, "distinct from the spotlight veil");
+    }
+
+    #[test]
+    fn show_legend_defaults_to_true() {
+        assert!(
+            OverlaySettings::default().show_legend,
+            "the mode legend is shown by default"
+        );
     }
 
     #[test]

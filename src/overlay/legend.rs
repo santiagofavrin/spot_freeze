@@ -2,7 +2,17 @@
 //! near the top-center of every monitor shows the modes as TABS — the active
 //! one(s) highlighted — each labelled with the hotkey that reaches it
 //! (bindings snapshotted from settings at freeze time, like every other
-//! freeze-time setting) — followed by the app version label.
+//! freeze-time setting) — followed by the app version label and a close
+//! ("×") button.
+//!
+//! The pill is MOVABLE: the user can grab it anywhere and drag it to a new
+//! position on that monitor (the position is per-monitor and per-freeze-
+//! session, starting at the default top-center spot). The close button at the
+//! pill's right end hides it for the rest of the freeze session (it reappears
+//! on the next freeze). The `overlay.show_legend` setting controls whether
+//! the pill appears at all. The controller (not this module) owns the
+//! position/hidden/drag state; [`Legend::paint`] simply draws at the origin
+//! it is given.
 //!
 //! The pill sits below the top edge with a generous inset so it stays visible
 //! without looking pinned to the screen boundary. It is painted into the
@@ -25,6 +35,7 @@
 //! (project rule): the pill appears at full strength from the first frame.
 
 use crate::capture::DibBuffer;
+use crate::geometry::{Point, Rect};
 use crate::settings::model::{HotkeySettings, Rgb};
 use fontdue::{Font, FontSettings};
 
@@ -54,6 +65,9 @@ const CHIP_INSET_Y: u32 = 5;
 const PILL_RADIUS: u32 = 18;
 /// Distance between the frame's top edge and the pill's top edge.
 const TOP_MARGIN: u32 = 48;
+/// Gap between the version label (or the last tab when there is none) and the
+/// close ("×") button at the pill's right end.
+const CLOSE_GAP: u32 = 16;
 
 /// Pill background: near-black "glass", blended at [`PILL_ALPHA`] over the frame.
 const PILL_COLOR: Rgb = Rgb {
@@ -126,10 +140,16 @@ pub struct Legend {
     version: String,
     /// Pre-rasterized version label (Regular).
     version_bmp: CoverageBitmap,
+    /// Pre-rasterized close-button glyph ("×", U+00D7, Regular). Always
+    /// present so the pill is always closeable.
+    close_bmp: CoverageBitmap,
     /// Total pill width in pixels.
     pill_width: u32,
     /// Total pill height in pixels.
     pill_height: u32,
+    /// Close-button hit square side (= `pill_height`): the rightmost
+    /// `close_size × close_size` region of the pill is the close hit area.
+    close_size: u32,
     /// Line height shared by every rendered string (for vertical centering).
     line_height: u32,
 }
@@ -192,6 +212,10 @@ impl Legend {
             })
             .collect();
         let version_bmp = rasterize_string(&regular, version, FONT_PX);
+        // The close ("×", U+00D7) button: rasterized with the same Inter
+        // Regular font as the inactive tab text — it's in Latin-1, so Inter
+        // has the glyph. Always present so the pill is always closeable.
+        let close_bmp = rasterize_string(&regular, "\u{00D7}", FONT_PX);
 
         let line_height = chips
             .iter()
@@ -200,6 +224,7 @@ impl Legend {
             .max()
             .unwrap_or(0);
         let pill_height = line_height + 2 * PILL_PAD_Y;
+        let close_size = pill_height;
 
         let chips_width = chips.iter().map(|c| c.slot_w + 2 * TAB_PAD_X).sum::<u32>()
             + TAB_GAP * chips.len().saturating_sub(1) as u32;
@@ -208,15 +233,17 @@ impl Legend {
         } else {
             VERSION_GAP + version_bmp.width
         };
-        let pill_width = 2 * PILL_PAD_X + chips_width + version_width;
+        let pill_width = 2 * PILL_PAD_X + chips_width + version_width + CLOSE_GAP + close_size;
 
         Self {
             tabs: texts,
             chips,
             version: version.to_string(),
             version_bmp,
+            close_bmp,
             pill_width,
             pill_height,
+            close_size,
             line_height,
         }
     }
@@ -237,18 +264,51 @@ impl Legend {
         &self.version
     }
 
-    /// Paint the pill centered horizontally near the top of `buf` at full
-    /// strength. `active[i]` highlights tab `i` (missing flags read as
+    /// The pill's default top-left origin for a buffer of `(width, height)`:
+    /// centered horizontally, with [`TOP_MARGIN`] from the top (clamped so the
+    /// whole pill stays on-screen). Used at freeze time to seed the per-
+    /// monitor legend position.
+    pub fn default_origin(&self, buf_width: u32, buf_height: u32) -> Point {
+        let (pw, ph) = self.size();
+        let x0 = if pw > buf_width {
+            0
+        } else {
+            (buf_width - pw) / 2
+        };
+        let y0 = if ph > buf_height {
+            0
+        } else {
+            TOP_MARGIN.min(buf_height - ph)
+        };
+        Point::new(x0 as i32, y0 as i32)
+    }
+
+    /// The pill's bounding rect at `origin` (top-left + size).
+    pub fn pill_rect(&self, origin: Point) -> Rect {
+        Rect::new(origin.x, origin.y, self.pill_width, self.pill_height)
+    }
+
+    /// The close-button hit region: a `close_size × close_size` square at the
+    /// pill's right end (inside the pill), vertically spanning the full pill
+    /// height. Consistent with where [`Legend::paint`] draws the "×" glyph.
+    pub fn close_hit_rect(&self, origin: Point) -> Rect {
+        let close_x =
+            origin.x + self.pill_width as i32 - PILL_PAD_X as i32 - self.close_size as i32;
+        Rect::new(close_x, origin.y, self.close_size, self.close_size)
+    }
+
+    /// Paint the pill at `origin` (its top-left in monitor-local coords) at
+    /// full strength. `active[i]` highlights tab `i` (missing flags read as
     /// inactive). Skips monitors smaller than the pill instead of clipping
-    /// it, and skips empty legends.
-    pub fn paint(&self, buf: &mut DibBuffer, active: &[bool]) {
+    /// it, and skips empty legends. The pill's default position (centered
+    /// horizontally near the top) is available via [`Legend::default_origin`].
+    pub fn paint(&self, buf: &mut DibBuffer, active: &[bool], origin: Point) {
         let (pw, ph) = self.size();
         if self.tabs.is_empty() || pw > buf.width || ph > buf.height {
             return;
         }
-        let x0 = ((buf.width - pw) / 2) as i32;
-        let slack = buf.height - ph; // >= 0 (checked above)
-        let y0 = TOP_MARGIN.min(slack) as i32;
+        let x0 = origin.x;
+        let y0 = origin.y;
 
         // Pill body (translucent dark "glass", rounded corners).
         for y in y0..y0 + ph as i32 {
@@ -301,6 +361,17 @@ impl Legend {
             let vy = text_area_y + (self.line_height as i32 - self.version_bmp.height as i32) / 2;
             blit_coverage(buf, vx, vy, &self.version_bmp, TEXT_VERSION);
         }
+
+        // Close button ("×") at the pill's right end — always present so the
+        // pill is always closeable. The U+00D7 MULTIPLICATION SIGN is
+        // rasterized with the existing Inter Regular font (it's in Latin-1,
+        // so Inter has it), matching the surrounding text style. The glyph is
+        // centered in the close hit square ([`Legend::close_hit_rect`]).
+        let close_x = x0 + pw as i32 - PILL_PAD_X as i32 - self.close_size as i32;
+        let close_y = y0;
+        let close_cx = close_x + (self.close_size as i32 - self.close_bmp.width as i32) / 2;
+        let close_cy = close_y + (self.close_size as i32 - self.close_bmp.height as i32) / 2;
+        blit_coverage(buf, close_cx, close_cy, &self.close_bmp, TEXT_INACTIVE);
     }
 }
 
@@ -677,10 +748,11 @@ mod tests {
         let (pw, ph) = legend.size();
         let mut buf = frame(800, 160, [180, 180, 180, 255]);
         let plain = buf.pixels.clone();
-        legend.paint(&mut buf, &[false]);
+        let origin = legend.default_origin(800, 160);
+        legend.paint(&mut buf, &[false], origin);
 
-        let x0 = (800 - pw) / 2;
-        let y0 = TOP_MARGIN;
+        let x0 = origin.x as u32;
+        let y0 = origin.y as u32;
         // The pill center is blended toward the dark pill color: dimmer than
         // the bright plain frame.
         let center = px(&buf, x0 + pw / 2, y0 + ph / 2);
@@ -709,12 +781,13 @@ mod tests {
         let (pw, ph) = legend.size();
         let mut buf = frame(800, 160, [0, 0, 0, 255]);
         let plain = buf.pixels.clone();
-        legend.paint(&mut buf, &[false]);
+        let origin = legend.default_origin(800, 160);
+        legend.paint(&mut buf, &[false], origin);
         // Some pixel inside the pill's text area is non-black (text drawn)
         // and the frame is not identical to the plain one.
         assert_ne!(buf.pixels, plain, "paint changes pixels");
-        let x0 = (800 - pw) / 2;
-        let y0 = TOP_MARGIN;
+        let x0 = origin.x as u32;
+        let y0 = origin.y as u32;
         let text_band_sum = region_sum(&buf, x0, y0, pw, ph);
         assert!(
             text_band_sum > 0,
@@ -725,14 +798,14 @@ mod tests {
     #[test]
     fn paint_highlights_the_active_tab() {
         let legend = Legend::new(&tabs(&[("AA", "B"), ("CC", "D")]));
-        let (pw, _) = legend.size();
         let mut on = frame(400, 160, [40, 40, 40, 255]);
-        legend.paint(&mut on, &[true, false]);
+        let origin = legend.default_origin(400, 160);
+        legend.paint(&mut on, &[true, false], origin);
         let mut off = frame(400, 160, [40, 40, 40, 255]);
-        legend.paint(&mut off, &[false, false]);
+        legend.paint(&mut off, &[false, false], origin);
 
-        let x0 = (400 - pw) / 2;
-        let y0 = TOP_MARGIN;
+        let x0 = origin.x as u32;
+        let y0 = origin.y as u32;
         let first_chip_w = legend.chips[0].slot_w + 2 * TAB_PAD_X;
         // The first chip's bbox is brighter overall when active (chip fill +
         // brighter text) than when inactive; the second chip is identical in
@@ -775,13 +848,15 @@ mod tests {
         let (tw, _) = tab_only.size();
         let mut a = frame(1024, 160, [0, 0, 0, 255]);
         let mut b = frame(1024, 160, [0, 0, 0, 255]);
-        with_version.paint(&mut a, &[false, false, false]);
-        tab_only.paint(&mut b, &[false, false, false]);
+        let origin_a = with_version.default_origin(1024, 160);
+        let origin_b = tab_only.default_origin(1024, 160);
+        with_version.paint(&mut a, &[false, false, false], origin_a);
+        tab_only.paint(&mut b, &[false, false, false], origin_b);
         // The trailing region (where the version sits, after the tabs + gap)
         // differs: the version label is drawn in `a` but absent from `b`.
-        let a_x0 = (1024 - vw) / 2;
-        let b_x0 = (1024 - tw) / 2;
-        let y0 = TOP_MARGIN;
+        let a_x0 = origin_a.x as u32;
+        let b_x0 = origin_b.x as u32;
+        let y0 = origin_a.y as u32;
         let tabs_end_a = a_x0
             + PILL_PAD_X
             + with_version
@@ -844,13 +919,13 @@ mod tests {
         let legend = Legend::new(&tabs(&[("SPOTLIGHT", "S"), ("ZOOM", "F"), ("SNIP", "C")]));
         let mut tiny = frame(32, 32, [100, 100, 100, 255]);
         let before = tiny.pixels.clone();
-        legend.paint(&mut tiny, &[true, false, false]);
+        legend.paint(&mut tiny, &[true, false, false], Point::new(0, 0));
         assert_eq!(tiny.pixels, before, "tiny monitor: skipped, not clipped");
 
         let empty = Legend::new(&[]);
         let mut buf = frame(400, 64, [100, 100, 100, 255]);
         let before = buf.pixels.clone();
-        empty.paint(&mut buf, &[]);
+        empty.paint(&mut buf, &[], Point::new(0, 0));
         assert_eq!(buf.pixels, before, "empty legend paints nothing");
 
         // Fewer active flags than tabs: the rest read as inactive (no panic).
@@ -858,7 +933,99 @@ mod tests {
         // and wider than the old fixed-cell font).
         let mut buf2 = frame(800, 160, [100, 100, 100, 255]);
         let before2 = buf2.pixels.clone();
-        legend.paint(&mut buf2, &[true]);
+        let origin = legend.default_origin(800, 160);
+        legend.paint(&mut buf2, &[true], origin);
         assert_ne!(buf2.pixels, before2, "something painted with partial flags");
+    }
+
+    // ---- origin-based paint + close button -----------------------------------
+
+    #[test]
+    fn default_origin_centers_horizontally_and_uses_top_margin() {
+        let legend = Legend::new(&tabs(&[("SPOTLIGHT", "S")]));
+        let (pw, ph) = legend.size();
+        let origin = legend.default_origin(800, 200);
+        assert_eq!(
+            origin,
+            Point::new(((800 - pw) / 2) as i32, TOP_MARGIN as i32),
+            "centered horizontally, TOP_MARGIN from the top"
+        );
+        // When the buffer is shorter than TOP_MARGIN + pill, y clamps so the
+        // whole pill stays on-screen.
+        let origin_short = legend.default_origin(800, ph + 10);
+        assert_eq!(origin_short.y, 10, "y clamps to the available slack");
+    }
+
+    #[test]
+    fn paint_at_origin_draws_the_pill_at_that_origin() {
+        let legend = Legend::new(&tabs(&[("SPOTLIGHT", "S")]));
+        let (pw, ph) = legend.size();
+        let mut buf = frame(800, 300, [180, 180, 180, 255]);
+        // Paint at a non-default origin (lower-left quadrant).
+        let origin = Point::new(50, 200);
+        legend.paint(&mut buf, &[false], origin);
+        // The pill body darkens pixels at the new origin region.
+        let center = px(&buf, 50 + pw / 2, 200 + ph / 2);
+        assert!(
+            center[0] < 180 && center[1] < 180 && center[2] < 180,
+            "pill darkens the frame at the new origin: {center:?}"
+        );
+        // The OLD default top-center region is untouched (no pill there).
+        let default = legend.default_origin(800, 300);
+        let old_center = px(&buf, default.x as u32 + pw / 2, default.y as u32 + ph / 2);
+        assert_eq!(
+            old_center,
+            [180, 180, 180, 255],
+            "the default top-center region is untouched"
+        );
+    }
+
+    #[test]
+    fn close_hit_rect_is_inside_the_pill_at_the_right_end() {
+        let legend = Legend::new(&tabs(&[("SPOTLIGHT", "S")]));
+        let origin = Point::new(100, 50);
+        let pill = legend.pill_rect(origin);
+        let close = legend.close_hit_rect(origin);
+        // The close rect is inside the pill.
+        assert!(
+            close.x >= pill.x
+                && close.right() <= pill.right()
+                && close.y >= pill.y
+                && close.bottom() <= pill.bottom(),
+            "close rect {close:?} inside pill {pill:?}"
+        );
+        // The close rect is at the RIGHT end of the pill: its right edge
+        // matches the pill's inner-right (before the right padding).
+        assert_eq!(
+            close.right(),
+            origin.x + legend.pill_width as i32 - PILL_PAD_X as i32,
+            "close rect sits at the pill's right end"
+        );
+        // The close hit square's side equals the pill height (full-height
+        // clickable region).
+        assert_eq!(close.width, legend.pill_height);
+        assert_eq!(close.height, legend.pill_height);
+    }
+
+    #[test]
+    fn paint_includes_a_close_button_region() {
+        let legend = Legend::new(&tabs(&[("SPOTLIGHT", "S")]));
+        let mut buf = frame(800, 160, [0, 0, 0, 255]);
+        let origin = legend.default_origin(800, 160);
+        legend.paint(&mut buf, &[false], origin);
+        // Some non-background (non-black) pixels exist in the close-button
+        // area — the "×" glyph was drawn.
+        let close = legend.close_hit_rect(origin);
+        let close_sum = region_sum(
+            &buf,
+            close.x as u32,
+            close.y as u32,
+            close.width,
+            close.height,
+        );
+        assert!(
+            close_sum > 0,
+            "the close-button region has drawn content: {close_sum}"
+        );
     }
 }
