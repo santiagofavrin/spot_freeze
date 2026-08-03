@@ -10,6 +10,8 @@ jsonc-parser = { version = "0.33.1", features = ["serde_json"] }
 png = "0.18.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# In-process HTTP for the self-update check/download (rustls, no curl subprocess).
+ureq = { version = "2.12", default-features = false, features = ["tls", "gzip", "json"] }
 
 # exe icon resource (build.rs no-ops on non-Windows targets)
 [build-dependencies]

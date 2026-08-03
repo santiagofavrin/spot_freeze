@@ -49,6 +49,12 @@ const WM_APP_TRAY_EVENT: u32 = WM_APP + 2;
 const WM_APP_SETTINGS_SAVED: u32 = WM_APP + 3;
 /// Posted by the settings window's `on_exit_requested`.
 const WM_APP_EXIT_REQUESTED: u32 = WM_APP + 4;
+/// Posted by the background update thread when a check or install finishes;
+/// `lParam` = leaked `Box<UpdateOutcome>` pointer reclaimed by the proc.
+const WM_APP_UPDATE_RESULT: u32 = WM_APP + 5;
+/// Posted by the background update thread during a download; `wParam` =
+/// percent complete (0..=100), or 0 when the total size is unknown.
+const WM_APP_UPDATE_PROGRESS: u32 = WM_APP + 6;
 
 /// Whole application state; owned by [`run`]'s stack frame for the lifetime of
 /// the message loop and referenced from the window proc via `GWLP_USERDATA`.
@@ -66,6 +72,25 @@ struct AppState {
     /// Frozen-mode registrations, only while frozen.
     frozen_ids: Vec<(HotkeyId, FrozenAction)>,
     update_available: Option<String>,
+    /// True while a check or install is running on the background thread;
+    /// gates the menu item and ignores re-entrant clicks.
+    update_in_progress: bool,
+}
+
+/// Outcome of a background update operation, posted back as
+/// `WM_APP_UPDATE_RESULT` (boxed, reclaimed in the window proc).
+enum UpdateOutcome {
+    /// `check_latest` found we are on the latest release.
+    UpToDate,
+    /// `check_latest` found a newer release.
+    Available { version: String },
+    /// `check_latest` failed.
+    CheckFailed { error: String },
+    /// `stage_latest` finished: the helper is launched and this process may
+    /// exit so it can replace and relaunch the executable.
+    InstallDone,
+    /// `stage_latest` failed.
+    InstallFailed { error: String },
 }
 
 /// Run SpotFreeze until the user exits. Responsibilities, in order:
@@ -137,6 +162,7 @@ pub fn run() -> Result<()> {
         freeze_id: None,
         frozen_ids: Vec::new(),
         update_available: None,
+        update_in_progress: false,
     });
     let hwnd = create_hidden_window(&mut state)?;
 
@@ -303,6 +329,20 @@ unsafe extern "system" fn hidden_wndproc(
         }
         WM_APP_EXIT_REQUESTED => {
             confirm_exit(state, hwnd);
+            LRESULT(0)
+        }
+        WM_APP_UPDATE_RESULT => {
+            // Ownership of the boxed outcome posted from the background
+            // thread transfers here.
+            let outcome = unsafe { Box::from_raw(lparam.0 as *mut UpdateOutcome) };
+            on_update_result(state, hwnd, *outcome);
+            LRESULT(0)
+        }
+        WM_APP_UPDATE_PROGRESS => {
+            let pct = wparam.0;
+            if let Some(tray) = state.tray.as_mut() {
+                tray.set_update_state(&format!("Downloading… {pct}%"), false);
+            }
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -511,51 +551,194 @@ fn on_tray_event(state: &mut AppState, hwnd: HWND, wparam: WPARAM) {
     }
 }
 
-/// Stage the latest release, then close cleanly so the helper can replace and
-/// relaunch this executable.
+/// "Check for updates" / "Download and install vX" — fully asynchronous.
+///
+/// The whole point: no network I/O ever runs on the UI thread. Both the check
+/// and the download/install run on a spawned thread and post their result back
+/// as [`WM_APP_UPDATE_RESULT`]; download progress is posted live as
+/// [`WM_APP_UPDATE_PROGRESS`] and reflected in the tray menu label. Every
+/// state transition is also announced with a tray balloon so the user is told
+/// what is happening even with the menu closed.
+///
+/// Flow:
+/// * **Check** (no update known yet): disable the item, show "Checking for
+///   updates…", spawn `check_latest`. Result → balloon + menu label. If an
+///   update exists the item becomes "Download and install vX".
+/// * **Install** (an update is known): confirm first (the app *will* restart),
+///   then disable the item, show "Downloading… 0%", spawn `stage_latest` with
+///   a progress callback. On success, tear down and let the helper replace +
+///   relaunch. On failure, re-enable and show a modal error.
+///
+/// Re-entrancy is blocked by [`AppState::update_in_progress`] (the menu item
+/// is also disabled while in flight), so a second click during a check or
+/// download is a no-op.
 fn update_app(state: &mut AppState, hwnd: HWND) {
-    if state.update_available.is_none() {
-        if let Some(tray) = state.tray.as_mut() {
-            tray.set_update_state("Checking…", false);
-        }
-        match crate::update::check_latest() {
-            Ok(crate::update::CheckResult::UpToDate) => {
-                if let Some(tray) = state.tray.as_mut() {
-                    tray.set_update_state("SpotFreeze is up to date", false);
-                }
-            }
-            Ok(crate::update::CheckResult::Available { version }) => {
-                if let Some(tray) = state.tray.as_mut() {
-                    tray.set_update_state(&format!("Download and install v{version}"), true);
-                }
-                state.update_available = Some(version);
-            }
-            Err(e) => {
-                if let Some(tray) = state.tray.as_mut() {
-                    tray.set_update_state("Check for updates…", true);
-                }
-                show_error(Some(hwnd), &format!("Could not check for updates:\n{e:#}"));
-            }
-        }
+    if state.update_in_progress {
         return;
     }
-    if let Some(tray) = state.tray.as_mut() {
-        tray.set_update_state("Downloading and installing…", false);
+
+    if state.update_available.is_none() {
+        // CHECK — run on a background thread so the UI stays responsive.
+        state.update_in_progress = true;
+        if let Some(tray) = state.tray.as_mut() {
+            tray.set_update_state("Checking for updates…", false);
+            tray.show_balloon("SpotFreeze", "Checking for updates…");
+        }
+        spawn_update_thread(hwnd, || match crate::update::check_latest() {
+            Ok(crate::update::CheckResult::UpToDate) => UpdateOutcome::UpToDate,
+            Ok(crate::update::CheckResult::Available { version }) => {
+                UpdateOutcome::Available { version }
+            }
+            Err(e) => UpdateOutcome::CheckFailed {
+                error: format!("{e:#}"),
+            },
+        });
+        return;
     }
-    match crate::update::stage_latest() {
-        Ok(()) => {
+
+    // INSTALL — confirm the disruptive restart before doing anything.
+    let version = state.update_available.clone().expect("checked above");
+    let prompt = format!(
+        "SpotFreeze v{} is available.\n\n\
+         Download and install it now? SpotFreeze will restart \
+         automatically when the download finishes.",
+        version
+    );
+    let answer = unsafe {
+        let prompt = HSTRING::from(&prompt);
+        MessageBoxW(
+            Some(hwnd),
+            PCWSTR::from_raw(prompt.as_ptr()),
+            w!("SpotFreeze"),
+            MB_YESNO | MB_ICONQUESTION | MB_TOPMOST,
+        )
+    };
+    if answer != IDYES {
+        return;
+    }
+
+    state.update_in_progress = true;
+    if let Some(tray) = state.tray.as_mut() {
+        tray.set_update_state("Downloading… 0%", false);
+        tray.show_balloon("SpotFreeze", &format!("Downloading v{version}…"));
+    }
+    let hwnd_raw = hwnd.0 as usize;
+    spawn_update_thread(hwnd, move || {
+        match crate::update::stage_latest(move |done, total| {
+            let pct = total
+                .map(|t| (done * 100 / t.max(1)).min(100) as usize)
+                .unwrap_or(0);
+            // Best-effort progress post; the UI thread updates the menu label.
+            unsafe {
+                let _ = PostMessageW(
+                    Some(HWND(hwnd_raw as *mut _)),
+                    WM_APP_UPDATE_PROGRESS,
+                    WPARAM(pct),
+                    LPARAM(0),
+                );
+            }
+        }) {
+            Ok(()) => UpdateOutcome::InstallDone,
+            Err(e) => UpdateOutcome::InstallFailed {
+                error: format!("{e:#}"),
+            },
+        }
+    });
+}
+
+/// Run `work` (which produces an [`UpdateOutcome`]) on a background thread and
+/// post the result back to the hidden window as [`WM_APP_UPDATE_RESULT`]. The
+/// HWND is moved into the thread as a raw `usize` (it is `Send` as a pointer
+/// value) and reconstructed for posting, so no `AppState` borrow crosses the
+/// thread boundary.
+fn spawn_update_thread(hwnd: HWND, work: impl FnOnce() -> UpdateOutcome + Send + 'static) {
+    let hwnd_raw = hwnd.0 as usize;
+    std::thread::spawn(move || {
+        let outcome = work();
+        let boxed = Box::new(outcome);
+        let raw = Box::into_raw(boxed) as isize;
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(hwnd_raw as *mut _)),
+                WM_APP_UPDATE_RESULT,
+                WPARAM(0),
+                LPARAM(raw),
+            );
+        }
+    });
+}
+
+/// Handle a [`WM_APP_UPDATE_RESULT`] on the UI thread: update the tray label,
+/// show a balloon, and on a successful install tear down so the helper can
+/// replace and relaunch the executable.
+fn on_update_result(state: &mut AppState, hwnd: HWND, outcome: UpdateOutcome) {
+    state.update_in_progress = false;
+    match outcome {
+        UpdateOutcome::UpToDate => {
+            if let Some(tray) = state.tray.as_mut() {
+                tray.set_update_state("Check for updates…", true);
+            }
+            balloon(
+                state,
+                "SpotFreeze is up to date",
+                &format!(
+                    "You're running the latest version (v{}).",
+                    env!("CARGO_PKG_VERSION")
+                ),
+            );
+        }
+        UpdateOutcome::Available { version } => {
+            state.update_available = Some(version.clone());
+            if let Some(tray) = state.tray.as_mut() {
+                tray.set_update_state(&format!("Download and install v{version}"), true);
+            }
+            balloon(
+                state,
+                "Update available",
+                &format!(
+                    "SpotFreeze v{version} is available. \
+                     Open the tray menu to download and install it."
+                ),
+            );
+        }
+        UpdateOutcome::CheckFailed { error } => {
+            if let Some(tray) = state.tray.as_mut() {
+                tray.set_update_state("Check for updates…", true);
+            }
+            balloon(state, "Could not check for updates", &error);
+        }
+        UpdateOutcome::InstallDone => {
+            // The replacement helper is launched and waiting for us to exit.
+            // Tell the user, then tear down so it can swap + relaunch.
+            if let Some(tray) = state.tray.as_ref() {
+                tray.show_balloon(
+                    "Installing update",
+                    "SpotFreeze will restart to finish installing.",
+                );
+            }
             cleanup(state);
             unsafe {
                 let _ = DestroyWindow(hwnd);
             }
         }
-        Err(e) => {
+        UpdateOutcome::InstallFailed { error } => {
             state.update_available = None;
             if let Some(tray) = state.tray.as_mut() {
                 tray.set_update_state("Check for updates…", true);
+                let _ = tray.set_tooltip(&tooltip_text(&state.settings));
             }
-            show_error(Some(hwnd), &format!("Could not update SpotFreeze:\n{e:#}"));
+            show_error(
+                Some(hwnd),
+                &format!("Could not update SpotFreeze:\n{error}"),
+            );
         }
+    }
+}
+
+/// Show a tray balloon from the current state (no-op if the icon is gone).
+fn balloon(state: &AppState, title: &str, message: &str) {
+    if let Some(tray) = state.tray.as_ref() {
+        tray.show_balloon(title, message);
     }
 }
 

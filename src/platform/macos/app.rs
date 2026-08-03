@@ -479,7 +479,7 @@ fn update_app(state: &Rc<RefCell<AppState>>) {
         .tray
         .as_ref()
         .map(|tray| tray.set_update_state("Downloading and installing…", false));
-    match crate::update::stage_latest() {
+    match crate::update::stage_latest(|_, _| ()) {
         Ok(()) => {
             let mut s = state.borrow_mut();
             s.controller.unfreeze();

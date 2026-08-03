@@ -1,16 +1,36 @@
 //! Self-update from the matching GitHub Release asset.
 //!
-//! Downloads and extracts data only; the replacement script is generated
-//! locally and runs after this process exits, so the running executable is
-//! never overwritten in place.
+//! HTTP is done **in-process** via [`ureq`] (rustls) — there is no `curl`
+//! subprocess, so no console window flashes and there is no runtime
+//! dependency on an external tool being installed. The check and the
+//! download/extract are pure I/O and are meant to run on a background thread
+//! by the platform shell (see each `app.rs`); this module never touches the
+//! UI thread. The replacement helper script is generated locally and runs
+//! after this process exits, so the running executable is never overwritten
+//! in place.
+//!
+//! Any remaining spawned helpers (`tar` for extraction, the PowerShell/shell
+//! replacer) are launched with `CREATE_NO_WINDOW` on Windows so they never
+//! pop a console either.
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+/// Windows process creation flag that prevents a child console process from
+/// flashing a visible console window when spawned from this GUI app.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 const RELEASES_API: &str = "https://api.github.com/repos/santiagofavrin/spotfreeze/releases/latest";
+/// `User-Agent` header value (GitHub rejects requests without one).
+const USER_AGENT: &str = concat!("SpotFreeze/", env!("CARGO_PKG_VERSION"));
 
 /// Result of checking the latest matching GitHub Release asset.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,7 +39,9 @@ pub enum CheckResult {
     Available { version: String },
 }
 
-/// Check for an update without downloading it.
+/// Check for an update without downloading it. Network I/O — run off the UI
+/// thread. Unauthenticated GitHub API calls are rate-limited (60/hour/IP),
+/// which is fine for a user-initiated check.
 pub fn check_latest() -> Result<CheckResult> {
     let (tag, _) = latest_release(asset_name())?;
     let version = tag.strip_prefix('v').unwrap_or(&tag).to_owned();
@@ -31,7 +53,12 @@ pub fn check_latest() -> Result<CheckResult> {
 }
 
 /// Stage the latest platform asset and launch a replacement helper.
-pub fn stage_latest() -> Result<()> {
+///
+/// `progress` is called as the download proceeds with `(bytes_done,
+/// total_bytes)`, where `total_bytes` is `Some` only when the server sent a
+/// `Content-Length`. It is invoked from the calling (background) thread, so
+/// the platform shell can forward it to its UI thread without blocking here.
+pub fn stage_latest(mut progress: impl FnMut(u64, Option<u64>)) -> Result<()> {
     let asset_name = asset_name();
     let (_, asset_url) = latest_release(asset_name)?;
     let root = std::env::temp_dir().join(format!("spotfreeze-update-{}", std::process::id()));
@@ -40,7 +67,7 @@ pub fn stage_latest() -> Result<()> {
     }
     fs::create_dir_all(&root).context("creating update staging directory")?;
     let archive = root.join(asset_name);
-    download(&asset_url, &archive)?;
+    download(&asset_url, &archive, &mut progress)?;
     let extracted = root.join("extracted");
     fs::create_dir(&extracted).context("creating update extraction directory")?;
     extract(&archive, &extracted)?;
@@ -67,26 +94,17 @@ fn asset_name() -> &'static str {
     }
 }
 
+/// Fetch the latest release JSON and pull out the tag name and the matching
+/// asset's `browser_download_url`.
 fn latest_release(name: &str) -> Result<(String, String)> {
-    let response = Command::new("curl")
-        .args([
-            "--fail",
-            "--location",
-            "--silent",
-            "--show-error",
-            "-H",
-            "Accept: application/vnd.github+json",
-            "-H",
-            "User-Agent: SpotFreeze",
-            RELEASES_API,
-        ])
-        .output()
-        .context("running curl to check GitHub Releases")?;
-    if !response.status.success() {
-        bail!("GitHub Releases request failed ({})", response.status);
-    }
-    let json: Value =
-        serde_json::from_slice(&response.stdout).context("parsing GitHub Releases response")?;
+    let response = ureq::get(RELEASES_API)
+        .set("Accept", "application/vnd.github+json")
+        .set("User-Agent", USER_AGENT)
+        .call()
+        .context("requesting the latest GitHub Release")?;
+    let json: Value = response
+        .into_json()
+        .context("parsing the GitHub Release response")?;
     let assets = json["assets"]
         .as_array()
         .context("latest release has no asset list")?;
@@ -103,41 +121,60 @@ fn latest_release(name: &str) -> Result<(String, String)> {
     Ok((tag, url))
 }
 
-fn download(url: &str, destination: &Path) -> Result<()> {
-    let status = Command::new("curl")
-        .args([
-            "--fail",
-            "--location",
-            "--silent",
-            "--show-error",
-            "--output",
-        ])
-        .arg(destination)
-        .arg(url)
-        .status()
-        .context("downloading the latest SpotFreeze release")?;
-    if !status.success() {
-        bail!("release download failed ({status})");
+/// Stream `url` into `destination`, calling `progress` per 64 KiB chunk. ureq
+/// follows redirects, so the `browser_download_url` → CDN hop is handled.
+fn download(
+    url: &str,
+    destination: &Path,
+    progress: &mut dyn FnMut(u64, Option<u64>),
+) -> Result<()> {
+    let response = ureq::get(url)
+        .set("User-Agent", USER_AGENT)
+        .call()
+        .context("starting the release download")?;
+    let total = response
+        .header("Content-Length")
+        .and_then(|s| s.parse::<u64>().ok());
+    let mut reader = response.into_reader();
+    let mut file = fs::File::create(destination)
+        .with_context(|| format!("creating {}", destination.display()))?;
+    let mut buf = [0u8; 64 * 1024];
+    let mut done = 0u64;
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .context("reading the release download")?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])
+            .context("writing the release download")?;
+        done += n as u64;
+        progress(done, total);
     }
+    file.sync_all().context("flushing the release download")?;
     Ok(())
 }
 
+/// Extract the downloaded archive into `destination`. On Windows `tar` (bsdtar,
+/// present on Windows 10+) also handles `.zip`; `CREATE_NO_WINDOW` keeps it
+/// silent.
 fn extract(archive: &Path, destination: &Path) -> Result<()> {
     #[cfg(target_os = "macos")]
-    let status = Command::new("ditto")
-        .args(["-x", "-k"])
-        .arg(archive)
-        .arg(destination)
-        .status()
-        .context("extracting the macOS release")?;
+    let mut command = Command::new("ditto");
+    #[cfg(target_os = "macos")]
+    {
+        command.args(["-x", "-k"]).arg(archive).arg(destination);
+    }
     #[cfg(not(target_os = "macos"))]
-    let status = Command::new("tar")
-        .args(["-xf"])
-        .arg(archive)
-        .args(["-C"])
-        .arg(destination)
-        .status()
-        .context("extracting the release")?;
+    let mut command = {
+        let mut c = Command::new("tar");
+        c.args(["-xf"]).arg(archive).args(["-C"]).arg(destination);
+        c
+    };
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    let status = command.status().context("extracting the release archive")?;
     if !status.success() {
         bail!("release extraction failed ({status})");
     }
@@ -226,6 +263,9 @@ fn write_replacement_script(root: &Path, replacement: &Path, current: &Path) -> 
     }
 }
 
+/// Spawn the replacement helper detached. On Windows it runs PowerShell with
+/// `CREATE_NO_WINDOW` so no console flashes; the script itself uses
+/// `-WindowStyle Hidden` and `-NonInteractive` as belt-and-suspenders.
 fn launch_helper(script: &Path) -> Result<()> {
     #[cfg(windows)]
     let mut command = {
@@ -239,12 +279,12 @@ fn launch_helper(script: &Path) -> Result<()> {
             "Bypass",
             "-File",
         ]);
+        command.arg(script);
+        command.creation_flags(CREATE_NO_WINDOW);
         command
     };
     #[cfg(not(windows))]
     let mut command = Command::new(script);
-    #[cfg(windows)]
-    command.arg(script);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())

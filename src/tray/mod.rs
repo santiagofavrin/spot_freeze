@@ -24,8 +24,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::UI::Shell::{
-    DefSubclassProc, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
-    NOTIFYICONDATAW, RemoveWindowSubclass, SetWindowSubclass, Shell_NotifyIconW,
+    DefSubclassProc, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE,
+    NIM_MODIFY, NOTIFYICONDATAW, RemoveWindowSubclass, SetWindowSubclass, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIcon, CreatePopupMenu, DestroyIcon, DestroyMenu, GetCursorPos,
@@ -170,6 +170,25 @@ impl TrayIcon {
         let mut shared = self.shared.borrow_mut();
         shared.update_label = label.to_owned();
         shared.update_enabled = enabled;
+    }
+
+    /// Show a tray balloon notification (the info variant — no sound icon
+    /// unless the system adds one). No-op if the icon is not registered. The
+    /// balloon is transient: the OS dismisses it after a few seconds, and it
+    /// is never modal, so it communicates intermediate update states without
+    /// stealing focus or blocking the message loop.
+    pub fn show_balloon(&self, title: &str, message: &str) {
+        if !self.shared.borrow().icon_added {
+            return;
+        }
+        let mut nid = notify_base(self.hwnd);
+        nid.uFlags = NIF_INFO;
+        nid.dwInfoFlags = NIIF_INFO;
+        fill_wide(&mut nid.szInfoTitle, title);
+        fill_wide(&mut nid.szInfo, message);
+        unsafe {
+            let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+        }
     }
 
     /// Remove the icon from the notification area; idempotent. Also on `Drop`.
@@ -456,12 +475,21 @@ fn build_icon_masks(size: usize) -> (Vec<u8>, Vec<u8>) {
     (and_mask, xor_mask)
 }
 
-/// Copy `text` into the 128-wide `szTip` field as UTF-16, truncating to the
-/// 127-code-unit limit and always NUL-terminating. Pure helper.
-fn write_tooltip(dst: &mut [u16; 128], text: &str) {
+/// Copy `text` as UTF-16 into `dst`, NUL-terminating and truncating to
+/// `dst.len() - 1` code units so a terminator always fits. Pure helper used
+/// for the 128-wide `szTip`, the 64-wide `szInfoTitle`, and the 256-wide
+/// `szInfo` balloon body.
+fn fill_wide(dst: &mut [u16], text: &str) {
     dst.fill(0);
-    let wide: Vec<u16> = text.encode_utf16().take(127).collect();
+    let cap = dst.len().saturating_sub(1);
+    let wide: Vec<u16> = text.encode_utf16().take(cap).collect();
     dst[..wide.len()].copy_from_slice(&wide);
+}
+
+/// Copy `text` into the 128-wide `szTip` field, truncating to 127 code units
+/// and always NUL-terminating. Thin wrapper over [`fill_wide`].
+fn write_tooltip(dst: &mut [u16; 128], text: &str) {
+    fill_wide(dst, text);
 }
 
 #[cfg(test)]

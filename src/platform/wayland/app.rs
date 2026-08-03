@@ -153,7 +153,7 @@ impl AppState {
         if let Some(tray) = self.tray.as_mut() {
             let _ = tray.set_update_state("Downloading and installing…", false);
         }
-        match crate::update::stage_latest() {
+        match crate::update::stage_latest(|_, _| ()) {
             Ok(()) => self.exiting = true,
             Err(e) => {
                 self.update_available = None;
