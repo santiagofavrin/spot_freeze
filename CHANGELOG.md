@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.15.0...v1.16.0) (2026-08-03)
+
+
+### Features
+
+* add update status menu flow ([5a655e6](https://github.com/santiagofavrin/spotfreeze/commit/5a655e6cbb9d134324ff1d6ccb79ea3ead374fa9))
+
 ## [1.15.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.14.0...v1.15.0) (2026-08-03)
 
 
