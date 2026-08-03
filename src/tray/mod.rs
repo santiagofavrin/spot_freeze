@@ -90,6 +90,8 @@ struct TrayShared {
     subclass_ref_held: bool,
     /// Where menu choices are forwarded.
     sink: Rc<dyn Fn(TrayEvent)>,
+    update_label: String,
+    update_enabled: bool,
 }
 
 /// Tray icon with tooltip. Either mouse button shows the popup menu (a
@@ -128,6 +130,8 @@ impl TrayIcon {
             icon_added: true,
             subclass_ref_held: true,
             sink: sink.clone(),
+            update_label: "Check for updates…".into(),
+            update_enabled: true,
         }));
         // Hand one Rc reference to the subclass chain as dwRefData. The raw
         // pointer addresses the same allocation as `shared`, so `remove()` can
@@ -159,6 +163,13 @@ impl TrayIcon {
             return Err(anyhow!("Shell_NotifyIconW(NIM_MODIFY) failed"));
         }
         Ok(())
+    }
+
+    /// Change the update action label shown the next time the menu opens.
+    pub fn set_update_state(&mut self, label: &str, enabled: bool) {
+        let mut shared = self.shared.borrow_mut();
+        shared.update_label = label.to_owned();
+        shared.update_enabled = enabled;
     }
 
     /// Remove the icon from the notification area; idempotent. Also on `Drop`.
@@ -236,8 +247,14 @@ unsafe extern "system" fn tray_subclass_proc(
         // button opens the same context menu.
         match lparam.0 as u32 {
             WM_LBUTTONUP | WM_RBUTTONUP => {
-                let sink = shared.borrow().sink.clone();
-                show_context_menu(hwnd, &sink);
+                let (sink, update) = {
+                    let shared = shared.borrow();
+                    (
+                        shared.sink.clone(),
+                        (shared.update_label.clone(), shared.update_enabled),
+                    )
+                };
+                show_context_menu(hwnd, &sink, &update);
             }
             _ => {}
         }
@@ -273,7 +290,7 @@ unsafe extern "system" fn tray_subclass_proc(
 /// synchronous return value, so no `WM_COMMAND` routing is needed.
 /// `SetForegroundWindow` first (plus the `WM_NULL` nudge after) so the menu
 /// dismisses correctly when the user clicks elsewhere.
-fn show_context_menu(hwnd: HWND, sink: &Rc<dyn Fn(TrayEvent)>) {
+fn show_context_menu(hwnd: HWND, sink: &Rc<dyn Fn(TrayEvent)>, update: &(String, bool)) {
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
         // The version label is dynamic, so its buffer must outlive
@@ -293,7 +310,13 @@ fn show_context_menu(hwnd: HWND, sink: &Rc<dyn Fn(TrayEvent)>) {
         let _ = AppendMenuW(menu, MF_STRING, IDM_RELOAD_SETTINGS, w!("Reload Settings"));
         let _ = AppendMenuW(menu, MF_STRING, IDM_SETTINGS, w!("Settings…"));
         let _ = AppendMenuW(menu, MF_STRING, IDM_OPEN_FOLDER, w!("Open settings folder"));
-        let _ = AppendMenuW(menu, MF_STRING, IDM_UPDATE, w!("Check for updates…"));
+        let update_wide: Vec<u16> = update.0.encode_utf16().chain(std::iter::once(0)).collect();
+        let update_flags = if update.1 {
+            MF_STRING
+        } else {
+            MF_STRING | MF_GRAYED | MF_DISABLED
+        };
+        let _ = AppendMenuW(menu, update_flags, IDM_UPDATE, PCWSTR(update_wide.as_ptr()));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, IDM_EXIT, w!("Exit"));
 

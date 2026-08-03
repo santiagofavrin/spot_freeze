@@ -96,6 +96,7 @@ struct AppState {
     /// Frozen-mode plan, computed at every freeze from the current settings;
     /// shared with the key listener, empty while unfrozen.
     frozen_plan: Rc<RefCell<Vec<FrozenRegistration>>>,
+    update_available: Option<String>,
     exiting: bool,
 }
 
@@ -115,13 +116,52 @@ impl AppState {
                     eprintln!("spotfreeze: could not open the settings folder: {e:#}");
                 }
             }
-            Intent::Update => match crate::update::stage_latest() {
-                Ok(()) => self.exiting = true,
-                Err(e) => eprintln!("spotfreeze: could not update: {e:#}"),
-            },
+            Intent::Update => self.update(),
             Intent::ReloadSettings => self.reload_settings(),
             Intent::Frozen(action) => self.apply_frozen_action(action),
             Intent::Exit => self.exiting = true,
+        }
+    }
+
+    fn update(&mut self) {
+        if self.update_available.is_none() {
+            if let Some(tray) = self.tray.as_mut() {
+                let _ = tray.set_update_state("Checking…", false);
+            }
+            match crate::update::check_latest() {
+                Ok(crate::update::CheckResult::UpToDate) => {
+                    if let Some(tray) = self.tray.as_mut() {
+                        let _ = tray.set_update_state("SpotFreeze is up to date", false);
+                    }
+                }
+                Ok(crate::update::CheckResult::Available { version }) => {
+                    if let Some(tray) = self.tray.as_mut() {
+                        let _ = tray
+                            .set_update_state(&format!("Download and install v{version}"), true);
+                    }
+                    self.update_available = Some(version);
+                }
+                Err(e) => {
+                    if let Some(tray) = self.tray.as_mut() {
+                        let _ = tray.set_update_state("Check for updates…", true);
+                    }
+                    eprintln!("spotfreeze: could not check for updates: {e:#}");
+                }
+            }
+            return;
+        }
+        if let Some(tray) = self.tray.as_mut() {
+            let _ = tray.set_update_state("Downloading and installing…", false);
+        }
+        match crate::update::stage_latest() {
+            Ok(()) => self.exiting = true,
+            Err(e) => {
+                self.update_available = None;
+                if let Some(tray) = self.tray.as_mut() {
+                    let _ = tray.set_update_state("Check for updates…", true);
+                }
+                eprintln!("spotfreeze: could not update: {e:#}");
+            }
         }
     }
 
@@ -299,6 +339,7 @@ pub fn run() -> Result<()> {
         portal: None,
         tray: None,
         frozen_plan: Rc::new(RefCell::new(Vec::new())),
+        update_available: None,
         exiting: false,
     };
 

@@ -132,6 +132,8 @@ where
     L: Fn() + Send + 'static,
 {
     tooltip: String,
+    update_label: String,
+    update_enabled: bool,
     on_spotlight: F,
     on_screenshot: G,
     on_edit_settings: H,
@@ -210,7 +212,8 @@ where
             }
             .into(),
             StandardItem {
-                label: "Check for updates…".into(),
+                label: self.update_label.clone(),
+                enabled: self.update_enabled,
                 activate: Box::new(|tray: &mut Self| (tray.on_update)()),
                 ..Default::default()
             }
@@ -236,6 +239,11 @@ enum TrayCommand {
     /// Update the tooltip; the reply carries the ksni update outcome.
     SetTooltip {
         tooltip: String,
+        reply: mpsc::Sender<Result<()>>,
+    },
+    SetUpdateState {
+        label: String,
+        enabled: bool,
         reply: mpsc::Sender<Result<()>>,
     },
     /// Shut the service down and end the thread.
@@ -275,6 +283,20 @@ fn tray_thread<F, G, H, I, J, K, L>(
         match command {
             TrayCommand::SetTooltip { tooltip, reply } => {
                 let updated = future::block_on(handle.update(|tray| tray.tooltip = tooltip));
+                let _ = reply.send(match updated {
+                    Some(()) => Ok(()),
+                    None => Err(anyhow!("the tray service has shut down")),
+                });
+            }
+            TrayCommand::SetUpdateState {
+                label,
+                enabled,
+                reply,
+            } => {
+                let updated = future::block_on(handle.update(|tray| {
+                    tray.update_label = label;
+                    tray.update_enabled = enabled;
+                }));
                 let _ = reply.send(match updated {
                     Some(()) => Ok(()),
                     None => Err(anyhow!("the tray service has shut down")),
@@ -325,6 +347,8 @@ impl WaylandTray {
         let (ready, ready_rx) = mpsc::channel();
         let tray = SpotFreezeTray {
             tooltip: tooltip.to_string(),
+            update_label: "Check for updates…".into(),
+            update_enabled: true,
             on_spotlight,
             on_screenshot,
             on_edit_settings,
@@ -352,6 +376,20 @@ impl WaylandTray {
                 Err(anyhow!("the tray thread exited during initialization"))
             }
         }
+    }
+
+    pub fn set_update_state(&mut self, label: &str, enabled: bool) -> Result<()> {
+        let (reply, reply_rx) = mpsc::channel();
+        self.commands
+            .send(TrayCommand::SetUpdateState {
+                label: label.to_owned(),
+                enabled,
+                reply,
+            })
+            .map_err(|_| anyhow!("the tray thread is not running"))?;
+        reply_rx
+            .recv()
+            .map_err(|_| anyhow!("the tray thread is not running"))?
     }
 
     /// Update the hover tooltip (follows the live freeze binding).

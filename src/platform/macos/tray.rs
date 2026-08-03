@@ -150,6 +150,7 @@ impl TrayDelegate {
 /// The status item plus the objects it depends on.
 pub struct MacTray {
     status_item: Retained<NSStatusItem>,
+    update_item: Retained<NSMenuItem>,
     /// Keeps the menu action target alive (targets are not retained).
     _delegate: Retained<TrayDelegate>,
 }
@@ -173,6 +174,7 @@ impl MacTray {
         let delegate = TrayDelegate::new(mtm, sink);
         let target: &AnyObject = &delegate;
         let menu = NSMenu::new(mtm);
+        let update_item;
         // SAFETY: `delegate` is a valid action target and outlives the menu
         // (owned by this MacTray); the selectors exist on it.
         unsafe {
@@ -229,6 +231,7 @@ impl MacTray {
             );
             update.setTarget(Some(target));
             menu.addItem(&update);
+            update_item = update;
             let reload = NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(mtm),
                 &NSString::from_str("Reload Settings"),
@@ -251,6 +254,7 @@ impl MacTray {
 
         Ok(Self {
             status_item,
+            update_item,
             _delegate: delegate,
         })
     }
@@ -260,6 +264,12 @@ impl MacTray {
         if let Some(button) = self.status_item.button(mtm) {
             button.setToolTip(Some(&NSString::from_str(tooltip)));
         }
+    }
+
+    /// Change the update action label and enabled state.
+    pub fn set_update_state(&self, label: &str, enabled: bool) {
+        self.update_item.setTitle(&NSString::from_str(label));
+        self.update_item.setEnabled(enabled);
     }
 
     /// Remove the icon from the status bar. Idempotent.

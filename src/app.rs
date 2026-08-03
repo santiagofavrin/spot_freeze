@@ -65,6 +65,7 @@ struct AppState {
     freeze_id: Option<HotkeyId>,
     /// Frozen-mode registrations, only while frozen.
     frozen_ids: Vec<(HotkeyId, FrozenAction)>,
+    update_available: Option<String>,
 }
 
 /// Run SpotFreeze until the user exits. Responsibilities, in order:
@@ -135,6 +136,7 @@ pub fn run() -> Result<()> {
         tray: None,
         freeze_id: None,
         frozen_ids: Vec::new(),
+        update_available: None,
     });
     let hwnd = create_hidden_window(&mut state)?;
 
@@ -512,6 +514,34 @@ fn on_tray_event(state: &mut AppState, hwnd: HWND, wparam: WPARAM) {
 /// Stage the latest release, then close cleanly so the helper can replace and
 /// relaunch this executable.
 fn update_app(state: &mut AppState, hwnd: HWND) {
+    if state.update_available.is_none() {
+        if let Some(tray) = state.tray.as_mut() {
+            tray.set_update_state("Checking…", false);
+        }
+        match crate::update::check_latest() {
+            Ok(crate::update::CheckResult::UpToDate) => {
+                if let Some(tray) = state.tray.as_mut() {
+                    tray.set_update_state("SpotFreeze is up to date", false);
+                }
+            }
+            Ok(crate::update::CheckResult::Available { version }) => {
+                if let Some(tray) = state.tray.as_mut() {
+                    tray.set_update_state(&format!("Download and install v{version}"), true);
+                }
+                state.update_available = Some(version);
+            }
+            Err(e) => {
+                if let Some(tray) = state.tray.as_mut() {
+                    tray.set_update_state("Check for updates…", true);
+                }
+                show_error(Some(hwnd), &format!("Could not check for updates:\n{e:#}"));
+            }
+        }
+        return;
+    }
+    if let Some(tray) = state.tray.as_mut() {
+        tray.set_update_state("Downloading and installing…", false);
+    }
     match crate::update::stage_latest() {
         Ok(()) => {
             cleanup(state);
@@ -519,7 +549,13 @@ fn update_app(state: &mut AppState, hwnd: HWND) {
                 let _ = DestroyWindow(hwnd);
             }
         }
-        Err(e) => show_error(Some(hwnd), &format!("Could not update SpotFreeze:\n{e:#}")),
+        Err(e) => {
+            state.update_available = None;
+            if let Some(tray) = state.tray.as_mut() {
+                tray.set_update_state("Check for updates…", true);
+            }
+            show_error(Some(hwnd), &format!("Could not update SpotFreeze:\n{e:#}"));
+        }
     }
 }
 

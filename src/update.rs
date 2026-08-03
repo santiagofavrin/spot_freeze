@@ -12,10 +12,28 @@ use std::process::{Command, Stdio};
 
 const RELEASES_API: &str = "https://api.github.com/repos/santiagofavrin/spotfreeze/releases/latest";
 
+/// Result of checking the latest matching GitHub Release asset.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CheckResult {
+    UpToDate,
+    Available { version: String },
+}
+
+/// Check for an update without downloading it.
+pub fn check_latest() -> Result<CheckResult> {
+    let (tag, _) = latest_release(asset_name())?;
+    let version = tag.strip_prefix('v').unwrap_or(&tag).to_owned();
+    if version == env!("CARGO_PKG_VERSION") {
+        Ok(CheckResult::UpToDate)
+    } else {
+        Ok(CheckResult::Available { version })
+    }
+}
+
 /// Stage the latest platform asset and launch a replacement helper.
 pub fn stage_latest() -> Result<()> {
     let asset_name = asset_name();
-    let asset_url = latest_asset_url(asset_name)?;
+    let (_, asset_url) = latest_release(asset_name)?;
     let root = std::env::temp_dir().join(format!("spotfreeze-update-{}", std::process::id()));
     if root.exists() {
         fs::remove_dir_all(&root).context("removing stale update staging directory")?;
@@ -49,7 +67,7 @@ fn asset_name() -> &'static str {
     }
 }
 
-fn latest_asset_url(name: &str) -> Result<String> {
+fn latest_release(name: &str) -> Result<(String, String)> {
     let response = Command::new("curl")
         .args([
             "--fail",
@@ -72,12 +90,17 @@ fn latest_asset_url(name: &str) -> Result<String> {
     let assets = json["assets"]
         .as_array()
         .context("latest release has no asset list")?;
-    assets
+    let url = assets
         .iter()
         .find(|asset| asset["name"].as_str() == Some(name))
         .and_then(|asset| asset["browser_download_url"].as_str())
         .map(str::to_owned)
-        .with_context(|| format!("latest release has no {name} asset"))
+        .with_context(|| format!("latest release has no {name} asset"))?;
+    let tag = json["tag_name"]
+        .as_str()
+        .context("latest release has no tag name")?
+        .to_owned();
+    Ok((tag, url))
 }
 
 fn download(url: &str, destination: &Path) -> Result<()> {

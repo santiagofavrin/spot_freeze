@@ -81,6 +81,7 @@ struct AppState {
     tray: Option<MacTray>,
     /// Frozen-mode key plan, rebuilt at every freeze.
     frozen_plan: Vec<FrozenRegistration>,
+    update_available: Option<String>,
 }
 
 impl AppState {
@@ -205,6 +206,7 @@ pub fn run() -> Result<()> {
         bound_gesture: None,
         tray: None,
         frozen_plan: Vec::new(),
+        update_available: None,
     }));
 
     let on_hotkey = {
@@ -441,6 +443,42 @@ fn open_settings_folder(state: &Rc<RefCell<AppState>>) {
 /// Stage the latest release, then exit cleanly so the helper can replace and
 /// relaunch the app bundle.
 fn update_app(state: &Rc<RefCell<AppState>>) {
+    if state.borrow().update_available.is_none() {
+        state
+            .borrow_mut()
+            .tray
+            .as_ref()
+            .map(|tray| tray.set_update_state("Checking…", false));
+        match crate::update::check_latest() {
+            Ok(crate::update::CheckResult::UpToDate) => {
+                state
+                    .borrow()
+                    .tray
+                    .as_ref()
+                    .map(|tray| tray.set_update_state("SpotFreeze is up to date", false));
+            }
+            Ok(crate::update::CheckResult::Available { version }) => {
+                state.borrow_mut().update_available = Some(version.clone());
+                state.borrow().tray.as_ref().map(|tray| {
+                    tray.set_update_state(&format!("Download and install v{version}"), true)
+                });
+            }
+            Err(e) => {
+                state
+                    .borrow()
+                    .tray
+                    .as_ref()
+                    .map(|tray| tray.set_update_state("Check for updates…", true));
+                queue_alert(format!("Could not check for updates:\n{e:#}"));
+            }
+        }
+        return;
+    }
+    state
+        .borrow()
+        .tray
+        .as_ref()
+        .map(|tray| tray.set_update_state("Downloading and installing…", false));
     match crate::update::stage_latest() {
         Ok(()) => {
             let mut s = state.borrow_mut();
@@ -454,7 +492,15 @@ fn update_app(state: &Rc<RefCell<AppState>>) {
             drop(s);
             std::process::exit(0);
         }
-        Err(e) => queue_alert(format!("Could not update SpotFreeze:\n{e:#}")),
+        Err(e) => {
+            state.borrow_mut().update_available = None;
+            state
+                .borrow()
+                .tray
+                .as_ref()
+                .map(|tray| tray.set_update_state("Check for updates…", true));
+            queue_alert(format!("Could not update SpotFreeze:\n{e:#}"));
+        }
     }
 }
 
