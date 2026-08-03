@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.2](https://github.com/santiagofavrin/spotfreeze/compare/v1.16.1...v1.16.2) (2026-08-03)
+
+
+### Bug Fixes
+
+* add missing update fields to Wayland tray test initializer ([d056267](https://github.com/santiagofavrin/spotfreeze/commit/d056267c212601648cdbc56a049d07cb411c5e55))
+
 ## [1.16.1](https://github.com/santiagofavrin/spotfreeze/compare/v1.16.0...v1.16.1) (2026-08-03)
 
 
