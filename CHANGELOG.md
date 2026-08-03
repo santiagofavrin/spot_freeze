@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.18.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.17.0...v1.18.0) (2026-08-03)
+
+
+### Features
+
+* make the mode legend movable, closeable, and toggleable via settings ([837d7a8](https://github.com/santiagofavrin/spotfreeze/commit/837d7a806834134b01ea5e3149f4d9a70d464370))
+
+
+### Bug Fixes
+
+* restore the native Windows dialog for check-for-updates ([3a16279](https://github.com/santiagofavrin/spotfreeze/commit/3a162796d6d2d734faa1c1328534ea7d2a62dece))
+
 ## [1.17.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.16.3...v1.17.0) (2026-08-03)
 
 
