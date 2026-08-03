@@ -38,8 +38,8 @@
 //! `Result<DibBuffer, String>` back.
 
 use crate::capture::{Capturer, DibBuffer, MonitorInfo};
-use crate::platform::macos::coords::{cocoa_rect_to_virtual, CocoaRect};
-use anyhow::{anyhow, bail, Context, Result};
+use crate::platform::macos::coords::{CocoaRect, cocoa_rect_to_virtual};
+use anyhow::{Context, Result, anyhow, bail};
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::{AnyThread, MainThreadMarker};

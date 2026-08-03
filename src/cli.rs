@@ -3,7 +3,9 @@
 //! the parser is pure and unit-tested. Any real work is dispatched back to
 //! `main`.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(unix)]
+use anyhow::Context;
 
 /// What the invocation asks the process to do.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
