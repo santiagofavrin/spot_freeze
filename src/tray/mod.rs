@@ -52,6 +52,8 @@ pub enum TrayEvent {
     /// "Open settings folder" chosen from the popup menu: reveal the folder
     /// containing `spotfreeze.jsonc`, with the file selected, in Explorer.
     MenuOpenSettingsFolder,
+    /// "Check for updates…" chosen from the popup menu.
+    MenuUpdate,
     /// "Exit" chosen from the popup menu. The tray itself NEVER
     /// asks and NEVER exits — the app runs its Yes/No confirmation flow.
     MenuExit,
@@ -71,7 +73,8 @@ const IDM_SCREENSHOT: usize = 2;
 const IDM_RELOAD_SETTINGS: usize = 3;
 const IDM_SETTINGS: usize = 4;
 const IDM_OPEN_FOLDER: usize = 5;
-const IDM_EXIT: usize = 6;
+const IDM_UPDATE: usize = 6;
+const IDM_EXIT: usize = 7;
 
 /// State shared between [`TrayIcon`] and the subclass proc. The subclass chain
 /// owns one `Rc` reference (passed as `dwRefData`) while
@@ -290,6 +293,7 @@ fn show_context_menu(hwnd: HWND, sink: &Rc<dyn Fn(TrayEvent)>) {
         let _ = AppendMenuW(menu, MF_STRING, IDM_RELOAD_SETTINGS, w!("Reload Settings"));
         let _ = AppendMenuW(menu, MF_STRING, IDM_SETTINGS, w!("Settings…"));
         let _ = AppendMenuW(menu, MF_STRING, IDM_OPEN_FOLDER, w!("Open settings folder"));
+        let _ = AppendMenuW(menu, MF_STRING, IDM_UPDATE, w!("Check for updates…"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING, IDM_EXIT, w!("Exit"));
 
@@ -314,6 +318,7 @@ fn show_context_menu(hwnd: HWND, sink: &Rc<dyn Fn(TrayEvent)>) {
             IDM_RELOAD_SETTINGS => sink(TrayEvent::MenuReloadSettings),
             IDM_SETTINGS => sink(TrayEvent::MenuSettings),
             IDM_OPEN_FOLDER => sink(TrayEvent::MenuOpenSettingsFolder),
+            IDM_UPDATE => sink(TrayEvent::MenuUpdate),
             IDM_EXIT => sink(TrayEvent::MenuExit),
             _ => {} // dismissed without a choice
         }

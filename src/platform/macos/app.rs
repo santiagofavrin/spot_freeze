@@ -232,6 +232,7 @@ pub fn run() -> Result<()> {
                 TrayEvent::MenuScreenshot => tray_screenshot(&state),
                 TrayEvent::MenuSettings => open_settings(&state),
                 TrayEvent::MenuOpenSettingsFolder => open_settings_folder(&state),
+                TrayEvent::MenuUpdate => update_app(&state),
                 TrayEvent::MenuReloadSettings => reload_settings(&state),
                 TrayEvent::MenuExit => confirm_exit(&state),
             }
@@ -434,6 +435,26 @@ fn open_settings_folder(state: &Rc<RefCell<AppState>>) {
     let path = state.borrow().settings_path.clone();
     if let Err(e) = crate::platform::shared::edit::open_settings_folder(&path) {
         queue_alert(format!("Could not open the settings folder:\n{e:#}"));
+    }
+}
+
+/// Stage the latest release, then exit cleanly so the helper can replace and
+/// relaunch the app bundle.
+fn update_app(state: &Rc<RefCell<AppState>>) {
+    match crate::update::stage_latest() {
+        Ok(()) => {
+            let mut s = state.borrow_mut();
+            s.controller.unfreeze();
+            s.freeze_hotkey = None;
+            s.hotkeys = None;
+            if let Some(tray) = &s.tray {
+                tray.remove();
+            }
+            s.tray = None;
+            drop(s);
+            std::process::exit(0);
+        }
+        Err(e) => queue_alert(format!("Could not update SpotFreeze:\n{e:#}")),
     }
 }
 

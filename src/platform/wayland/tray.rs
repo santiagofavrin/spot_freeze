@@ -121,7 +121,7 @@ fn app_icon() -> ksni::Icon {
 // ---------------------------------------------------------------------------
 
 /// The SNI exposed over D-Bus. Callbacks fire on the tray service's thread.
-struct SpotFreezeTray<F, G, H, I, J, K>
+struct SpotFreezeTray<F, G, H, I, J, K, L>
 where
     F: Fn() + Send + 'static,
     G: Fn() + Send + 'static,
@@ -129,17 +129,19 @@ where
     I: Fn() + Send + 'static,
     J: Fn() + Send + 'static,
     K: Fn() + Send + 'static,
+    L: Fn() + Send + 'static,
 {
     tooltip: String,
     on_spotlight: F,
     on_screenshot: G,
     on_edit_settings: H,
     on_open_folder: K,
+    on_update: L,
     on_reload_settings: I,
     on_exit: J,
 }
 
-impl<F, G, H, I, J, K> ksni::Tray for SpotFreezeTray<F, G, H, I, J, K>
+impl<F, G, H, I, J, K, L> ksni::Tray for SpotFreezeTray<F, G, H, I, J, K, L>
 where
     F: Fn() + Send + 'static,
     G: Fn() + Send + 'static,
@@ -147,6 +149,7 @@ where
     I: Fn() + Send + 'static,
     J: Fn() + Send + 'static,
     K: Fn() + Send + 'static,
+    L: Fn() + Send + 'static,
 {
     /// Left-click opens the menu, same as right-click (see the module docs
     /// for which hosts honor this and what the others do).
@@ -207,6 +210,12 @@ where
             }
             .into(),
             StandardItem {
+                label: "Check for updates…".into(),
+                activate: Box::new(|tray: &mut Self| (tray.on_update)()),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
                 label: "Reload settings".into(),
                 activate: Box::new(|tray: &mut Self| (tray.on_reload_settings)()),
                 ..Default::default()
@@ -235,8 +244,8 @@ enum TrayCommand {
 
 /// The tray thread's whole life: register the SNI (tolerating a missing
 /// watcher), report readiness, then serve tooltip updates until shutdown.
-fn tray_thread<F, G, H, I, J, K>(
-    tray: SpotFreezeTray<F, G, H, I, J, K>,
+fn tray_thread<F, G, H, I, J, K, L>(
+    tray: SpotFreezeTray<F, G, H, I, J, K, L>,
     ready: mpsc::Sender<Result<()>>,
     commands: mpsc::Receiver<TrayCommand>,
 ) where
@@ -246,6 +255,7 @@ fn tray_thread<F, G, H, I, J, K>(
     I: Fn() + Send + 'static,
     J: Fn() + Send + 'static,
     K: Fn() + Send + 'static,
+    L: Fn() + Send + 'static,
 {
     let handle = match future::block_on(tray.assume_sni_available(true).spawn())
         .context("failed to start the StatusNotifierItem tray service")
@@ -292,12 +302,13 @@ impl WaylandTray {
     /// version line, then the callbacks fire in menu order: "Spotlight",
     /// "Screenshot", "Edit settings", "Open settings folder", "Reload
     /// settings", "Exit".
-    pub fn spawn<F, G, H, I, J, K>(
+    pub fn spawn<F, G, H, I, J, K, L>(
         tooltip: &str,
         on_spotlight: F,
         on_screenshot: G,
         on_edit_settings: H,
         on_open_folder: K,
+        on_update: L,
         on_reload_settings: I,
         on_exit: J,
     ) -> Result<Self>
@@ -308,6 +319,7 @@ impl WaylandTray {
         I: Fn() + Send + 'static,
         J: Fn() + Send + 'static,
         K: Fn() + Send + 'static,
+        L: Fn() + Send + 'static,
     {
         let (commands, command_rx) = mpsc::channel();
         let (ready, ready_rx) = mpsc::channel();
@@ -317,6 +329,7 @@ impl WaylandTray {
             on_screenshot,
             on_edit_settings,
             on_open_folder,
+            on_update,
             on_reload_settings,
             on_exit,
         };
@@ -496,6 +509,7 @@ mod tests {
         Box<dyn Fn() + Send>,
         Box<dyn Fn() + Send>,
         Box<dyn Fn() + Send>,
+        Box<dyn Fn() + Send>,
     >;
 
     /// Callback invocation counters, one per tray menu action.
@@ -504,6 +518,7 @@ mod tests {
         screenshots: Arc<AtomicUsize>,
         edits: Arc<AtomicUsize>,
         open_folders: Arc<AtomicUsize>,
+        updates: Arc<AtomicUsize>,
         reloads: Arc<AtomicUsize>,
         exits: Arc<AtomicUsize>,
     }
@@ -516,6 +531,7 @@ mod tests {
             open_folders: Arc::new(AtomicUsize::new(0)),
             reloads: Arc::new(AtomicUsize::new(0)),
             exits: Arc::new(AtomicUsize::new(0)),
+            updates: Arc::new(AtomicUsize::new(0)),
         };
         let bump = |counter: &Arc<AtomicUsize>| {
             let counter = counter.clone();
@@ -529,6 +545,7 @@ mod tests {
             on_screenshot: bump(&counters.screenshots),
             on_edit_settings: bump(&counters.edits),
             on_open_folder: bump(&counters.open_folders),
+            on_update: bump(&counters.updates),
             on_reload_settings: bump(&counters.reloads),
             on_exit: bump(&counters.exits),
         };
@@ -589,6 +606,7 @@ mod tests {
                 "Screenshot",
                 "Edit settings",
                 "Open settings folder",
+                "Check for updates…",
                 "Reload settings",
                 "Exit"
             ]

@@ -47,3 +47,4 @@ pub mod settings;
 pub mod tray;
 #[cfg(windows)]
 pub mod ui;
+pub mod update;

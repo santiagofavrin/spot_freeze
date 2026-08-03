@@ -56,6 +56,8 @@ pub enum TrayEvent {
     /// "Open Settings Folder" chosen from the menu: reveal
     /// `spotfreeze.jsonc` in Finder (selected, in its folder).
     MenuOpenSettingsFolder,
+    /// "Check for updates…" chosen from the menu.
+    MenuUpdate,
     /// "Reload Settings" chosen from the menu: re-read the JSONC file
     /// immediately (a changed freeze binding is re-registered on the spot).
     MenuReloadSettings,
@@ -117,6 +119,11 @@ define_class!(
         #[unsafe(method(openSettingsFolder:))]
         fn open_settings_folder(&self, _sender: &AnyObject) {
             (self.ivars().sink)(TrayEvent::MenuOpenSettingsFolder);
+        }
+
+        #[unsafe(method(checkForUpdates:))]
+        fn check_for_updates(&self, _sender: &AnyObject) {
+            (self.ivars().sink)(TrayEvent::MenuUpdate);
         }
 
         #[unsafe(method(reloadSettings:))]
@@ -214,6 +221,14 @@ impl MacTray {
             );
             open_folder.setTarget(Some(target));
             menu.addItem(&open_folder);
+            let update = NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::from_str("Check for updates…"),
+                Some(sel!(checkForUpdates:)),
+                &NSString::from_str(""),
+            );
+            update.setTarget(Some(target));
+            menu.addItem(&update);
             let reload = NSMenuItem::initWithTitle_action_keyEquivalent(
                 NSMenuItem::alloc(mtm),
                 &NSString::from_str("Reload Settings"),

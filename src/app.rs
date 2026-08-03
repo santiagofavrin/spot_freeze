@@ -503,8 +503,23 @@ fn on_tray_event(state: &mut AppState, hwnd: HWND, wparam: WPARAM) {
         x if x == TrayEvent::MenuReloadSettings as usize => reload_settings(state, hwnd),
         x if x == TrayEvent::MenuSettings as usize => open_settings(state, hwnd),
         x if x == TrayEvent::MenuOpenSettingsFolder as usize => open_settings_folder(state, hwnd),
+        x if x == TrayEvent::MenuUpdate as usize => update_app(state, hwnd),
         x if x == TrayEvent::MenuExit as usize => confirm_exit(state, hwnd),
         _ => {}
+    }
+}
+
+/// Stage the latest release, then close cleanly so the helper can replace and
+/// relaunch this executable.
+fn update_app(state: &mut AppState, hwnd: HWND) {
+    match crate::update::stage_latest() {
+        Ok(()) => {
+            cleanup(state);
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
+        }
+        Err(e) => show_error(Some(hwnd), &format!("Could not update SpotFreeze:\n{e:#}")),
     }
 }
 

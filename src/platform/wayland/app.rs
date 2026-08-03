@@ -67,6 +67,9 @@ enum Intent {
     /// Tray "Open settings folder": reveal the JSONC file in the file
     /// manager.
     OpenSettingsFolder,
+    /// Tray "Check for updates": stage the latest release and quit so the
+    /// replacement helper can install it.
+    Update,
     /// Tray "Reload settings": re-read the JSONC file immediately (a changed
     /// freeze binding is re-registered on the spot).
     ReloadSettings,
@@ -112,6 +115,10 @@ impl AppState {
                     eprintln!("spotfreeze: could not open the settings folder: {e:#}");
                 }
             }
+            Intent::Update => match crate::update::stage_latest() {
+                Ok(()) => self.exiting = true,
+                Err(e) => eprintln!("spotfreeze: could not update: {e:#}"),
+            },
             Intent::ReloadSettings => self.reload_settings(),
             Intent::Frozen(action) => self.apply_frozen_action(action),
             Intent::Exit => self.exiting = true,
@@ -334,6 +341,12 @@ pub fn run() -> Result<()> {
             let tx = intent_tx.clone();
             move || {
                 let _ = tx.send(Intent::OpenSettingsFolder);
+            }
+        },
+        {
+            let tx = intent_tx.clone();
+            move || {
+                let _ = tx.send(Intent::Update);
             }
         },
         {
