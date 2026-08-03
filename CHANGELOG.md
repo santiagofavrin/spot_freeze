@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.16.3...v1.17.0) (2026-08-03)
+
+
+### Features
+
+* show update status in a dialog ([c84dcc6](https://github.com/santiagofavrin/spotfreeze/commit/c84dcc60f7cb96fecf26e3e6e410458f62b8ad2f))
+
 ## [1.16.3](https://github.com/santiagofavrin/spotfreeze/compare/v1.16.2...v1.16.3) (2026-08-03)
 
 
