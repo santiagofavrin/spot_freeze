@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.1](https://github.com/santiagofavrin/spotfreeze/compare/v1.16.0...v1.16.1) (2026-08-03)
+
+
+### Bug Fixes
+
+* rework Check for updates to be non-blocking, in-process, and communicative ([b6b0378](https://github.com/santiagofavrin/spotfreeze/commit/b6b03783e3555e365b55b27f190bb1024f671a56))
+
 ## [1.16.0](https://github.com/santiagofavrin/spotfreeze/compare/v1.15.0...v1.16.0) (2026-08-03)
 
 
