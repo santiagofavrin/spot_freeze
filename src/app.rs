@@ -2,7 +2,8 @@
 //! global hotkeys, tray, settings, overlay controller, and the message loop.
 //!
 //! Win32-only glue: every path creates windows, registers real hotkeys, shows
-//! dialogs, or captures the screen — nothing a headless test could exercise.
+//! native message boxes, or captures the screen — nothing a headless test
+//! could exercise.
 //! The pure frozen-mode registration planner lives in
 //! [`crate::hotkeys::frozen`].
 //!
@@ -34,15 +35,11 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CREATESTRUCTW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GWLP_USERDATA, GetMessageW, GetWindowLongPtrW, HWND_MESSAGE, IDYES, MB_ICONERROR,
-    MB_ICONQUESTION, MB_OK, MB_TOPMOST, MB_YESNO, MSG, MessageBoxW, PostMessageW, PostQuitMessage,
-    RegisterClassW, SW_HIDE, SW_SHOW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW,
-    ShowWindow, TranslateMessage, WM_APP, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_HOTKEY,
-    WM_NCCREATE, WM_NCDESTROY, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_OVERLAPPED, WS_SYSMENU,
-    WS_TABSTOP, WS_VISIBLE,
+    CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
+    GetMessageW, GetWindowLongPtrW, HWND_MESSAGE, IDYES, MB_ICONERROR, MB_ICONQUESTION, MB_OK,
+    MB_TOPMOST, MB_YESNO, MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
+    SetWindowLongPtrW, TranslateMessage, WM_APP, WM_DESTROY, WM_HOTKEY, WM_NCCREATE, WNDCLASSW,
 };
 use windows::core::{HSTRING, PCWSTR, w};
 
@@ -59,10 +56,6 @@ const WM_APP_UPDATE_RESULT: u32 = WM_APP + 5;
 /// Posted by the background update thread during a download; `wParam` =
 /// percent complete (0..=100), or 0 when the total size is unknown.
 const WM_APP_UPDATE_PROGRESS: u32 = WM_APP + 6;
-/// Posted by the update dialog when its install button is clicked.
-const WM_APP_UPDATE_INSTALL: u32 = WM_APP + 7;
-const UPDATE_DIALOG_CLASS: PCWSTR = w!("SpotFreeze.UpdateDialog");
-const UPDATE_DIALOG_INSTALL: i32 = 1;
 
 /// Whole application state; owned by [`run`]'s stack frame for the lifetime of
 /// the message loop and referenced from the window proc via `GWLP_USERDATA`.
@@ -83,8 +76,6 @@ struct AppState {
     /// True while a check or install is running on the background thread;
     /// gates the menu item and ignores re-entrant clicks.
     update_in_progress: bool,
-    /// The modeless status dialog shown for the current update operation.
-    update_dialog: Option<HWND>,
 }
 
 /// Outcome of a background update operation, posted back as
@@ -173,7 +164,6 @@ pub fn run() -> Result<()> {
         frozen_ids: Vec::new(),
         update_available: None,
         update_in_progress: false,
-        update_dialog: None,
     });
     let hwnd = create_hidden_window(&mut state)?;
 
@@ -354,10 +344,6 @@ unsafe extern "system" fn hidden_wndproc(
             if let Some(tray) = state.tray.as_mut() {
                 tray.set_update_state(&format!("Downloading… {pct}%"), false);
             }
-            LRESULT(0)
-        }
-        WM_APP_UPDATE_INSTALL => {
-            begin_update_install(state, hwnd);
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -568,22 +554,11 @@ fn on_tray_event(state: &mut AppState, hwnd: HWND, wparam: WPARAM) {
 
 /// "Check for updates" / "Download and install vX" — fully asynchronous.
 ///
-/// The whole point: no network I/O ever runs on the UI thread. Both the check
-/// and the download/install run on a spawned thread and post their result back
-/// as [`WM_APP_UPDATE_RESULT`]; download progress is posted live as
-/// [`WM_APP_UPDATE_PROGRESS`] and reflected in the tray menu label. The
-/// modeless update dialog remains visible throughout the operation and owns
-/// all user-facing update status.
-///
-/// Flow:
-/// * **Check** (no update known yet): disable the item, immediately show
-///   "Checking for updates…", and spawn `check_latest`. The result updates the
-///   dialog and menu label. If an update exists the dialog offers installation.
-/// * **Install** (an update is known): the dialog confirms first (the app
-///   *will* restart), then disables its button, shows "Downloading… 0%", and
-///   spawns `stage_latest` with a progress callback. On success, it shows the
-///   restart status and tears down so the helper can replace + relaunch. On
-///   failure, it re-enables the menu item and updates the dialog with the error.
+/// Network I/O runs on background threads and posts results back as
+/// [`WM_APP_UPDATE_RESULT`]; download progress is posted live as
+/// [`WM_APP_UPDATE_PROGRESS`] and reflected in the tray menu label. User-facing
+/// status uses tray balloons, while installation is confirmed with a native
+/// Windows `MessageBoxW`.
 ///
 /// Re-entrancy is blocked by [`AppState::update_in_progress`] (the menu item
 /// is also disabled while in flight), so a second click during a check or
@@ -596,13 +571,9 @@ fn update_app(state: &mut AppState, hwnd: HWND) {
     if state.update_available.is_none() {
         // CHECK — run on a background thread so the UI stays responsive.
         state.update_in_progress = true;
-        if let Err(e) = show_update_dialog(state, hwnd, "Checking for updates…", None) {
-            state.update_in_progress = false;
-            show_error(Some(hwnd), &format!("Could not show update status:\n{e:#}"));
-            return;
-        }
         if let Some(tray) = state.tray.as_mut() {
             tray.set_update_state("Checking for updates…", false);
+            tray.show_balloon("SpotFreeze", "Checking for updates…");
         }
         spawn_update_thread(hwnd, || match crate::update::check_latest() {
             Ok(crate::update::CheckResult::UpToDate) => UpdateOutcome::UpToDate,
@@ -616,37 +587,29 @@ fn update_app(state: &mut AppState, hwnd: HWND) {
         return;
     }
 
-    // INSTALL — the update dialog owns the confirmation and tells the user
-    // about the automatic restart before the download starts.
+    // INSTALL — confirm the disruptive restart with a native Windows dialog.
     let version = state.update_available.clone().expect("checked above");
-    if let Err(e) = show_update_dialog(
-        state,
-        hwnd,
-        &format!(
-            "SpotFreeze v{version} is ready to install.\n\n\
+    let prompt = format!(
+        "SpotFreeze v{version} is available.\n\n\
          Download and install it now? SpotFreeze will restart \
          automatically when the download finishes."
-        ),
-        Some("Download and install"),
-    ) {
-        show_error(Some(hwnd), &format!("Could not show update status:\n{e:#}"));
-    }
-}
-
-/// Start downloading the update after the user confirms in the status dialog.
-fn begin_update_install(state: &mut AppState, hwnd: HWND) {
-    if state.update_in_progress || state.update_available.is_none() {
+    );
+    let answer = unsafe {
+        let prompt = HSTRING::from(&prompt);
+        MessageBoxW(
+            Some(hwnd),
+            PCWSTR::from_raw(prompt.as_ptr()),
+            w!("SpotFreeze"),
+            MB_YESNO | MB_ICONQUESTION | MB_TOPMOST,
+        )
+    };
+    if answer != IDYES {
         return;
     }
     state.update_in_progress = true;
-    let version = state.update_available.clone().expect("checked above");
-    update_dialog_set(
-        state,
-        &format!("Downloading SpotFreeze v{version}…\n\nPlease wait."),
-        None,
-    );
     if let Some(tray) = state.tray.as_mut() {
         tray.set_update_state("Downloading… 0%", false);
+        tray.show_balloon("SpotFreeze", &format!("Downloading v{version}…"));
     }
     let hwnd_raw = hwnd.0 as usize;
     spawn_update_thread(hwnd, move || {
@@ -672,194 +635,6 @@ fn begin_update_install(state: &mut AppState, hwnd: HWND) {
     });
 }
 
-/// Show or update the modeless status dialog used by the update flow.
-fn show_update_dialog(
-    state: &mut AppState,
-    owner: HWND,
-    message: &str,
-    action: Option<&str>,
-) -> Result<()> {
-    register_update_dialog_class()?;
-    let dialog = if let Some(dialog) = state.update_dialog {
-        if unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(dialog)) }.as_bool() {
-            dialog
-        } else {
-            state.update_dialog = None;
-            HWND::default()
-        }
-    } else {
-        HWND::default()
-    };
-    let dialog = if dialog.0.is_null() {
-        let hinstance = HINSTANCE(
-            unsafe { GetModuleHandleW(None) }
-                .context("GetModuleHandleW")?
-                .0,
-        );
-        unsafe {
-            CreateWindowExW(
-                Default::default(),
-                UPDATE_DIALOG_CLASS,
-                w!("SpotFreeze Update"),
-                WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
-                430,
-                180,
-                Some(owner),
-                None,
-                Some(hinstance),
-                Some(owner.0 as *const core::ffi::c_void),
-            )
-        }
-        .context("creating update dialog")?
-    } else {
-        dialog
-    };
-    state.update_dialog = Some(dialog);
-    update_dialog_set(state, message, action);
-    unsafe {
-        let _ = ShowWindow(dialog, SW_SHOW);
-        let _ = SetForegroundWindow(dialog);
-    }
-    Ok(())
-}
-
-fn update_dialog_set(state: &AppState, message: &str, action: Option<&str>) {
-    let Some(dialog) = state.update_dialog else {
-        return;
-    };
-    if !unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(dialog)) }.as_bool() {
-        return;
-    }
-    let text = HSTRING::from(message);
-    let button_text = HSTRING::from(action.unwrap_or(""));
-    unsafe {
-        let text_control = windows::Win32::UI::WindowsAndMessaging::GetDlgItem(Some(dialog), 2)
-            .unwrap_or_default();
-        let _ = SetWindowTextW(text_control, PCWSTR::from_raw(text.as_ptr()));
-        let button = windows::Win32::UI::WindowsAndMessaging::GetDlgItem(Some(dialog), 1)
-            .unwrap_or_default();
-        let _ = SetWindowTextW(button, PCWSTR::from_raw(button_text.as_ptr()));
-        let _ = EnableWindow(button, action.is_some());
-        let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
-            button,
-            if action.is_some() { SW_SHOW } else { SW_HIDE },
-        );
-    }
-}
-
-fn register_update_dialog_class() -> Result<()> {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    let mut result = Ok(());
-    ONCE.call_once(|| {
-        let hinstance = match unsafe { GetModuleHandleW(None) }.context("GetModuleHandleW") {
-            Ok(module) => HINSTANCE(module.0),
-            Err(error) => {
-                result = Err(error);
-                return;
-            }
-        };
-        let class = WNDCLASSW {
-            lpfnWndProc: Some(update_dialog_proc),
-            hInstance: hinstance,
-            lpszClassName: UPDATE_DIALOG_CLASS,
-            ..Default::default()
-        };
-        if unsafe { RegisterClassW(&class) } == 0 {
-            result = Err(anyhow!("RegisterClassW failed for update dialog"));
-        }
-    });
-    result
-}
-
-unsafe extern "system" fn update_dialog_proc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    match msg {
-        WM_NCCREATE => {
-            let create = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
-            unsafe {
-                let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
-            }
-            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-        }
-        WM_CREATE => {
-            let owner =
-                HWND(unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut core::ffi::c_void);
-            let hinstance = match unsafe { GetModuleHandleW(None) } {
-                Ok(module) => HINSTANCE(module.0),
-                Err(_) => return LRESULT(-1),
-            };
-            unsafe {
-                let _ = CreateWindowExW(
-                    Default::default(),
-                    w!("STATIC"),
-                    w!(""),
-                    WS_CHILD | WS_VISIBLE,
-                    20,
-                    20,
-                    390,
-                    70,
-                    Some(hwnd),
-                    Some(windows::Win32::UI::WindowsAndMessaging::HMENU(
-                        std::ptr::with_exposed_provenance_mut::<core::ffi::c_void>(2),
-                    )),
-                    Some(hinstance),
-                    None,
-                );
-                let _ = CreateWindowExW(
-                    Default::default(),
-                    w!("BUTTON"),
-                    w!(""),
-                    WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                    250,
-                    105,
-                    150,
-                    28,
-                    Some(hwnd),
-                    Some(windows::Win32::UI::WindowsAndMessaging::HMENU(
-                        std::ptr::with_exposed_provenance_mut::<core::ffi::c_void>(
-                            UPDATE_DIALOG_INSTALL as usize,
-                        ),
-                    )),
-                    Some(hinstance),
-                    None,
-                );
-            }
-            let _ = owner;
-            LRESULT(0)
-        }
-        WM_COMMAND if (wparam.0 & 0xFFFF) as i32 == UPDATE_DIALOG_INSTALL => {
-            let owner =
-                HWND(unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut core::ffi::c_void);
-            unsafe {
-                let button = windows::Win32::UI::WindowsAndMessaging::GetDlgItem(Some(hwnd), 1)
-                    .unwrap_or_default();
-                let _ = EnableWindow(button, false);
-                let _ = PostMessageW(Some(owner), WM_APP_UPDATE_INSTALL, WPARAM(0), LPARAM(0));
-            }
-            LRESULT(0)
-        }
-        WM_CLOSE => {
-            unsafe {
-                let _ = DestroyWindow(hwnd);
-            }
-            LRESULT(0)
-        }
-        WM_NCDESTROY => {
-            unsafe {
-                let _ = SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-            }
-            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-        }
-        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
-    }
-}
-
 /// Run `work` (which produces an [`UpdateOutcome`]) on a background thread and
 /// post the result back to the hidden window as [`WM_APP_UPDATE_RESULT`]. The
 /// HWND is moved into the thread as a raw `usize` (it is `Send` as a pointer
@@ -883,8 +658,8 @@ fn spawn_update_thread(hwnd: HWND, work: impl FnOnce() -> UpdateOutcome + Send +
 }
 
 /// Handle a [`WM_APP_UPDATE_RESULT`] on the UI thread: update the tray label
-/// and status dialog, and on a successful install tear down so the helper can
-/// replace and relaunch the executable.
+/// and show status through tray balloons/native message boxes. On a
+/// successful install, tear down so the helper can replace and relaunch.
 fn on_update_result(state: &mut AppState, hwnd: HWND, outcome: UpdateOutcome) {
     state.update_in_progress = false;
     match outcome {
@@ -892,13 +667,13 @@ fn on_update_result(state: &mut AppState, hwnd: HWND, outcome: UpdateOutcome) {
             if let Some(tray) = state.tray.as_mut() {
                 tray.set_update_state("Check for updates…", true);
             }
-            update_dialog_set(
+            balloon(
                 state,
+                "SpotFreeze is up to date",
                 &format!(
                     "You're running the latest version (v{}).",
                     env!("CARGO_PKG_VERSION")
                 ),
-                None,
             );
         }
         UpdateOutcome::Available { version } => {
@@ -906,34 +681,29 @@ fn on_update_result(state: &mut AppState, hwnd: HWND, outcome: UpdateOutcome) {
             if let Some(tray) = state.tray.as_mut() {
                 tray.set_update_state(&format!("Download and install v{version}"), true);
             }
-            update_dialog_set(
+            balloon(
                 state,
+                "Update available",
                 &format!(
-                    "SpotFreeze v{version} is available.\n\n\
-                     Download and install it now? SpotFreeze will restart \
-                     automatically when the download finishes."
+                    "SpotFreeze v{version} is available. Open the tray menu to download and install it."
                 ),
-                Some("Download and install"),
             );
         }
         UpdateOutcome::CheckFailed { error } => {
             if let Some(tray) = state.tray.as_mut() {
                 tray.set_update_state("Check for updates…", true);
             }
-            update_dialog_set(
-                state,
-                &format!("Could not check for updates.\n\n{error}"),
-                None,
-            );
+            balloon(state, "Could not check for updates", &error);
         }
         UpdateOutcome::InstallDone => {
             // The replacement helper is launched and waiting for us to exit.
             // Tell the user, then tear down so it can swap + relaunch.
-            update_dialog_set(
-                state,
-                "Installing update…\n\nSpotFreeze will restart to finish installing.",
-                None,
-            );
+            if let Some(tray) = state.tray.as_ref() {
+                tray.show_balloon(
+                    "Installing update",
+                    "SpotFreeze will restart to finish installing.",
+                );
+            }
             cleanup(state);
             unsafe {
                 let _ = DestroyWindow(hwnd);
@@ -945,12 +715,17 @@ fn on_update_result(state: &mut AppState, hwnd: HWND, outcome: UpdateOutcome) {
                 tray.set_update_state("Check for updates…", true);
                 let _ = tray.set_tooltip(&tooltip_text(&state.settings));
             }
-            update_dialog_set(
-                state,
-                &format!("Could not install the update.\n\n{error}"),
-                None,
+            show_error(
+                Some(hwnd),
+                &format!("Could not update SpotFreeze:\n{error}"),
             );
         }
+    }
+}
+
+fn balloon(state: &AppState, title: &str, message: &str) {
+    if let Some(tray) = state.tray.as_ref() {
+        tray.show_balloon(title, message);
     }
 }
 
