@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.3](https://github.com/santiagofavrin/spotfreeze/compare/v1.16.2...v1.16.3) (2026-08-03)
+
+
+### Bug Fixes
+
+* keep settings controls above card backgrounds ([171d6d8](https://github.com/santiagofavrin/spotfreeze/commit/171d6d8a0f57f03ea9e3135ea40520ea433113a8))
+
 ## [1.16.2](https://github.com/santiagofavrin/spotfreeze/compare/v1.16.1...v1.16.2) (2026-08-03)
 
 
