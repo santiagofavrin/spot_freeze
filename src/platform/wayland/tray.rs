@@ -586,6 +586,8 @@ mod tests {
             on_update: bump(&counters.updates),
             on_reload_settings: bump(&counters.reloads),
             on_exit: bump(&counters.exits),
+            update_label: "Check for updates…".into(),
+            update_enabled: true,
         };
         (tray, counters)
     }
